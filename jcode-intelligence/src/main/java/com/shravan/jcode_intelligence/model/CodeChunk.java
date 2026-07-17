@@ -1,36 +1,61 @@
 package com.shravan.jcode_intelligence.model;
 
+import java.util.List;
+
 public class CodeChunk {
 
-    private String id; //Unique identifier for the chunk.
-    private String filePath; //Allows locating the source file.
-    private String packageName; //Improves semantic filtering.
-    private String className; //Useful for class-level retrieval.
-    private String methodName; //Enables method-specific searches.
-    private String type; //Indicates whether the chunk is a CLASS, METHOD, INTERFACE, ENUM, etc.
-    private String language; //Keeps the model extensible for future support of Kotlin, Python, etc.
-    private String content; //The actual source code that will be embedded.
+    private String id;
+    private String type;
+
+    private String packageName;
+    private String className;
+    private String elementName;
+
+    private String filePath;
+
+    private List<String> imports;
+    private List<String> annotations;
+    private List<String> modifiers;
+
+    private String signature;
+    private String content;
+
+    private int startLine;
+    private int endLine;
+
+    private String language;
 
     public CodeChunk() {
     }
 
     public CodeChunk(String id,
-                     String filePath,
+                     String type,
                      String packageName,
                      String className,
-                     String methodName,
-                     String type,
-                     String language,
-                     String content) {
-
+                     String memberName,
+                     String filePath,
+                     List<String> imports,
+                     List<String> annotations,
+                     List<String> modifiers,
+                     String signature,
+                     String content,
+                     int startLine,
+                     int endLine,
+                     String language) {
         this.id = id;
-        this.filePath = filePath;
+        this.type = type;
         this.packageName = packageName;
         this.className = className;
-        this.methodName = methodName;
-        this.type = type;
-        this.language = language;
+        this.elementName = elementName;
+        this.filePath = filePath;
+        this.imports = imports;
+        this.annotations = annotations;
+        this.modifiers = modifiers;
+        this.signature = signature;
         this.content = content;
+        this.startLine = startLine;
+        this.endLine = endLine;
+        this.language = language;
     }
 
     public String getId() {
@@ -41,12 +66,12 @@ public class CodeChunk {
         this.id = id;
     }
 
-    public String getFilePath() {
-        return filePath;
+    public String getType() {
+        return type;
     }
 
-    public void setFilePath(String filePath) {
-        this.filePath = filePath;
+    public void setType(String type) {
+        this.type = type;
     }
 
     public String getPackageName() {
@@ -65,28 +90,52 @@ public class CodeChunk {
         this.className = className;
     }
 
-    public String getMethodName() {
-        return methodName;
+    public String getMemberName() {
+        return elementName;
     }
 
-    public void setMethodName(String methodName) {
-        this.methodName = methodName;
+    public void setMemberName(String memberName) {
+        this.elementName = memberName;
     }
 
-    public String getType() {
-        return type;
+    public String getFilePath() {
+        return filePath;
     }
 
-    public void setType(String type) {
-        this.type = type;
+    public void setFilePath(String filePath) {
+        this.filePath = filePath;
     }
 
-    public String getLanguage() {
-        return language;
+    public List<String> getImports() {
+        return imports;
     }
 
-    public void setLanguage(String language) {
-        this.language = language;
+    public void setImports(List<String> imports) {
+        this.imports = imports;
+    }
+
+    public List<String> getAnnotations() {
+        return annotations;
+    }
+
+    public void setAnnotations(List<String> annotations) {
+        this.annotations = annotations;
+    }
+
+    public List<String> getModifiers() {
+        return modifiers;
+    }
+
+    public void setModifiers(List<String> modifiers) {
+        this.modifiers = modifiers;
+    }
+
+    public String getSignature() {
+        return signature;
+    }
+
+    public void setSignature(String signature) {
+        this.signature = signature;
     }
 
     public String getContent() {
@@ -95,5 +144,29 @@ public class CodeChunk {
 
     public void setContent(String content) {
         this.content = content;
+    }
+
+    public int getStartLine() {
+        return startLine;
+    }
+
+    public void setStartLine(int startLine) {
+        this.startLine = startLine;
+    }
+
+    public int getEndLine() {
+        return endLine;
+    }
+
+    public void setEndLine(int endLine) {
+        this.endLine = endLine;
+    }
+
+    public String getLanguage() {
+        return language;
+    }
+
+    public void setLanguage(String language) {
+        this.language = language;
     }
 }

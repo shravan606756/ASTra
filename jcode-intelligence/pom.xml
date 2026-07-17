@@ -60,6 +60,12 @@
 			<artifactId>spring-ai-vector-store-advisor</artifactId>
 		</dependency>
 
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-symbol-solver-core</artifactId>
+            <version>3.27.1</version>
+        </dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-docker-compose</artifactId>

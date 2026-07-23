@@ -32,7 +32,7 @@ public class CodeChunk {
                      String type,
                      String packageName,
                      String className,
-                     String memberName,
+                     String elementName,
                      String filePath,
                      List<String> imports,
                      List<String> annotations,
@@ -90,12 +90,12 @@ public class CodeChunk {
         this.className = className;
     }
 
-    public String getMemberName() {
+    public String getElementName() {
         return elementName;
     }
 
-    public void setMemberName(String memberName) {
-        this.elementName = memberName;
+    public void setElementName(String elementName) {
+        this.elementName = elementName;
     }
 
     public String getFilePath() {

@@ -1,4 +1,4 @@
-package com.shravan.jcode_intelligence.ai;
+package com.shravan.jcode_intelligence.llm;
 
 public class ResponseFormatter {
 }

@@ -1,4 +1,4 @@
-package com.shravan.jcode_intelligence.dto;
+package com.shravan.jcode_intelligence.dto.request;
 
 public class ChatRequest {
 }

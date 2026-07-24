@@ -1,9 +1,11 @@
 package com.shravan.jcode_intelligence.parser;
 
-import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParseResult;
 import com.github.javaparser.ast.CompilationUnit;
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -15,18 +17,17 @@ import java.util.List;
 @Component
 public class JavaProjectParser {
 
+    private static final Logger log = LoggerFactory.getLogger(JavaProjectParser.class);
+
+    private final JavaParser javaParser;
     private final AstVisitor visitor;
 
-    public JavaProjectParser(AstVisitor visitor) {
-
+    public JavaProjectParser(JavaParser javaParser, AstVisitor visitor) {
+        this.javaParser = javaParser;
         this.visitor = visitor;
-
-        StaticJavaParser.getParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
     }
 
     public List<CompilationUnit> parseCompilationUnits(Path projectRoot) throws IOException {
-
         List<CompilationUnit> units = new ArrayList<>();
 
         Files.walk(projectRoot)
@@ -34,10 +35,14 @@ public class JavaProjectParser {
                 .filter(path -> path.toString().endsWith(".java"))
                 .forEach(path -> {
                     try {
-                        units.add(StaticJavaParser.parse(path));
+                        ParseResult<CompilationUnit> result = javaParser.parse(path);
+                        if (result.isSuccessful() && result.getResult().isPresent()) {
+                            units.add(result.getResult().get());
+                        } else {
+                            log.error("Failed to parse file: {} | Problems: {}", path, result.getProblems());
+                        }
                     } catch (Exception e) {
-                        System.out.println("Failed to parse: " + path);
-                        e.printStackTrace();
+                        log.error("Exception parsing file: {}", path, e);
                     }
                 });
 
@@ -45,9 +50,7 @@ public class JavaProjectParser {
     }
 
     public List<CodeChunk> parse(Path projectRoot) throws IOException {
-
         List<CompilationUnit> units = parseCompilationUnits(projectRoot);
-
         List<CodeChunk> chunks = new ArrayList<>();
 
         for (CompilationUnit unit : units) {

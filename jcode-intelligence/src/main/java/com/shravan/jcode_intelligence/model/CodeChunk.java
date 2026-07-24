@@ -6,6 +6,7 @@ public class CodeChunk {
 
     private String id;
     private String type;
+    private String repositoryId;
 
     private String packageName;
     private String className;
@@ -72,6 +73,14 @@ public class CodeChunk {
 
     public void setType(String type) {
         this.type = type;
+    }
+
+    public String getRepositoryId() {
+        return repositoryId;
+    }
+
+    public void setRepositoryId(String repositoryId) {
+        this.repositoryId = repositoryId;
     }
 
     public String getPackageName() {

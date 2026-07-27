@@ -6,70 +6,79 @@
 
 ## Why This Project Matters
 
-Understanding an unfamiliar Java codebase is one of the most time-consuming parts of onboarding, code review, and maintenance. JCode Intelligence addresses this by treating source code as structured, queryable knowledge rather than plain text — parsing it into a semantic representation, indexing it as vector embeddings, and using an LLM to reason over the retrieved context.
+Understanding an unfamiliar Java codebase is one of the most time-consuming parts of onboarding, code review, and maintenance. JCode Intelligence addresses this by treating source code as structured, queryable knowledge rather than plain text: parsing it into a semantic representation, indexing it as vector embeddings, and using an LLM to reason over the retrieved context.
 
 **Core capabilities:**
 
-- **Structural parsing** — Extracts packages, classes, interfaces, and methods via `JavaParser`, preserving hierarchy instead of flattening code into raw text.
-- **Semantic chunking** — Splits code along logical boundaries (class/method level) so retrieved context is coherent, not arbitrarily truncated.
-- **Vector search at scale** — Stores embeddings in PostgreSQL via `pgvector`, enabling fast approximate nearest-neighbor (ANN) search over large codebases.
-- **RAG-based Q&A** — Natural language questions (e.g., *"How does the authentication flow work?"*) are answered using top-K retrieved code context fed into an LLM, with provider flexibility across OpenAI, Ollama, and Grok.
-- **One-command indexing** — Points at a local repo or clones directly from a Git provider to build the searchable index.
-- **Benchmarking endpoint** — A dedicated `/benchmark` API for quantitative evaluation of LLM response fidelity, latency, and retrieval relevance.
+- **Structural parsing** - Extracts packages, classes, interfaces, and methods via `JavaParser`, preserving hierarchy instead of flattening code into raw text.
+- **Semantic chunking** - Splits code along logical boundaries (class/method level) so retrieved context is coherent, not arbitrarily truncated.
+- **Vector search at scale** - Stores embeddings in PostgreSQL via `pgvector`, enabling fast approximate nearest-neighbor (ANN) search over large codebases.
+- **RAG-based Q&A** - Natural language questions (e.g., *"How does the authentication flow work?"*) are answered using top-K retrieved code context fed into an LLM, with provider flexibility across OpenAI, Ollama, and Grok.
+- **One-command indexing** - Points at a local repo or clones directly from a Git provider to build the searchable index.
+- **Benchmarking endpoint** - A dedicated `/benchmark` API for quantitative evaluation of LLM response fidelity, latency, and retrieval relevance.
 
 ---
 
 ## Architecture
 
-Designed with clean separation of concerns across four layers: **API → Service → Parsing → LLM Orchestration**, backed by a vector-native persistence layer.
+Designed with clean separation of concerns across four layers: **API, Service, Parsing, and LLM Orchestration**, backed by a vector-native persistence layer.
 
 ```mermaid
 flowchart TB
-    User((User / Developer))
+    %% Define Styles
+    classDef ui fill:#1E2530,stroke:#3498DB,stroke-width:2px,color:#FFF,rx:8px,ry:8px;
+    classDef api fill:#2C3E50,stroke:#E74C3C,stroke-width:2px,color:#FFF,rx:8px,ry:8px;
+    classDef service fill:#273746,stroke:#F39C12,stroke-width:2px,color:#FFF,rx:8px,ry:8px;
+    classDef parsing fill:#1B2631,stroke:#2ECC71,stroke-width:2px,color:#FFF,rx:8px,ry:8px;
+    classDef ai fill:#212F3D,stroke:#9B59B6,stroke-width:2px,color:#FFF,rx:8px,ry:8px;
+    classDef models fill:#283747,stroke:#95A5A6,stroke-width:2px,color:#FFF,rx:8px,ry:8px;
+    classDef external fill:#34495E,stroke:#BDC3C7,stroke-dasharray: 5 5,color:#FFF,rx:8px,ry:8px;
+
+    User((User / Developer)):::ui
 
     subgraph External["External Systems & Providers"]
         direction TB
-        Git["Git Provider\n(Local Git / GitHub)"]
-        LLM["LLM Provider\n(OpenAI / Ollama / Grok)"]
-        EmbedModel["Embedding Model Provider"]
+        Git["Git Provider\n(Local Git / GitHub)"]:::external
+        LLM["LLM Provider\n(OpenAI / Ollama / Grok)"]:::external
+        EmbedModel["Embedding Model Provider"]:::external
     end
 
     subgraph DB["Persistence Layer"]
-        PostgreSQL[("PostgreSQL + pgvector\n(Vector Store)")]
+        PostgreSQL[("PostgreSQL + pgvector\n(Vector Store)")]:::models
     end
 
     subgraph Web["API Layer (Spring Boot WebMVC)"]
         direction TB
-        IndexCtrl["IndexController\n(REST Endpoint)"]
-        ChatCtrl["ChatController\n(REST Endpoint)"]
-        BenchCtrl["BenchmarkController\n(REST Endpoint)"]
+        IndexCtrl["IndexController\n(REST Endpoint)"]:::api
+        ChatCtrl["ChatController\n(REST Endpoint)"]:::api
+        BenchCtrl["BenchmarkController\n(REST Endpoint)"]:::api
     end
 
     subgraph Services["Service Layer"]
         direction TB
-        IndexSvc["IndexingService"]
-        ChatSvc["ChatService"]
-        GitSvc["GitService"]
-        EmbedSvc["EmbeddingService"]
-        RetrieveSvc["RetrievalService"]
-        SymbolExt["SymbolExtractor"]
+        IndexSvc["IndexingService"]:::service
+        ChatSvc["ChatService"]:::service
+        GitSvc["GitService"]:::service
+        EmbedSvc["EmbeddingService"]:::service
+        RetrieveSvc["RetrievalService"]:::service
+        SymbolExt["SymbolExtractor"]:::service
     end
 
     subgraph Parser["AST Parsing & Chunking Layer"]
         direction TB
-        JavaParser["JavaProjectParser"]
-        ASTVis["AstVisitor"]
-        Metadata["MetadataExtractor"]
-        ChunkGen["ChunkGenerator"]
+        JavaParser["JavaProjectParser"]:::parsing
+        ASTVis["AstVisitor"]:::parsing
+        Metadata["MetadataExtractor"]:::parsing
+        ChunkGen["ChunkGenerator"]:::parsing
     end
 
     subgraph AI["LLM Orchestration Layer"]
         direction TB
-        LLMClient["LLMClient"]
-        PromptBld["PromptBuilder"]
-        PromptRtr["PromptRouter"]
-        PromptTpl["PromptTemplateLoader"]
-        ResFmt["ResponseFormatter"]
+        LLMClient["LLMClient"]:::ai
+        PromptBld["PromptBuilder"]:::ai
+        PromptRtr["PromptRouter"]:::ai
+        PromptTpl["PromptTemplateLoader"]:::ai
+        ResFmt["ResponseFormatter"]:::ai
     end
 
     User -->|"POST /index (trigger indexing)"| IndexCtrl
@@ -103,16 +112,12 @@ flowchart TB
 
     User -->|"POST /benchmark"| BenchCtrl
     BenchCtrl --> ChatSvc
-
-    classDef default fill:none,stroke:#333333,stroke-width:1px,color:#000000;
-    classDef boundary fill:none,stroke:#000000,stroke-width:1.5px,stroke-dasharray:2 2;
-    class External,DB,Web,Services,Parser,AI boundary;
 ```
 
 | Workflow | Trigger | Path |
 |---|---|---|
-| **Indexing** | `POST /index` | Clone/read repo → parse AST → chunk → embed → persist to `pgvector` |
-| **Query** | `POST /chat` | Embed query → ANN search → retrieve top-K context → build & route prompt → LLM completion → formatted response |
+| **Indexing** | `POST /index` | Clone/read repo, parse AST, chunk, embed, persist to `pgvector` |
+| **Query** | `POST /chat` | Embed query, ANN search, retrieve top-K context, build & route prompt, LLM completion, formatted response |
 | **Benchmark** | `POST /benchmark` | Runs evaluation queries through the chat pipeline, measuring response fidelity, latency, and retrieval relevance |
 
 ---
@@ -148,9 +153,9 @@ To validate correctness and scalability on a real, non-trivial codebase, JCode I
 | Largest class parsed | `ASTParser` (334,531 chars) |
 | Total indexing time | ~14.7 minutes (881,082 ms) |
 
-![Indexing statistics terminal output](jcode-intelligence/assests/parsed_Javaparser_from_github.png)
+![Indexing statistics terminal output](assests/parsed_Javaparser_from_github.png)
 
-**Sample query result** (actual system output — `content` fields truncated for readability):
+**Sample query result** (actual system output, `content` fields truncated for readability):
 
 ```json
 {
@@ -180,12 +185,12 @@ To validate correctness and scalability on a real, non-trivial codebase, JCode I
 }
 ```
 
-This confirms the retrieval pipeline grounds responses to exact class-, field-, and line-level locations across a 1,700+ class codebase — returning structured, verifiable source references rather than a free-text guess.
+This confirms the retrieval pipeline grounds responses to exact class-, field-, and line-level locations across a 1,700+ class codebase, returning structured, verifiable source references rather than a free-text guess.
 
 ---
 
 ## Engineering Highlights
 
-- **Provider-agnostic LLM/embedding layer** — swap between OpenAI, Ollama, or Grok without touching business logic, via a clean `LLMClient` abstraction.
-- **Structure-aware retrieval** — chunking respects code semantics (class/method boundaries) rather than fixed-size text windows, improving retrieval precision over naive RAG.
-- **Layered, testable architecture** — strict separation between REST controllers, services, parsing, and prompt orchestration keeps components independently unit-testable.
+- **Provider-agnostic LLM/embedding layer** - swap between OpenAI, Ollama, or Grok without touching business logic, via a clean `LLMClient` abstraction.
+- **Structure-aware retrieval** - chunking respects code semantics (class/method boundaries) rather than fixed-size text windows, improving retrieval precision over naive RAG.
+- **Layered, testable architecture** - strict separation between REST controllers, services, parsing, and prompt orchestration keeps components independently unit-testable.

@@ -33,6 +33,7 @@ public class JavaProjectParser {
         Files.walk(projectRoot)
                 .filter(Files::isRegularFile)
                 .filter(path -> path.toString().endsWith(".java"))
+                .filter(this::isIndexableJavaFile)
                 .forEach(path -> {
                     try {
                         ParseResult<CompilationUnit> result = javaParser.parse(path);
@@ -58,5 +59,21 @@ public class JavaProjectParser {
         }
 
         return chunks;
+    }
+
+    /**
+     * Determines whether a Java file should be included in AST semantic indexing.
+     * Excludes build directories (target, build, .git) and non-source test fixture resources (src/test/resources).
+     */
+    private boolean isIndexableJavaFile(Path path) {
+        String normalized = path.toString().replace('\\', '/');
+        if (normalized.contains("/target/") || normalized.contains("/build/") || normalized.contains("/.git/")) {
+            return false;
+        }
+        if (normalized.contains("/src/test/resources/") || normalized.contains("/test-resources/")) {
+            log.debug("Skipping test fixture resource file: {}", path);
+            return false;
+        }
+        return true;
     }
 }

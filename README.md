@@ -153,7 +153,7 @@ To validate correctness and scalability on a real, non-trivial codebase, JCode I
 | Largest class parsed | `ASTParser` (334,531 chars) |
 | Total indexing time | ~14.7 minutes (881,082 ms) |
 
-![Indexing statistics terminal output](assests/parsed_Javaparser_from_github.png)
+![Indexing statistics terminal output](jcode-intelligence/assests/parsed_Javaparser_from_github.png)
 
 **Sample query result** (actual system output, `content` fields truncated for readability):
 

@@ -194,3 +194,45 @@ This confirms the retrieval pipeline grounds responses to exact class-, field-, 
 - **Provider-agnostic LLM/embedding layer** - swap between OpenAI, Ollama, or Grok without touching business logic, via a clean `LLMClient` abstraction.
 - **Structure-aware retrieval** - chunking respects code semantics (class/method boundaries) rather than fixed-size text windows, improving retrieval precision over naive RAG.
 - **Layered, testable architecture** - strict separation between REST controllers, services, parsing, and prompt orchestration keeps components independently unit-testable.
+
+---
+
+## Getting Started
+
+Follow these steps to set up the vector database, local embedding models, and run the application.
+
+### Prerequisites
+- **Java 21**
+- **Docker & Docker Compose** (for PostgreSQL + pgvector)
+- **Ollama** installed locally (for generating text embeddings)
+- **Groq API Key** (for the LLM completion engine)
+
+### 1. Start the Database
+JCode Intelligence relies on PostgreSQL with the pgvector extension for storing and querying embeddings. Start the database using the provided `compose.yaml`:
+
+```bash
+docker compose up -d
+```
+*Note: The Docker container maps to port 5432 and sets up the `jcode_db` database with default credentials.*
+
+### 2. Set Up Local Embeddings
+The system is configured to use Ollama to locally generate embeddings. Pull the required `nomic-embed-text` model:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+### 3. Configure API Keys
+Update your `application.properties` (or environment variables) to include your Groq API key for the LLM chat completion:
+
+```properties
+spring.ai.openai.api-key=your_groq_api_key_here
+```
+
+### 4. Build and Run
+Build the project and start the Spring Boot application:
+
+```bash
+./mvnw clean install
+./mvnw spring-boot:run
+```

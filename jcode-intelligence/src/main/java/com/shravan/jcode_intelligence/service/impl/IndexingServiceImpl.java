@@ -1,8 +1,13 @@
 package com.shravan.jcode_intelligence.service.impl;
 
+import com.shravan.jcode_intelligence.config.ChunkingConfig;
 import com.shravan.jcode_intelligence.converter.DocumentConverter;
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import com.shravan.jcode_intelligence.model.IndexingStatistics;
+import com.shravan.jcode_intelligence.parser.EmbeddingBudgetValidator;
 import com.shravan.jcode_intelligence.parser.JavaProjectParser;
+import com.shravan.jcode_intelligence.parser.PackageSummaryGenerator;
+import com.shravan.jcode_intelligence.parser.IndexingStatisticsCalculator;
 import com.shravan.jcode_intelligence.service.GitService;
 import com.shravan.jcode_intelligence.service.IndexingService;
 import org.slf4j.Logger;
@@ -14,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 @Service
@@ -26,18 +32,30 @@ public class IndexingServiceImpl implements IndexingService {
     private final VectorStore vectorStore;
     private final GitService gitService;
     private final JdbcTemplate jdbcTemplate;
+    private final PackageSummaryGenerator packageSummaryGenerator;
+    private final IndexingStatisticsCalculator statisticsCalculator;
+    private final EmbeddingBudgetValidator budgetValidator;
+    private final ChunkingConfig chunkingConfig;
 
     public IndexingServiceImpl(JavaProjectParser parser,
                                DocumentConverter converter,
                                VectorStore vectorStore,
                                GitService gitService,
-                               JdbcTemplate jdbcTemplate) {
+                               JdbcTemplate jdbcTemplate,
+                               PackageSummaryGenerator packageSummaryGenerator,
+                               IndexingStatisticsCalculator statisticsCalculator,
+                               EmbeddingBudgetValidator budgetValidator,
+                               ChunkingConfig chunkingConfig) {
 
         this.parser = parser;
         this.converter = converter;
         this.vectorStore = vectorStore;
         this.gitService = gitService;
         this.jdbcTemplate = jdbcTemplate;
+        this.packageSummaryGenerator = packageSummaryGenerator;
+        this.statisticsCalculator = statisticsCalculator;
+        this.budgetValidator = budgetValidator;
+        this.chunkingConfig = chunkingConfig;
     }
 
     @Override
@@ -51,23 +69,79 @@ public class IndexingServiceImpl implements IndexingService {
     @Override
     public int indexProject(String projectPath, String repositoryId) throws IOException {
         long startTime = System.currentTimeMillis();
-        List<CodeChunk> chunks = parser.parse(Path.of(projectPath));
+
+        // [STEP 1] Parse repository source files into element chunks
+        log.info("[STEP 1] Parsing repository source files at path: {}", projectPath);
+        List<CodeChunk> elementChunks = parser.parse(Path.of(projectPath));
+        log.info("[STEP 1 COMPLETE] Generated {} element chunk(s)", elementChunks.size());
+
+        // [STEP 2] Generate package summaries across the entire repository
+        log.info("[STEP 2] Generating repository-wide package summaries...");
+        List<CodeChunk> packageChunks = packageSummaryGenerator.generatePackageSummaries(elementChunks);
+        log.info("[STEP 2 COMPLETE] Generated {} package summary chunk(s)", packageChunks.size());
+
+        // Combine element chunks and repo-wide package summary chunks
+        List<CodeChunk> allChunks = new ArrayList<>(elementChunks);
+        allChunks.addAll(packageChunks);
 
         if (repositoryId != null && !repositoryId.isBlank()) {
-            for (CodeChunk chunk : chunks) {
+            for (CodeChunk chunk : allChunks) {
                 chunk.setRepositoryId(repositoryId);
             }
         }
 
-        List<Document> documents = converter.convert(chunks);
+        // [STEP 3] Convert to Spring AI Document objects
+        log.info("[STEP 3] Converting {} CodeChunks to Spring AI Documents...", allChunks.size());
+        List<Document> documents = converter.convert(allChunks);
+        log.info("[STEP 3 COMPLETE] Converted {} Document(s)", documents.size());
 
+        // [STEP 4] Pre-embedding budget validation and observability audit
+        log.info("[STEP 4] Validating document sizes against embedding budget...");
+        budgetValidator.validateAndAudit(documents, allChunks);
+        log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
+
+        // [STEP 5] Delete existing vectors for this repository
         if (repositoryId != null && !repositoryId.isBlank()) {
+            log.info("[STEP 5] Cleaning up existing vector records for repository: {}", repositoryId);
             deleteExistingRepositoryVectors(repositoryId);
         }
 
-        vectorStore.add(documents);
+        // [STEP 6] Batch vector store insertion
+        int totalDocs = documents.size();
+        int batchSize = Math.max(1, chunkingConfig.getBatchSize());
+        int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
+
+        log.info("[STEP 6] Starting batch vector store insertion for {} document(s) in {} batch(es) (batch size: {})...",
+                totalDocs, totalBatches, batchSize);
+
+        long embeddingStartTime = System.currentTimeMillis();
+
+        for (int i = 0; i < totalDocs; i += batchSize) {
+            int endIdx = Math.min(i + batchSize, totalDocs);
+            List<Document> batch = documents.subList(i, endIdx);
+            int batchNum = (i / batchSize) + 1;
+
+            log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
+                    batchNum, totalBatches, i + 1, endIdx, totalDocs);
+
+            long batchStart = System.currentTimeMillis();
+            vectorStore.add(batch);
+            long batchDuration = System.currentTimeMillis() - batchStart;
+
+            double pct = ((double) endIdx / totalDocs) * 100.0;
+            log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({%.1f%%})",
+                    batchNum, totalBatches, batch.size(), batchDuration, endIdx, totalDocs, pct);
+        }
+
+        long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
+        log.info("[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms",
+                totalDocs, totalBatches, embeddingDuration);
+
         long duration = System.currentTimeMillis() - startTime;
-        log.info("Indexed {} documents in {} ms for repositoryId: {}", documents.size(), duration, repositoryId);
+
+        // [STEP 7] Compute and log structured indexing statistics
+        IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
+        log.info("\n{}", stats);
 
         return documents.size();
     }
@@ -113,4 +187,3 @@ public class IndexingServiceImpl implements IndexingService {
         return name.isEmpty() ? "git-repo" : name;
     }
 }
-

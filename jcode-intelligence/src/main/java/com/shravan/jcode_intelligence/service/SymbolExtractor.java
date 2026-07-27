@@ -18,17 +18,21 @@ public class SymbolExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(SymbolExtractor.class);
 
-    // Matches PascalCase identifiers: PromptRouter, ChatServiceImpl, CodeChunk, etc.
+    // Matches PascalCase identifiers: PromptRouter, ChatServiceImpl, CodeChunk, MethodFragmenter, etc.
     private static final Pattern CLASS_NAME_PATTERN =
             Pattern.compile("\\b([A-Z][a-zA-Z0-9]{2,})\\b");
 
-    // Matches method-style identifiers: buildPrompt(), route(), getQuery()
-    private static final Pattern METHOD_NAME_PATTERN =
+    // Matches method-style identifiers with parentheses: buildPrompt(), route(), getQuery()
+    private static final Pattern METHOD_WITH_PARENS_PATTERN =
             Pattern.compile("\\b([a-z][a-zA-Z0-9]+)\\s*\\(\\)");
+
+    // Matches standalone camelCase method identifiers: doFragment, indexProject, buildSummary
+    private static final Pattern CAMEL_CASE_METHOD_PATTERN =
+            Pattern.compile("\\b([a-z]+[A-Z][a-zA-Z0-9]*)\\b");
 
     /**
      * Extracts the most prominent Java symbol from a user query.
-     * Priority: PascalCase class name > method name with parentheses.
+     * Priority: PascalCase class name > method with parens > camelCase method name.
      *
      * @param query the user's natural-language query
      * @return the extracted symbol name, or empty if no symbol is detected
@@ -38,23 +42,32 @@ public class SymbolExtractor {
             return Optional.empty();
         }
 
-        // Try to extract a PascalCase class/interface/enum name first
+        // 1. Try to extract a PascalCase class/interface/enum name first
         Matcher classMatcher = CLASS_NAME_PATTERN.matcher(query);
         while (classMatcher.find()) {
             String candidate = classMatcher.group(1);
-            // Filter out common English words that happen to be PascalCase
             if (!isCommonWord(candidate)) {
                 log.debug("Extracted class symbol '{}' from query: '{}'", candidate, query);
                 return Optional.of(candidate);
             }
         }
 
-        // Try to extract a method name (e.g., "buildPrompt()")
-        Matcher methodMatcher = METHOD_NAME_PATTERN.matcher(query);
-        if (methodMatcher.find()) {
-            String method = methodMatcher.group(1);
-            log.debug("Extracted method symbol '{}' from query: '{}'", method, query);
+        // 2. Try to extract a method with parens (e.g., "doFragment()")
+        Matcher methodParensMatcher = METHOD_WITH_PARENS_PATTERN.matcher(query);
+        if (methodParensMatcher.find()) {
+            String method = methodParensMatcher.group(1);
+            log.debug("Extracted method symbol with parens '{}' from query: '{}'", method, query);
             return Optional.of(method);
+        }
+
+        // 3. Try to extract a standalone camelCase method name (e.g., "doFragment", "indexProject")
+        Matcher camelCaseMatcher = CAMEL_CASE_METHOD_PATTERN.matcher(query);
+        while (camelCaseMatcher.find()) {
+            String method = camelCaseMatcher.group(1);
+            if (!isCommonWord(method)) {
+                log.debug("Extracted camelCase method symbol '{}' from query: '{}'", method, query);
+                return Optional.of(method);
+            }
         }
 
         return Optional.empty();
@@ -62,7 +75,7 @@ public class SymbolExtractor {
 
     /**
      * Returns true if the candidate is a common English word that should not
-     * be treated as a Java symbol, even though it starts with uppercase.
+     * be treated as a Java symbol.
      */
     private boolean isCommonWord(String candidate) {
         return switch (candidate) {

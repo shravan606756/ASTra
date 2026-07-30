@@ -48,7 +48,7 @@ public class RetrievalAndPromptQualityTest {
     void testPromptBuilderIncludesRelationshipHeadersInContext() {
         PromptRouter router = new PromptRouter();
         PromptTemplateLoader templateLoader = new PromptTemplateLoader(new DefaultResourceLoader());
-        PromptBuilder promptBuilder = new PromptBuilder(router, templateLoader);
+        PromptBuilder promptBuilder = new PromptBuilder(router, templateLoader, null, null);
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("filePath", "src/main/java/MethodFragmenter.java");
@@ -73,23 +73,38 @@ public class RetrievalAndPromptQualityTest {
         assertTrue(prompt.contains("MethodFragmenter implements CodeFragmenter"), "Prompt should contain code content");
     }
 
+    private RetrievalServiceImpl createTestRetrievalService(MockVectorStore mockVectorStore, MockJdbcTemplate mockJdbcTemplate) {
+        com.shravan.jcode_intelligence.config.IntentRetrievalConfig config = new com.shravan.jcode_intelligence.config.IntentRetrievalConfig() {
+            @Override public int getFinalTopK(com.shravan.jcode_intelligence.model.QueryIntent intent) { return 10; }
+            @Override public int getRawTopK(com.shravan.jcode_intelligence.model.QueryIntent intent) { return 20; }
+            @Override public double getSimilarityThreshold() { return 0.65; }
+        };
+        com.shravan.jcode_intelligence.service.ArchitectureContextBuilder archBuilder = 
+            new com.shravan.jcode_intelligence.service.ArchitectureContextBuilder(mockJdbcTemplate);
+        com.shravan.jcode_intelligence.service.RetrievalStrategySelector selector = 
+            new com.shravan.jcode_intelligence.service.RetrievalStrategySelector(
+                mockVectorStore, mockJdbcTemplate, symbolExtractor, config, archBuilder);
+        com.shravan.jcode_intelligence.service.RetrievalReranker reranker = 
+            new com.shravan.jcode_intelligence.service.RetrievalReranker(config);
+        return new RetrievalServiceImpl(null, selector, reranker, symbolExtractor, config);
+    }
+
     @Test
     void testRetrievalArchitectureModeQueriesPackageSummariesAndCoreClasses() {
         MockVectorStore mockVectorStore = new MockVectorStore();
         MockJdbcTemplate mockJdbcTemplate = new MockJdbcTemplate();
 
-        RetrievalServiceImpl retrievalService = new RetrievalServiceImpl(
-                mockVectorStore, mockJdbcTemplate, symbolExtractor);
+        RetrievalServiceImpl retrievalService = createTestRetrievalService(mockVectorStore, mockJdbcTemplate);
 
         List<Document> docs = retrievalService.retrieve("Explain the indexing architecture", 10, "test-repo", ChatMode.ARCHITECTURE);
 
         assertNotNull(docs);
         assertTrue(mockJdbcTemplate.executedQueries.stream()
-                .anyMatch(q -> q.contains("metadata->>'type' = ?") && q.contains("PACKAGE")),
+                .anyMatch(q -> q.contains("metadata->>'type' = 'PACKAGE'")),
                 "ARCHITECTURE mode must query for PACKAGE summaries");
         assertTrue(mockJdbcTemplate.executedQueries.stream()
-                .anyMatch(q -> q.contains("IndexingServiceImpl")),
-                "ARCHITECTURE mode must query for core orchestration classes");
+                .anyMatch(q -> q.contains("metadata->>'type' IN ('CLASS', 'ENUM', 'RECORD')")),
+                "ARCHITECTURE mode must query for classes");
     }
 
     @Test
@@ -97,8 +112,7 @@ public class RetrievalAndPromptQualityTest {
         MockVectorStore mockVectorStore = new MockVectorStore();
         MockJdbcTemplate mockJdbcTemplate = new MockJdbcTemplate();
 
-        RetrievalServiceImpl retrievalService = new RetrievalServiceImpl(
-                mockVectorStore, mockJdbcTemplate, symbolExtractor);
+        RetrievalServiceImpl retrievalService = createTestRetrievalService(mockVectorStore, mockJdbcTemplate);
 
         List<Document> docs = retrievalService.retrieve("Explain doFragment", 5, "test-repo", ChatMode.EXPLAIN_METHOD);
 
@@ -135,6 +149,11 @@ public class RetrievalAndPromptQualityTest {
         public <T> List<T> query(String sql, Object[] args, RowMapper<T> rowMapper) {
             executedQueries.add(sql + " | Args: " + Arrays.toString(args));
             return List.of();
+        }
+
+        @Override
+        public void query(String sql, Object[] args, org.springframework.jdbc.core.RowCallbackHandler rch) {
+            executedQueries.add(sql + " | Args: " + Arrays.toString(args));
         }
     }
 }

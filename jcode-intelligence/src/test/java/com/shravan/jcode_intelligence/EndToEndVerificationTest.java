@@ -86,7 +86,7 @@ public class EndToEndVerificationTest {
                 "Every document must fit strictly below maxDocumentChars (8,000 chars)");
 
         // 4. Verify Representative Retrieval Queries
-        RetrievalServiceImpl retrievalService = new RetrievalServiceImpl(vectorStore, jdbcTemplate, new SymbolExtractor());
+        RetrievalServiceImpl retrievalService = createTestRetrievalService(vectorStore, jdbcTemplate);
 
         verifyQuery(retrievalService, "Explain Expression", ChatMode.EXPLAIN_CLASS);
         verifyQuery(retrievalService, "Explain Node", ChatMode.EXPLAIN_CLASS);
@@ -101,6 +101,23 @@ public class EndToEndVerificationTest {
         List<Document> results = retrievalService.retrieve(query, 5, "javaparser-verification", mode);
         assertNotNull(results, "Retrieval result for query '" + query + "' must not be null");
         System.out.println("  [RETRIEVAL QUERY] Mode: " + mode + " | Query: '" + query + "' -> Retrieved " + results.size() + " doc(s)");
+    }
+
+    private RetrievalServiceImpl createTestRetrievalService(TrackingVectorStore vectorStore, TrackingJdbcTemplate jdbcTemplate) {
+        com.shravan.jcode_intelligence.config.IntentRetrievalConfig config = new com.shravan.jcode_intelligence.config.IntentRetrievalConfig() {
+            @Override public int getFinalTopK(com.shravan.jcode_intelligence.model.QueryIntent intent) { return 10; }
+            @Override public int getRawTopK(com.shravan.jcode_intelligence.model.QueryIntent intent) { return 20; }
+            @Override public double getSimilarityThreshold() { return 0.65; }
+        };
+        com.shravan.jcode_intelligence.service.SymbolExtractor symbolExtractor = new com.shravan.jcode_intelligence.service.SymbolExtractor();
+        com.shravan.jcode_intelligence.service.ArchitectureContextBuilder archBuilder = 
+            new com.shravan.jcode_intelligence.service.ArchitectureContextBuilder(jdbcTemplate);
+        com.shravan.jcode_intelligence.service.RetrievalStrategySelector selector = 
+            new com.shravan.jcode_intelligence.service.RetrievalStrategySelector(
+                vectorStore, jdbcTemplate, symbolExtractor, config, archBuilder);
+        com.shravan.jcode_intelligence.service.RetrievalReranker reranker = 
+            new com.shravan.jcode_intelligence.service.RetrievalReranker(config);
+        return new RetrievalServiceImpl(null, selector, reranker, symbolExtractor, config);
     }
 
     // ── Tracking Mocks ────────────────────────────────────────
@@ -152,6 +169,11 @@ public class EndToEndVerificationTest {
         @SuppressWarnings("unchecked")
         public <T> List<T> query(String sql, Object[] args, RowMapper<T> rowMapper) {
             return List.of();
+        }
+
+        @Override
+        public void query(String sql, Object[] args, org.springframework.jdbc.core.RowCallbackHandler rch) {
+            // No-op for testing
         }
     }
 }

@@ -14,8 +14,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -70,11 +70,13 @@ public class BatchingIndexingServiceTest {
     }
 
     private static class MockBatchVectorStore implements VectorStore {
-        final List<List<Document>> batchCalls = new ArrayList<>();
+        // Batches are now embedded concurrently by STEP 6's adaptive worker pool,
+        // so this collection must be safe for concurrent writes.
+        final List<List<Document>> batchCalls = new CopyOnWriteArrayList<>();
 
         @Override
         public void add(List<Document> documents) {
-            batchCalls.add(new ArrayList<>(documents));
+            batchCalls.add(List.copyOf(documents));
         }
 
         @Override

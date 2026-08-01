@@ -21,6 +21,11 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class IndexingServiceImpl implements IndexingService {
@@ -106,36 +111,61 @@ public class IndexingServiceImpl implements IndexingService {
             deleteExistingRepositoryVectors(repositoryId);
         }
 
-        // [STEP 6] Batch vector store insertion
+        // [STEP 6] Adaptive parallel batch vector store insertion
         int totalDocs = documents.size();
         int batchSize = Math.max(1, chunkingConfig.getBatchSize());
         int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
 
-        log.info("[STEP 6] Starting batch vector store insertion for {} document(s) in {} batch(es) (batch size: {})...",
-                totalDocs, totalBatches, batchSize);
+        int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
+        int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
+
+        log.info("[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
+                totalDocs, totalBatches, batchSize, workerCount);
 
         long embeddingStartTime = System.currentTimeMillis();
+        AtomicInteger completedDocs = new AtomicInteger(0);
+        ExecutorService executor = Executors.newFixedThreadPool(workerCount);
 
-        for (int i = 0; i < totalDocs; i += batchSize) {
-            int endIdx = Math.min(i + batchSize, totalDocs);
-            List<Document> batch = documents.subList(i, endIdx);
-            int batchNum = (i / batchSize) + 1;
+        try {
+            List<Future<?>> futures = new ArrayList<>(totalBatches);
 
-            log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
-                    batchNum, totalBatches, i + 1, endIdx, totalDocs);
+            for (int i = 0; i < totalDocs; i += batchSize) {
+                int startIdx = i;
+                int endIdx = Math.min(i + batchSize, totalDocs);
+                List<Document> batch = documents.subList(startIdx, endIdx);
+                int batchNum = (startIdx / batchSize) + 1;
 
-            long batchStart = System.currentTimeMillis();
-            vectorStore.add(batch);
-            long batchDuration = System.currentTimeMillis() - batchStart;
+                futures.add(executor.submit(() -> {
+                    log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
+                            batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
 
-            double pct = ((double) endIdx / totalDocs) * 100.0;
-            log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({%.1f%%})",
-                    batchNum, totalBatches, batch.size(), batchDuration, endIdx, totalDocs, pct);
+                    long batchStart = System.currentTimeMillis();
+                    vectorStore.add(batch);
+                    long batchDuration = System.currentTimeMillis() - batchStart;
+
+                    int doneDocs = completedDocs.addAndGet(batch.size());
+                    double pct = ((double) doneDocs / totalDocs) * 100.0;
+                    log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({%.1f%%})",
+                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs, pct);
+                }));
+            }
+
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new RuntimeException("Batch vector store insertion failed during STEP 6", cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Batch vector store insertion interrupted during STEP 6", e);
+        } finally {
+            executor.shutdown();
         }
 
         long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
-        log.info("[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms",
-                totalDocs, totalBatches, embeddingDuration);
+        log.info("[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
+                totalDocs, totalBatches, embeddingDuration, workerCount);
 
         long duration = System.currentTimeMillis() - startTime;
 

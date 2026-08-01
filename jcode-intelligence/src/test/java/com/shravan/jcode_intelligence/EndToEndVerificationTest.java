@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -72,17 +73,17 @@ public class EndToEndVerificationTest {
         System.out.println("  3. Total Documents Created   : " + totalIndexedDocs + " documents");
         System.out.println("  4. Total Batches Processed   : " + vectorStore.batchAddCalls.get() + " batches");
         System.out.println("  5. Configured Batch Size     : " + chunkingConfig.getBatchSize() + " docs/batch");
-        System.out.println("  6. Average Batch Duration    : " + (vectorStore.totalEmbedDuration / Math.max(1, vectorStore.batchAddCalls.get())) + " ms");
-        System.out.println("  7. Max Document Size Found   : " + vectorStore.maxDocumentCharsFound + " chars (~" + (vectorStore.maxDocumentCharsFound / 4) + " tokens)");
+        System.out.println("  6. Average Batch Duration    : " + (vectorStore.totalEmbedDuration.get() / Math.max(1, vectorStore.batchAddCalls.get())) + " ms");
+        System.out.println("  7. Max Document Size Found   : " + vectorStore.maxDocumentCharsFound.get() + " chars (~" + (vectorStore.maxDocumentCharsFound.get() / 4) + " tokens)");
         System.out.println("  8. Budget Limit (Max Chars)  : " + chunkingConfig.getMaxDocumentChars() + " chars (8,000 chars limit)");
-        System.out.println("  9. Total Vectors Stored      : " + vectorStore.totalStoredVectors + " vectors");
+        System.out.println("  9. Total Vectors Stored      : " + vectorStore.totalStoredVectors.get() + " vectors");
         System.out.println(" 10. Total Indexing Duration   : " + totalIndexDuration + " ms");
         System.out.println("==========================================================================================\n");
 
         // Assertions verifying performance & bounds
         assertTrue(totalIndexedDocs > 0, "Total indexed documents must be > 0");
-        assertEquals(totalIndexedDocs, vectorStore.totalStoredVectors, "Total stored vectors must match total indexed documents");
-        assertTrue(vectorStore.maxDocumentCharsFound <= chunkingConfig.getMaxDocumentChars(),
+        assertEquals(totalIndexedDocs, vectorStore.totalStoredVectors.get(), "Total stored vectors must match total indexed documents");
+        assertTrue(vectorStore.maxDocumentCharsFound.get() <= chunkingConfig.getMaxDocumentChars(),
                 "Every document must fit strictly below maxDocumentChars (8,000 chars)");
 
         // 4. Verify Representative Retrieval Queries
@@ -123,27 +124,27 @@ public class EndToEndVerificationTest {
     // ── Tracking Mocks ────────────────────────────────────────
 
     private static class TrackingVectorStore implements VectorStore {
+        // STEP 6 now embeds batches concurrently via an adaptive worker pool,
+        // so these counters must be updated atomically.
         final AtomicInteger batchAddCalls = new AtomicInteger(0);
-        int totalStoredVectors = 0;
-        int maxDocumentCharsFound = 0;
-        long totalEmbedDuration = 0;
+        final AtomicInteger totalStoredVectors = new AtomicInteger(0);
+        final AtomicInteger maxDocumentCharsFound = new AtomicInteger(0);
+        final AtomicLong totalEmbedDuration = new AtomicLong(0);
 
         @Override
         public void add(List<Document> documents) {
             long start = System.currentTimeMillis();
             batchAddCalls.incrementAndGet();
-            totalStoredVectors += documents.size();
+            totalStoredVectors.addAndGet(documents.size());
 
             for (Document doc : documents) {
                 int chars = doc.getText() != null ? doc.getText().length() : 0;
-                if (chars > maxDocumentCharsFound) {
-                    maxDocumentCharsFound = chars;
-                }
+                maxDocumentCharsFound.updateAndGet(prev -> Math.max(prev, chars));
             }
 
             // Simulate embedding HTTP network latency (~15ms per batch)
             try { Thread.sleep(15); } catch (InterruptedException ignored) {}
-            totalEmbedDuration += (System.currentTimeMillis() - start);
+            totalEmbedDuration.addAndGet(System.currentTimeMillis() - start);
         }
 
         @Override

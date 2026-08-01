@@ -40,6 +40,10 @@ public class ChunkingConfig {
     @Value("${astra.embedding.batch-size:100}")
     private int batchSize = 100;
 
+    /** Upper bound on concurrent worker threads used for parallel batch embedding during STEP 6. */
+    @Value("${astra.embedding.max-parallel-workers:4}")
+    private int maxParallelWorkers = 4;
+
     public int getMaxMethodChars() {
         return maxMethodChars;
     }
@@ -66,5 +70,9 @@ public class ChunkingConfig {
 
     public int getBatchSize() {
         return batchSize;
+    }
+
+    public int getMaxParallelWorkers() {
+        return maxParallelWorkers;
     }
 }

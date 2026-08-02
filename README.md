@@ -1,6 +1,6 @@
 # JCode Intelligence
 
-**AI-powered code comprehension system for Java codebases.** Combines AST-based static analysis with retrieval-augmented generation (RAG) to let developers query a codebase in natural language and get grounded, explainable answers.
+ASTra transforms Java codebases into a searchable semantic representation using AST parsing and vector search, allowing developers to explore architecture, workflows, classes, and methods through natural language queries.
 
 ---
 

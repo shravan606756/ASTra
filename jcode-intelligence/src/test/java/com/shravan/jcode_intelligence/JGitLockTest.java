@@ -51,7 +51,7 @@ public class JGitLockTest {
     @AfterEach
     public void tearDown() throws IOException {
         if (fixtureRepoDir != null && Files.exists(fixtureRepoDir)) {
-            FileSystemUtils.deleteRecursively(fixtureRepoDir);
+            gitService.cleanupRepository(fixtureRepoDir);
         }
     }
 

@@ -25,6 +25,9 @@ import java.util.*;
  *   <li><b>Zero Fields</b>: FIELD chunks are completely excluded.</li>
  *   <li><b>Dependency Graph & Layer Inference</b>: In-memory dependency graph and layer detection.</li>
  * </ul>
+ *
+ * <p>Supports budgeted context building via {@code buildBudgetedContext}, which uses already
+ * retrieved and reranked documents to preserve LLM context limits.
  */
 @Component
 public class ArchitectureContextBuilder {
@@ -75,6 +78,63 @@ public class ArchitectureContextBuilder {
 
         long duration = System.currentTimeMillis() - start;
         log.info("Built ArchitectureContext for repo '{}' in {} ms: {} packages, {} components, {} interfaces, {} orchestration methods, {} dependency edges",
+                repositoryId, duration, packages.size(),
+                countTotalComponents(componentsByRole), interfaces.size(),
+                orchestrationMethods.size(), edges.size());
+
+        return context;
+    }
+
+    /**
+     * Builds a budgeted architectural context using ONLY the provided list of documents.
+     * Prevents unbounded database fetching while still enriching with lightweight metadata.
+     */
+    public ArchitectureContext buildBudgetedContext(String repositoryId, List<Document> budgetedDocuments) {
+        long start = System.currentTimeMillis();
+        ArchitectureContext context = new ArchitectureContext(repositoryId);
+
+        List<Document> packages = new ArrayList<>();
+        Map<ComponentRole, List<Document>> componentsByRole = new EnumMap<>(ComponentRole.class);
+        List<Document> interfaces = new ArrayList<>();
+        List<Document> orchestrationMethods = new ArrayList<>();
+
+        if (budgetedDocuments != null) {
+            for (Document doc : budgetedDocuments) {
+                Map<String, Object> meta = doc.getMetadata();
+                String type = String.valueOf(meta.getOrDefault("type", ""));
+
+                if ("PACKAGE".equals(type)) {
+                    packages.add(doc);
+                } else if ("INTERFACE".equals(type)) {
+                    interfaces.add(doc);
+                } else if ("CLASS".equals(type) || "ENUM".equals(type) || "RECORD".equals(type)) {
+                    ComponentRole role = ComponentRole.fromMetadata(meta);
+                    componentsByRole.computeIfAbsent(role, k -> new ArrayList<>()).add(doc);
+                } else if ("METHOD".equals(type) || "CONSTRUCTOR".equals(type)) {
+                    orchestrationMethods.add(doc);
+                }
+            }
+        }
+
+        context.setPackageSummaries(packages);
+        context.setComponentsByRole(componentsByRole);
+        context.setInterfaces(interfaces);
+        context.setOrchestrationMethods(orchestrationMethods);
+
+        // Fetch ONLY lightweight statistics from DB
+        int totalPackages = fetchPackageCount(repositoryId);
+        Map<String, Integer> stats = computeRepositoryStatistics(repositoryId, totalPackages);
+        context.setStatistics(stats);
+
+        // Compute topology dynamically from the budgeted subset
+        List<DependencyEdge> edges = buildDependencyGraph(componentsByRole, interfaces);
+        context.setDependencyEdges(edges);
+
+        Map<String, List<String>> layers = inferLayers(componentsByRole);
+        context.setInferredLayers(layers);
+
+        long duration = System.currentTimeMillis() - start;
+        log.info("Built Budgeted ArchitectureContext for repo '{}' in {} ms: {} packages, {} components, {} interfaces, {} methods, {} edges",
                 repositoryId, duration, packages.size(),
                 countTotalComponents(componentsByRole), interfaces.size(),
                 orchestrationMethods.size(), edges.size());
@@ -229,6 +289,25 @@ public class ArchitectureContextBuilder {
         }
 
         return stats;
+    }
+
+    private int fetchPackageCount(String repositoryId) {
+        try {
+            String sql;
+            Object[] params;
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                sql = "SELECT COUNT(*) FROM vector_store WHERE metadata->>'type' = 'PACKAGE' AND metadata->>'repositoryId' = ?";
+                params = new Object[]{repositoryId};
+            } else {
+                sql = "SELECT COUNT(*) FROM vector_store WHERE metadata->>'type' = 'PACKAGE'";
+                params = new Object[]{};
+            }
+            Integer count = jdbcTemplate.queryForObject(sql, params, Integer.class);
+            return count != null ? count : 0;
+        } catch (Exception e) {
+            log.warn("Failed to count packages: {}", e.getMessage());
+            return 0;
+        }
     }
 
     // ── Dependency Graph & Layer Inference ────────────────────

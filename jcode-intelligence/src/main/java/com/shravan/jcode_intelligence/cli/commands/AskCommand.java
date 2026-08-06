@@ -55,7 +55,7 @@ public class AskCommand implements Command {
         String question = String.join(" ", args);
         ChatRequest request = new ChatRequest(question, 5, context.getCurrentRepository());
 
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.THINKING, new String[]{"Thinking..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

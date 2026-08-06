@@ -5,21 +5,74 @@ import java.util.Random;
 public class BunnyDialogue {
     private static final Random RANDOM = new Random();
 
-    public static final String BUNNY_ART = 
-            " (\\_/)\n" +
-            " (•.•)\n" +
-            " / >_";
-
-    private static final String[] GREETINGS = {
+    private static final String[] WELCOME = {
             "Hey there, code wizard.",
             "Oh good, another human with Java.",
-            "I've already sniffed around the repository.",
             "Hope you brought coffee.",
             "Ready to explore some ASTs?",
             "Time to dig into the codebase."
     };
 
-    private static final String[] FAREWELLS = {
+    private static final String[] IDLE = {
+            "Ready."
+    };
+
+    private static final String[] THINKING = {
+            "Thinking...",
+            "Consulting the AST...",
+            "Connecting the dots...",
+            "Looking through the code...",
+            "Thinking very hard..."
+    };
+
+    private static final String[] READING = {
+            "Reading the code...",
+            "Looking through the files...",
+            "Understanding the project...",
+            "Piecing everything together...",
+            "Studying the blueprints..."
+    };
+
+    private static final String[] SEARCHING = {
+            "Sniffing around...",
+            "Following method calls...",
+            "Checking my burrows...",
+            "Looking for clues...",
+            "Untangling dependencies..."
+    };
+
+    private static final String[] DIGGING = {
+            "Digging through the AST...",
+            "Packing vectors...",
+            "Exploring packages...",
+            "Finding the important bits...",
+            "Brewing embeddings..."
+    };
+
+    private static final String[] SUCCESS = {
+            "Found it!",
+            "Got something interesting.",
+            "Here you go.",
+            "Done!",
+            "All mapped!",
+            "Success!"
+    };
+
+    private static final String[] CONFUSED = {
+            "I'm a bit lost.",
+            "My nose couldn't find that.",
+            "Not quite sure..."
+    };
+
+    private static final String[] ERROR = {
+            "Hmm...",
+            "I got lost.",
+            "That didn't work.",
+            "Let's try another path.",
+            "Something went wrong."
+    };
+
+    private static final String[] GOODBYE = {
             "See you next compile.",
             "Don't forget to commit.",
             "My burrow is always open.",
@@ -36,52 +89,29 @@ public class BunnyDialogue {
             "I can 'search' the whole repository for semantic matches."
     };
 
-    private static final String[] PROGRESS_MESSAGES = {
-            "Searching burrows...",
-            "Sniffing repository...",
-            "Reading Java...",
-            "Consulting the AST...",
-            "Following method calls...",
-            "Thinking very hard...",
-            "Digging through code..."
-    };
-
-    private static final String[] SUCCESS_MESSAGES = {
-            "Done!",
-            "Found it.",
-            "That was easy.",
-            "Success!"
-    };
-
-    private static final String[] ERROR_MESSAGES = {
-            "Oops...",
-            "Uh oh...",
-            "Something went wrong.",
-            "My nose couldn't find that."
-    };
-
-    private static final String[] INDEX_SUCCESS_MESSAGES = {
-            "That was a big one...",
-            "Repository successfully mapped.",
-            "Lots of Java in there."
-    };
-
-    private static final String[] REMOVE_SUCCESS_MESSAGES = {
-            "Poof! It's gone.",
-            "Cleared out that burrow.",
-            "Deleted."
-    };
-    
-    private static final String[] DOCTOR_OFFLINE = {
-            "My nose can't find the backend...",
-            "Is the server running?",
-            "Backend is hiding."
-    };
-
     private static String getRandom(String[] array) {
         return array[RANDOM.nextInt(array.length)];
     }
 
+    public static String getDialogue(BunnyState state) {
+        return switch (state) {
+            case WELCOME -> getRandom(WELCOME);
+            case IDLE -> getRandom(IDLE);
+            case THINKING -> getRandom(THINKING);
+            case READING -> getRandom(READING);
+            case SEARCHING -> getRandom(SEARCHING);
+            case DIGGING -> getRandom(DIGGING);
+            case SUCCESS -> getRandom(SUCCESS);
+            case CONFUSED -> getRandom(CONFUSED);
+            case ERROR -> getRandom(ERROR);
+            case GOODBYE -> getRandom(GOODBYE);
+        };
+    }
+
+    public static String getTip() {
+        return getRandom(TIPS);
+    }
+    
     private static final String[] INDEXING_ANIMATION = {
             "Bunny is exploring the repository...",
             "Parsing Java files...",
@@ -92,16 +122,7 @@ public class BunnyDialogue {
             "Almost there..."
     };
 
-    public static String getGreeting() { return getRandom(GREETINGS); }
-    public static String getFarewell() { return getRandom(FAREWELLS); }
-    public static String getTip() { return getRandom(TIPS); }
-    public static String getProgress() { return getRandom(PROGRESS_MESSAGES); }
-    public static String getSuccess() { return getRandom(SUCCESS_MESSAGES); }
-    public static String getError() { return getRandom(ERROR_MESSAGES); }
-    public static String getIndexSuccess() { return getRandom(INDEX_SUCCESS_MESSAGES); }
-    public static String getRemoveSuccess() { return getRandom(REMOVE_SUCCESS_MESSAGES); }
-    public static String getDoctorOffline() { return getRandom(DOCTOR_OFFLINE); }
-
-    public static String[] getIndexingAnimation() { return INDEXING_ANIMATION; }
-    public static String[] getThinkingAnimation() { return PROGRESS_MESSAGES; }
+    public static String[] getIndexingAnimation() {
+        return INDEXING_ANIMATION;
+    }
 }

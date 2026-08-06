@@ -34,7 +34,16 @@ public class HelpCommand implements Command {
 
     @Override
     public CommandResult execute(List<String> args) {
-        consoleUI.printHeader("ASTra CLI Help");
+        consoleUI.showSignBunny("Quick Start", com.shravan.jcode_intelligence.cli.ui.BunnyState.WELCOME);
+        consoleUI.printInfo("");
+        consoleUI.printInfo("  1. index");
+        consoleUI.printInfo("  2. repos");
+        consoleUI.printInfo("  3. use");
+        consoleUI.printInfo("  4. summary");
+        consoleUI.printInfo("  5. ask");
+        consoleUI.printInfo("");
+        
+        consoleUI.printHeader("All Commands");
         
         java.util.Map<String, java.util.List<Command>> groups = new java.util.LinkedHashMap<>();
         groups.put("Repository", new java.util.ArrayList<>());

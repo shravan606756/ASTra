@@ -49,7 +49,7 @@ public class BatchingIndexingServiceTest {
 
         IndexingServiceImpl indexingService = new IndexingServiceImpl(
                 parser, converter, mockVectorStore, null, mockJdbcTemplate,
-                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig
+                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig, null
         );
 
         int totalIndexed = indexingService.indexProject("src/main/java", "test-batching");

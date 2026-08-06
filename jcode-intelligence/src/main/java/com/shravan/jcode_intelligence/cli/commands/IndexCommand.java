@@ -50,13 +50,13 @@ public class IndexCommand implements Command {
         }
         request.setRepositoryId(repositoryId);
 
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getIndexingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.DIGGING, com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getIndexingAnimation());
 
         try {
             IndexResponse response = apiClient.index(request);
             consoleUI.stopProgressAnimation();
             if ("SUCCESS".equalsIgnoreCase(response.getStatus())) {
-                consoleUI.printSuccess(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getIndexSuccess());
+                consoleUI.showSignBunny("Repository mapped!", com.shravan.jcode_intelligence.cli.ui.BunnyState.SUCCESS);
                 
                 com.shravan.jcode_intelligence.cli.ui.TableRenderer table = new com.shravan.jcode_intelligence.cli.ui.TableRenderer("Repository ID", "Indexed Chunks");
                 table.addRow(response.getRepositoryId(), String.valueOf(response.getIndexedChunksCount()));

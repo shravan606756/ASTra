@@ -134,7 +134,7 @@ public class ParallelBatchIndexingServiceTest {
 
         return new IndexingServiceImpl(
                 parser, converter, vectorStore, null, jdbcTemplate,
-                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig
+                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig, null
         );
     }
 

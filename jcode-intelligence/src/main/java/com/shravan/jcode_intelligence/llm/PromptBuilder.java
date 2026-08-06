@@ -70,18 +70,18 @@ public class PromptBuilder {
         String templateName = router.route(intent);
         String rawTemplate = templateLoader.getTemplate(templateName);
 
+        // Apply context budget universally for ALL intents
+        List<Document> budgetedDocuments = applyContextBudget(contextDocuments);
+        String effectiveRepoId = resolveRepositoryId(repositoryId, budgetedDocuments);
+
         String contextText;
         if (intent == QueryIntent.ARCHITECTURE) {
-            String effectiveRepoId = resolveRepositoryId(repositoryId, contextDocuments);
             com.shravan.jcode_intelligence.model.ArchitectureContext archContext =
-                    architectureContextBuilder.buildContext(effectiveRepoId);
+                    architectureContextBuilder.buildBudgetedContext(effectiveRepoId, budgetedDocuments);
             contextText = architectureAnalyzer.analyzeAndFormat(archContext);
         } else {
-            List<Document> budgetedDocuments = applyContextBudget(contextDocuments);
             contextText = formatStructuredContext(budgetedDocuments);
         }
-
-        String effectiveRepoId = resolveRepositoryId(repositoryId, contextDocuments);
 
         return rawTemplate
                 .replace("{{question}}", query != null ? query : "")
@@ -110,9 +110,16 @@ public class PromptBuilder {
         String rawTemplate = templateLoader.getTemplate(templateName);
 
         List<Document> budgetedDocuments = applyContextBudget(contextDocuments);
-        String contextText = formatStructuredContext(budgetedDocuments);
-
-        String effectiveRepoId = resolveRepositoryId(repositoryId, contextDocuments);
+        String effectiveRepoId = resolveRepositoryId(repositoryId, budgetedDocuments);
+        
+        String contextText;
+        if (mode == ChatMode.ARCHITECTURE || mode == ChatMode.PROJECT_SUMMARY) {
+            com.shravan.jcode_intelligence.model.ArchitectureContext archContext =
+                    architectureContextBuilder.buildBudgetedContext(effectiveRepoId, budgetedDocuments);
+            contextText = architectureAnalyzer.analyzeAndFormat(archContext);
+        } else {
+            contextText = formatStructuredContext(budgetedDocuments);
+        }
 
         return rawTemplate
                 .replace("{{question}}", query != null ? query : "")
@@ -281,6 +288,9 @@ public class PromptBuilder {
             currentSize += docSize;
             includedCount++;
         }
+
+        log.debug("PROMPT_BUDGET_DIAGNOSTICS | inputChunks(reranked)={} | budgetedChunks={} | estimatedPromptSize={} chars | maxAllowedSize={}",
+                 documents.size(), includedCount, currentSize, availableBudget);
 
         log.info("Budget summary - Retrieved: {}, Included: {}, Excluded: {}, Budget usage: {}/{}",
                  documents.size(), includedCount, documents.size() - includedCount, currentSize, availableBudget);

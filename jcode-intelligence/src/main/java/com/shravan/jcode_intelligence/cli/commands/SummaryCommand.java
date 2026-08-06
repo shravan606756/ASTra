@@ -39,7 +39,7 @@ public class SummaryCommand implements Command {
         ChatRequest request = new ChatRequest(query, 10, context.getCurrentRepository());
         request.setMode(ChatMode.PROJECT_SUMMARY);
         
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.READING, new String[]{"Reading the whole story..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

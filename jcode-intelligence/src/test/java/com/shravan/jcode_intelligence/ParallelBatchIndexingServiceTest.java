@@ -132,9 +132,16 @@ public class ParallelBatchIndexingServiceTest {
         PackageSummaryGenerator packageSummaryGenerator = new PackageSummaryGenerator();
         IndexingStatisticsCalculator statisticsCalculator = new IndexingStatisticsCalculator();
 
+        com.shravan.jcode_intelligence.service.RepositoryManagementService mockRepoService = new com.shravan.jcode_intelligence.service.RepositoryManagementService() {
+            @Override public java.util.List<String> listRepositories() { return java.util.List.of(); }
+            @Override public boolean removeRepository(String repositoryId) { return true; }
+            @Override public void saveRepositoryStats(String repositoryId, com.shravan.jcode_intelligence.model.IndexingStatistics stats) {}
+            @Override public com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId) { return null; }
+        };
+
         return new IndexingServiceImpl(
                 parser, converter, vectorStore, null, jdbcTemplate,
-                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig, null
+                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig, mockRepoService
         );
     }
 

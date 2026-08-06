@@ -42,7 +42,7 @@ public class SearchCommand implements Command {
 
         ChatRequest request = new ChatRequest(String.join(" ", args), 10, context.getCurrentRepository());
         request.setMode(ChatMode.SEARCH);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Sniffing around..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

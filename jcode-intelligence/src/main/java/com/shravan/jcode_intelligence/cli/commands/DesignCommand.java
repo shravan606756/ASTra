@@ -42,7 +42,7 @@ public class DesignCommand implements Command {
         ChatRequest request = new ChatRequest(String.join(" ", args), 7, context.getCurrentRepository());
         request.setMode(ChatMode.DESIGN);
         
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.THINKING, new String[]{"Looking for patterns..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

@@ -1,6 +1,7 @@
 # JCode Intelligence & ASTra CLI
 
 **AI-powered code comprehension system for Java codebases.** Combines AST-based static analysis with retrieval-augmented generation (RAG) to let developers query a codebase in natural language and get grounded, explainable answers. Now features the ASTra CLI, an interactive terminal companion for seamless repository exploration.
+ASTra transforms Java codebases into a searchable semantic representation using AST parsing and vector search, allowing developers to explore architecture, workflows, classes, and methods through natural language queries.
 
 ---
 
@@ -208,3 +209,7 @@ In a new terminal window, start the ASTra interactive shell:
 ```bash
 .\astra.bat
 ```
+./mvnw clean install
+./mvnw spring-boot:run
+```
+>>>>>>> 3238e0acc65e1ff8cdae0a3f6d31397827f83c29

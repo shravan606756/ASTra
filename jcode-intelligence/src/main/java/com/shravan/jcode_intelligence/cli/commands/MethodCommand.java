@@ -42,7 +42,7 @@ public class MethodCommand implements Command {
 
         ChatRequest request = new ChatRequest(String.join(" ", args), 5, context.getCurrentRepository());
         request.setMode(ChatMode.EXPLAIN_METHOD);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.THINKING, new String[]{"Walking through the method..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

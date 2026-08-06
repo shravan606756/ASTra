@@ -41,6 +41,7 @@ public class IndexingServiceImpl implements IndexingService {
     private final IndexingStatisticsCalculator statisticsCalculator;
     private final EmbeddingBudgetValidator budgetValidator;
     private final ChunkingConfig chunkingConfig;
+    private final com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService;
 
     public IndexingServiceImpl(JavaProjectParser parser,
                                DocumentConverter converter,
@@ -50,7 +51,8 @@ public class IndexingServiceImpl implements IndexingService {
                                PackageSummaryGenerator packageSummaryGenerator,
                                IndexingStatisticsCalculator statisticsCalculator,
                                EmbeddingBudgetValidator budgetValidator,
-                               ChunkingConfig chunkingConfig) {
+                               ChunkingConfig chunkingConfig,
+                               com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
 
         this.parser = parser;
         this.converter = converter;
@@ -61,6 +63,7 @@ public class IndexingServiceImpl implements IndexingService {
         this.statisticsCalculator = statisticsCalculator;
         this.budgetValidator = budgetValidator;
         this.chunkingConfig = chunkingConfig;
+        this.repositoryManagementService = repositoryManagementService;
     }
 
     @Override
@@ -172,6 +175,10 @@ public class IndexingServiceImpl implements IndexingService {
         // [STEP 7] Compute and log structured indexing statistics
         IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
         log.info("\n{}", stats);
+        
+        if (repositoryId != null && !repositoryId.isBlank()) {
+            repositoryManagementService.saveRepositoryStats(repositoryId, stats);
+        }
 
         return documents.size();
     }

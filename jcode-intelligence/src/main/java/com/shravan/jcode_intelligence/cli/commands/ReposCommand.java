@@ -32,11 +32,15 @@ public class ReposCommand implements Command {
 
     @Override
     public CommandResult execute(List<String> args) {
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Looking through my burrows..."});
         try {
             List<String> repos = apiClient.listRepositories();
+            consoleUI.stopProgressAnimation();
             if (repos == null || repos.isEmpty()) {
-                consoleUI.printInfo("No repositories indexed.");
+                consoleUI.showBunny(com.shravan.jcode_intelligence.cli.ui.BunnyState.CONFUSED);
+                consoleUI.printInfo("  No repositories indexed.");
             } else {
+                consoleUI.printSuccess(null);
                 consoleUI.printHeader("Indexed Repositories");
                 com.shravan.jcode_intelligence.cli.ui.TableRenderer table = new com.shravan.jcode_intelligence.cli.ui.TableRenderer("Repository ID");
                 for (String repo : repos) {
@@ -45,6 +49,7 @@ public class ReposCommand implements Command {
                 consoleUI.printTable(table);
             }
         } catch (ApiException e) {
+            consoleUI.stopProgressAnimation();
             consoleUI.printError("Failed to list repositories: " + e.getMessage());
         }
         return CommandResult.SUCCESS;

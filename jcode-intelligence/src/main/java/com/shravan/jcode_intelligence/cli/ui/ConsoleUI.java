@@ -6,34 +6,32 @@ public class ConsoleUI {
     private final AnswerFormatter answerFormatter = new AnswerFormatter();
 
     public void printBanner() {
-        System.out.println(com.shravan.jcode_intelligence.cli.util.TerminalUtils.renderSeparator(""));
+        showSignBunny("Welcome to ASTra!", BunnyState.WELCOME);
         System.out.println();
-        System.out.println(ColorPalette.TEXT + BunnyDialogue.BUNNY_ART + ColorPalette.RESET);
-        System.out.println();
-        System.out.println(ColorPalette.ACCENT + BunnyDialogue.getGreeting() + ColorPalette.RESET);
-        System.out.println();
-        System.out.println(ColorPalette.TEXT + "Welcome to ASTra.");
-        System.out.println("I'm your repository guide.");
-        System.out.println();
-        System.out.println("Type");
-        System.out.println();
-        System.out.println(ColorPalette.ACCENT + "  help" + ColorPalette.RESET);
-        System.out.println();
-        System.out.println(ColorPalette.TEXT + "to discover what we can explore together." + ColorPalette.RESET);
-        System.out.println();
-        System.out.println(com.shravan.jcode_intelligence.cli.util.TerminalUtils.renderSeparator(""));
     }
 
     public void printFarewell() {
         System.out.println();
-        System.out.println(ColorPalette.ACCENT + BunnyDialogue.getFarewell() + ColorPalette.RESET);
+        showSignBunny("See you next compile!", BunnyState.GOODBYE);
+        System.out.println();
+    }
+
+    public void showBunny(BunnyState state) {
+        System.out.println(BunnyRenderer.renderSmall(state));
+        System.out.println("  " + ColorPalette.TEXT + BunnyDialogue.getDialogue(state) + ColorPalette.RESET);
+        System.out.println();
+    }
+
+    public void showSignBunny(String message, BunnyState state) {
+        System.out.println(BunnyRenderer.renderSign(state, message));
     }
 
     public void printInfo(String message) {
         System.out.println(ColorPalette.TEXT + message + ColorPalette.RESET);
     }
 
-    public void startProgressAnimation(String[] messages) {
+    public void startProgressAnimation(BunnyState state, String[] messages) {
+        System.out.println(BunnyRenderer.renderSmall(state));
         animator.start(messages);
     }
 
@@ -42,7 +40,13 @@ public class ConsoleUI {
     }
 
     public void printSuccess(String message) {
-        System.out.println(progress.renderSuccessMessage(message));
+        if (message != null && !message.isBlank()) {
+            System.out.println(BunnyRenderer.renderSmall(BunnyState.SUCCESS));
+            System.out.println("  " + ColorPalette.TEXT + message + ColorPalette.RESET);
+            System.out.println();
+        } else {
+            showBunny(BunnyState.SUCCESS);
+        }
     }
 
     public void printWarning(String message) {
@@ -50,7 +54,9 @@ public class ConsoleUI {
     }
 
     public void printError(String message) {
-        System.out.println(progress.renderFailureMessage(message));
+        System.out.println(BunnyRenderer.renderSmall(BunnyState.ERROR));
+        System.out.println("  " + ColorPalette.TEXT + message + ColorPalette.RESET);
+        System.out.println();
     }
 
     public void printProgress(String message) {

@@ -42,7 +42,7 @@ public class WorkflowCommand implements Command {
 
         ChatRequest request = new ChatRequest(String.join(" ", args), 7, context.getCurrentRepository());
         request.setMode(ChatMode.WORKFLOW);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Following the trail..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

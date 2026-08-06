@@ -42,7 +42,7 @@ public class DependenciesCommand implements Command {
 
         ChatRequest request = new ChatRequest("What are the dependencies for " + String.join(" ", args) + "?", 8, context.getCurrentRepository());
         request.setMode(ChatMode.RELATIONSHIP);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Untangling dependencies..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

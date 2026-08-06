@@ -42,7 +42,7 @@ public class ClassCommand implements Command {
 
         ChatRequest request = new ChatRequest(String.join(" ", args), 5, context.getCurrentRepository());
         request.setMode(ChatMode.EXPLAIN_CLASS);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.READING, new String[]{"Reading this class..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

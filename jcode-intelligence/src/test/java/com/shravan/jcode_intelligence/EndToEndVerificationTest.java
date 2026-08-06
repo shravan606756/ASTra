@@ -56,7 +56,8 @@ public class EndToEndVerificationTest {
 
         IndexingServiceImpl indexingService = new IndexingServiceImpl(
                 parser, converter, vectorStore, null, jdbcTemplate,
-                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig
+                packageSummaryGenerator, statisticsCalculator, validator, chunkingConfig,
+                null
         );
 
         // 2. Perform End-to-End Indexing on project source

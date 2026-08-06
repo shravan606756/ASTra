@@ -39,7 +39,7 @@ public class ArchitectureCommand implements Command {
         String query = args.isEmpty() ? "Explain the overall architecture" : String.join(" ", args);
         ChatRequest request = new ChatRequest(query, 10, context.getCurrentRepository());
         request.setMode(ChatMode.ARCHITECTURE);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.READING, new String[]{"Studying the blueprints..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

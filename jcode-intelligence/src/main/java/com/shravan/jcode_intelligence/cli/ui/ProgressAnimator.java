@@ -26,7 +26,7 @@ public class ProgressAnimator {
                 String message = rotationMessages[messageIndex];
                 
                 // Print with carriage return and padding to overwrite previous line
-                System.out.print("\r" + ColorPalette.ACCENT + frame + " " + ColorPalette.TEXT + message + ColorPalette.RESET + "          ");
+                System.out.print("\r" + ColorPalette.ACCENT + "  " + ColorPalette.TEXT + message + ColorPalette.RESET + "          ");
                 
                 spinnerIndex++;
                 try {

@@ -1,7 +1,6 @@
 # JCode Intelligence & ASTra CLI
 
-**AI-powered code comprehension system for Java codebases.** Combines AST-based static analysis with retrieval-augmented generation (RAG) to let developers query a codebase in natural language and get grounded, explainable answers. Now features the ASTra CLI, an interactive terminal companion for seamless repository exploration.
-ASTra transforms Java codebases into a searchable semantic representation using AST parsing and vector search, allowing developers to explore architecture, workflows, classes, and methods through natural language queries.
+**AST-powered code comprehension system for Java codebases.** Combines AST-based static analysis with retrieval-augmented generation (RAG) to let developers query a codebase in natural language and get grounded, explainable answers. Now features the ASTra CLI, an interactive terminal companion for seamless repository exploration.
 
 ---
 
@@ -153,6 +152,61 @@ flowchart TB
 
 ---
 
+## Validation: Indexing the JavaParser Codebase (before implementing multithreading & Vector Store batch optimization)
+
+To validate correctness and scalability on a real, non-trivial codebase, JCode Intelligence was run end-to-end against the [JavaParser](https://github.com/javaparser/javaparser) project itself.
+
+**Indexing statistics:**
+
+| Metric | Value |
+|---|---|
+| Packages | 91 |
+| Classes | 1,757 |
+| Interfaces | 189 |
+| Enums | 53 |
+| Fields | 3,191 |
+| Constructors | 1,821 |
+| Methods | 19,768 |
+| Total chunks generated | 27,079 |
+| Largest class parsed | `ASTParser` (334,531 chars) |
+| Total indexing time | ~14.7 minutes (881,082 ms) |
+
+![Indexing statistics terminal output](jcode-intelligence/assests/parsed_Javaparser_from_github.png)
+
+**Sample query result** (actual system output, `content` fields truncated for readability):
+
+```json
+{
+  "query": "Where is LexicalPreservingPrinter implemented?",
+  "answer": "The LexicalPreservingPrinter is implemented in the com.github.javaparser.printer.lexicalpreservation package. It is a concrete class named LexicalPreservingPrinter.",
+  "sources": [
+    {
+      "type": "CLASS",
+      "repositoryId": "javaparser",
+      "packageName": "com.github.javaparser.printer.lexicalpreservation",
+      "className": "LexicalPreservingPrinter",
+      "elementName": "LexicalPreservingPrinter",
+      "filePath": ".../javaparser-core/src/main/java/com/github/javaparser/printer/lexicalpreservation/LexicalPreservingPrinter.java",
+      "startLine": 73,
+      "endLine": 934,
+      "content": "package com.github.javaparser.printer.lexicalpreservation;\n\n// ... imports omitted ...\n\npublic class LexicalPreservingPrinter {\n    // Fields\n    private static String JAVA_UTIL_OPTIONAL;\n    private static String JAVAPARSER_AST_NODELIST;\n    private static AstObserver observer;\n    public static final DataKey<NodeText> NODE_TEXT_DATA;\n\n    // Methods\n    public static N setup(N node)\n    public static boolean isAvailableOn(Node node)\n    public static String print(Node node)\n    static NodeText getOrCreateNodeText(Node node)\n    // ... additional methods omitted ...\n}"
+    },
+    {
+      "type": "FIELD",
+      "className": "LexicalPreservingPrinter",
+      "elementName": "NODE_TEXT_DATA",
+      "signature": "public static final DataKey<NodeText> NODE_TEXT_DATA = new DataKey<NodeText>() {};",
+      "startLine": 89,
+      "endLine": 89
+    }
+  ]
+}
+```
+
+This confirms the retrieval pipeline grounds responses to exact class-, field-, and line-level locations across a 1,700+ class codebase, returning structured, verifiable source references rather than a free-text guess.
+
+---
+
 ## Engineering Highlights
 
 - **Adaptive Batch Processing** - Concurrent thread execution with intelligent batching yields a 15% reduction in total AST parsing and vector ingestion times.
@@ -209,7 +263,3 @@ In a new terminal window, start the ASTra interactive shell:
 ```bash
 .\astra.bat
 ```
-./mvnw clean install
-./mvnw spring-boot:run
-```
->>>>>>> 3238e0acc65e1ff8cdae0a3f6d31397827f83c29

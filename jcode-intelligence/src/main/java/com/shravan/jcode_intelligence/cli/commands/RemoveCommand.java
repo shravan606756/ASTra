@@ -41,11 +41,12 @@ public class RemoveCommand implements Command {
         }
 
         String repoId = args.get(0);
-        consoleUI.printProgress("Removing repository: " + repoId + "...");
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.DIGGING, new String[]{"Clearing out that burrow..."});
         try {
             boolean removed = apiClient.removeRepository(repoId);
+            consoleUI.stopProgressAnimation();
             if (removed) {
-                consoleUI.printSuccess(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getRemoveSuccess());
+                consoleUI.printSuccess("Poof! It's gone.");
 
                 // If the user removed the active repository, clear the context
                 if (repoId.equals(context.getCurrentRepository())) {
@@ -55,6 +56,7 @@ public class RemoveCommand implements Command {
                 consoleUI.printWarning("Repository '" + repoId + "' not found.");
             }
         } catch (ApiException e) {
+            consoleUI.stopProgressAnimation();
             consoleUI.printError("Failed to remove repository: " + e.getMessage());
         }
         

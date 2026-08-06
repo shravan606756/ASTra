@@ -42,7 +42,7 @@ public class CallsCommand implements Command {
 
         ChatRequest request = new ChatRequest("Who calls " + String.join(" ", args) + "?", 8, context.getCurrentRepository());
         request.setMode(ChatMode.RELATIONSHIP);
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getThinkingAnimation());
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Following call paths..."});
 
         try {
             ChatResponse response = apiClient.ask(request);

@@ -22,6 +22,13 @@ public class TerminalUtils {
         return repeat(' ', left) + text + repeat(' ', right);
     }
 
+    public static String centerLeft(String text, int width) {
+        if (text.length() >= width) return text;
+        int padding = width - text.length();
+        int left = padding / 2;
+        return repeat(' ', left) + text;
+    }
+
     public static String renderSeparator(String title) {
         int width = getTerminalWidth();
         if (title == null || title.isEmpty()) {

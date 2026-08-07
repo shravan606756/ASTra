@@ -4,17 +4,17 @@ public class ProgressAnimator {
 
     private Thread animationThread;
     private volatile boolean running;
+    private final BunnyAnimator bunnyAnimator = new BunnyAnimator();
 
-    private static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-
-    public void start(String[] rotationMessages) {
+    public void start(BunnyState state, String[] rotationMessages) {
         if (running) return;
         running = true;
+        bunnyAnimator.setState(state);
         
         animationThread = new Thread(() -> {
-            int spinnerIndex = 0;
             int messageIndex = 0;
             long lastMessageChange = System.currentTimeMillis();
+            boolean firstFrame = true;
             
             while (running) {
                 if (System.currentTimeMillis() - lastMessageChange > 2500) {
@@ -22,23 +22,36 @@ public class ProgressAnimator {
                     lastMessageChange = System.currentTimeMillis();
                 }
                 
-                String frame = SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length];
                 String message = rotationMessages[messageIndex];
+                String[] frame = bunnyAnimator.getCurrentFrame();
                 
-                // Print with carriage return and padding to overwrite previous line
-                System.out.print("\r" + ColorPalette.ACCENT + "  " + ColorPalette.TEXT + message + ColorPalette.RESET + "          ");
+                if (!firstFrame) {
+                    System.out.print("\033[4A"); // Move up 4 lines (3 for bunny, 1 for dialogue)
+                }
+                firstFrame = false;
                 
-                spinnerIndex++;
+                System.out.print(BunnyRenderer.renderFrame(frame) + "\n");
+                // Ensure the line is long enough to overwrite any previous longer text
+                String paddedMessage = "  " + message;
+                paddedMessage += " ".repeat(Math.max(0, 60 - paddedMessage.length()));
+                System.out.print(ColorPalette.TEXT + paddedMessage + ColorPalette.RESET + "\n");
+                
                 try {
-                    Thread.sleep(80);
+                    Thread.sleep(120); // ~8-10 FPS
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
             }
             
-            // Clear the line when done
-            System.out.print("\r" + " ".repeat(80) + "\r");
+            // Clear the 4 lines when done
+            if (!firstFrame) {
+                System.out.print("\033[4A");
+                for (int i = 0; i < 4; i++) {
+                    System.out.print("\033[2K\n");
+                }
+                System.out.print("\033[4A");
+            }
         });
         
         animationThread.start();

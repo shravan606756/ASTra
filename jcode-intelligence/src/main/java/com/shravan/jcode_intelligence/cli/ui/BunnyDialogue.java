@@ -6,11 +6,9 @@ public class BunnyDialogue {
     private static final Random RANDOM = new Random();
 
     private static final String[] WELCOME = {
-            "Hey there, code wizard.",
-            "Oh good, another human with Java.",
-            "Hope you brought coffee.",
-            "Ready to explore some ASTs?",
-            "Time to dig into the codebase."
+            "Ready when you are.",
+            "Let's explore some code.",
+            "Point me to a Java project."
     };
 
     private static final String[] IDLE = {
@@ -18,66 +16,43 @@ public class BunnyDialogue {
     };
 
     private static final String[] THINKING = {
-            "Thinking...",
-            "Consulting the AST...",
             "Connecting the dots...",
-            "Looking through the code...",
-            "Thinking very hard..."
+            "Thinking..."
     };
 
     private static final String[] READING = {
-            "Reading the code...",
-            "Looking through the files...",
-            "Understanding the project...",
-            "Piecing everything together...",
-            "Studying the blueprints..."
+            "Reading through the code...",
+            "Understanding the project..."
     };
 
     private static final String[] SEARCHING = {
-            "Sniffing around...",
-            "Following method calls...",
-            "Checking my burrows...",
-            "Looking for clues...",
-            "Untangling dependencies..."
+            "Looking for references...",
+            "Following method calls..."
     };
 
     private static final String[] DIGGING = {
-            "Digging through the AST...",
-            "Packing vectors...",
-            "Exploring packages...",
-            "Finding the important bits...",
-            "Brewing embeddings..."
+            "Building the AST...",
+            "Digging through the repository..."
     };
 
     private static final String[] SUCCESS = {
-            "Found it!",
-            "Got something interesting.",
-            "Here you go.",
-            "Done!",
-            "All mapped!",
-            "Success!"
+            "Found something interesting.",
+            "Done."
     };
 
     private static final String[] CONFUSED = {
             "I'm a bit lost.",
-            "My nose couldn't find that.",
             "Not quite sure..."
     };
 
     private static final String[] ERROR = {
-            "Hmm...",
-            "I got lost.",
-            "That didn't work.",
-            "Let's try another path.",
-            "Something went wrong."
+            "I couldn't understand that.",
+            "Let's try another path."
     };
 
     private static final String[] GOODBYE = {
             "See you next compile.",
-            "Don't forget to commit.",
-            "My burrow is always open.",
-            "May your builds stay green.",
-            "Happy refactoring!"
+            "Happy refactoring."
     };
 
     private static final String[] TIPS = {
@@ -111,6 +86,7 @@ public class BunnyDialogue {
     public static String getTip() {
         return getRandom(TIPS);
     }
+
     
     private static final String[] INDEXING_ANIMATION = {
             "Bunny is exploring the repository...",

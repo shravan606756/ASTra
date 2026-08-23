@@ -32,16 +32,18 @@ public class ReposCommand implements Command {
 
     @Override
     public CommandResult execute(List<String> args) {
-        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Looking through my burrows..."});
+        consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING,
+                new String[] { "Looking through my burrows..." });
         try {
             List<String> repos = apiClient.listRepositories();
             if (repos == null || repos.isEmpty()) {
                 consoleUI.showBunny(com.shravan.jcode_intelligence.cli.ui.BunnyState.CONFUSED);
                 consoleUI.printInfo("  No repositories indexed.");
             } else {
-                consoleUI.printSuccess(null);
+                consoleUI.stopProgressAnimation();
                 consoleUI.printHeader("Indexed Repositories");
-                com.shravan.jcode_intelligence.cli.ui.TableRenderer table = new com.shravan.jcode_intelligence.cli.ui.TableRenderer("Repository ID");
+                com.shravan.jcode_intelligence.cli.ui.TableRenderer table = new com.shravan.jcode_intelligence.cli.ui.TableRenderer(
+                        "Repository ID");
                 for (String repo : repos) {
                     table.addRow(repo);
                 }

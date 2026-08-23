@@ -56,10 +56,13 @@ public class ConsoleUI {
         }
 
         System.out.println();
-        System.out.println(TerminalUtils.center(ColorPalette.ACCENT + "Welcome to ASTra" + ColorPalette.RESET, TerminalUtils.getTerminalWidth()));
+        System.out.println(TerminalUtils.center(ColorPalette.ACCENT + "Welcome to ASTra" + ColorPalette.RESET,
+                TerminalUtils.getTerminalWidth()));
         System.out.println();
-        System.out.println(TerminalUtils.center(ColorPalette.MUTED + "Try:" + ColorPalette.RESET, TerminalUtils.getTerminalWidth()));
-        System.out.println(TerminalUtils.center(ColorPalette.TEXT + "    help" + ColorPalette.RESET, TerminalUtils.getTerminalWidth()));
+        System.out.println(TerminalUtils.center(ColorPalette.MUTED + "Try:" + ColorPalette.RESET,
+                TerminalUtils.getTerminalWidth()));
+        System.out.println(TerminalUtils.center(ColorPalette.TEXT + "    help" + ColorPalette.RESET,
+                TerminalUtils.getTerminalWidth()));
         System.out.println();
 
         startIdleAnimation(startupHeight + 6);
@@ -120,12 +123,14 @@ public class ConsoleUI {
     }
 
     public void showBunny(BunnyState state) {
+        stopProgressAnimation();
         System.out.println(BunnyRenderer.renderSmall(state));
         System.out.println("  " + ColorPalette.TEXT + BunnyDialogue.getDialogue(state) + ColorPalette.RESET);
         System.out.println();
     }
 
     public void showSignBunny(String message, BunnyState state) {
+        stopProgressAnimation();
         System.out.println(BunnyRenderer.renderBubble(state, message));
     }
 
@@ -142,6 +147,7 @@ public class ConsoleUI {
     }
 
     public void printSuccess(String message) {
+        stopProgressAnimation();
         if (message != null && !message.isBlank()) {
             System.out.println(BunnyRenderer.renderSmall(BunnyState.SUCCESS));
             System.out.println("  " + ColorPalette.SUCCESS + message + ColorPalette.RESET);
@@ -158,6 +164,7 @@ public class ConsoleUI {
     }
 
     public void printError(String message) {
+        stopProgressAnimation();
         System.out.println(BunnyRenderer.renderSmall(BunnyState.ERROR));
         System.out.println("  " + ColorPalette.ERROR + message + ColorPalette.RESET);
         System.out.println();
@@ -187,6 +194,7 @@ public class ConsoleUI {
     }
 
     public void printChatResponse(com.shravan.jcode_intelligence.dto.response.ChatResponse response) {
+        stopProgressAnimation();
         printSection("Question");
         printInfo(response.getQuery());
 
@@ -212,7 +220,6 @@ public class ConsoleUI {
         }
 
         System.out.println();
-        printSuccess(null);
     }
 
     public void clearScreen() {

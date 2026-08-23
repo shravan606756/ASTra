@@ -28,7 +28,6 @@ public class ExitCommand implements Command {
 
     @Override
     public CommandResult execute(List<String> args) {
-        consoleUI.printInfo("Goodbye.");
         return CommandResult.EXIT;
     }
 }

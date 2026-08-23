@@ -6,7 +6,17 @@ public class TerminalUtils {
     private static final int DEFAULT_WIDTH = 80;
 
     public static int getTerminalWidth() {
-        // Fallback since Java doesn't provide native terminal width without JLine
+        String columns = System.getenv("COLUMNS");
+        if (columns != null) {
+            try {
+                int parsed = Integer.parseInt(columns.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            } catch (NumberFormatException ignored) {
+                // Fallback
+            }
+        }
         return DEFAULT_WIDTH;
     }
 

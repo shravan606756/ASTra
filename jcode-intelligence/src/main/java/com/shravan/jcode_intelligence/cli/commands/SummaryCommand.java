@@ -43,13 +43,12 @@ public class SummaryCommand implements Command {
 
         try {
             ChatResponse response = apiClient.ask(request);
-            consoleUI.stopProgressAnimation();
             consoleUI.printChatResponse(response);
         } catch (ApiException e) {
-            consoleUI.stopProgressAnimation();
             consoleUI.printError("Failed to get summary. Reason: " + e.getMessage());
+        } finally {
+            consoleUI.stopProgressAnimation();
         }
         return CommandResult.SUCCESS;
     }
 }
-

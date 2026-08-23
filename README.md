@@ -1,7 +1,16 @@
-# JCode Intelligence & ASTra CLI
+# ASTra
 
-**AST-powered code comprehension system for Java codebases.** Combines AST-based static analysis with retrieval-augmented generation (RAG) to let developers query a codebase in natural language and get grounded, explainable answers. Now features the ASTra CLI, an interactive terminal companion for seamless repository exploration.
+### Your codebase, understood.
 
+> **Parse the structure. Find the context. Understand the code.**
+
+ASTra is an intelligent Java code comprehension system that analyzes Java
+codebases at the AST level and builds a searchable understanding of their
+classes, methods, dependencies, relationships, architecture, workflows, and many more.
+
+Instead of digging through thousands of files, ask ASTra questions about your
+codebase and explore it through a natural-language interface and an
+interactive CLI.
 ---
 
 ## Why This Project Matters
@@ -14,7 +23,7 @@ Understanding an unfamiliar Java codebase is one of the most time-consuming part
 - **Semantic chunking** - Splits code along logical boundaries (class/method level) so retrieved context is coherent, not arbitrarily truncated.
 - **Vector search at scale** - Stores embeddings in PostgreSQL via `pgvector`, enabling fast approximate nearest-neighbor (ANN) search over large codebases.
 - **Adaptive Batch Processing** - Backed by multithreading, intelligent batch sizes dynamically adjust to reduce batch processing and indexing time by ~15%.
-- **RAG-based Q&A** - Natural language questions are answered using top-K retrieved code context fed into an LLM, respecting strict token budgets, with provider flexibility across OpenAI, Ollama, and Grok.
+- **Semantic search** - Natural language questions are answered using top-K retrieved code context fed into an LLM, respecting strict token budgets, with provider flexibility across OpenAI, Ollama, and Grok.
 - **Interactive Terminal Companion (ASTra)** - A rich, Windows-native CLI layer featuring an animated ASCII bunny companion, providing an engaging and highly functional local developer experience.
 - **One-command indexing** - Points at a local repo or clones directly from a Git provider to build the searchable index.
 

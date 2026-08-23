@@ -77,6 +77,7 @@ public class ProgressAnimator {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+            animationThread = null;
         }
     }
 }

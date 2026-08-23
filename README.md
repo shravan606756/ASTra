@@ -1,6 +1,6 @@
 # ASTra
 
-### Your codebase, understood.
+## Your codebase, understood.
 
 > **Parse the structure. Find the context. Understand the code.**
 
@@ -24,7 +24,7 @@ Understanding an unfamiliar Java codebase is one of the most time-consuming part
 - **Vector search at scale** - Stores embeddings in PostgreSQL via `pgvector`, enabling fast approximate nearest-neighbor (ANN) search over large codebases.
 - **Adaptive Batch Processing** - Backed by multithreading, intelligent batch sizes dynamically adjust to reduce batch processing and indexing time by ~15%.
 - **Semantic search** - Natural language questions are answered using top-K retrieved code context fed into an LLM, respecting strict token budgets, with provider flexibility across OpenAI, Ollama, and Grok.
-- **Interactive Terminal Companion (ASTra)** - A rich, Windows-native CLI layer featuring an animated ASCII bunny companion, providing an engaging and highly functional local developer experience.
+- **Interactive Terminal Companion** - A rich, Windows-native CLI layer featuring an animated ASCII bunny companion, providing an engaging and highly functional local developer experience.
 - **One-command indexing** - Points at a local repo or clones directly from a Git provider to build the searchable index.
 
 ---

@@ -31,12 +31,7 @@ public class InteractiveShell {
      * and dispatches commands until {@link CommandResult#EXIT} is received.
      */
     public void start() {
-        java.util.List<String> tryCommands = dispatcher.getRegisteredCommands().stream()
-                .map(com.shravan.jcode_intelligence.cli.commands.Command::name)
-                .filter(name -> java.util.List.of("index", "use", "ask").contains(name))
-                .toList();
-        
-        consoleUI.printBanner(tryCommands);
+        consoleUI.printBanner();
 
         boolean running = true;
 

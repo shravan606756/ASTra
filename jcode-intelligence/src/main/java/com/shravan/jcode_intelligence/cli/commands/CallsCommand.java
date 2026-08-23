@@ -46,13 +46,12 @@ public class CallsCommand implements Command {
 
         try {
             ChatResponse response = apiClient.ask(request);
-            consoleUI.stopProgressAnimation();
             consoleUI.printChatResponse(response);
         } catch (ApiException e) {
-            consoleUI.stopProgressAnimation();
             consoleUI.printError("Failed to get explanation. Reason: " + e.getMessage());
+        } finally {
+            consoleUI.stopProgressAnimation();
         }
         return CommandResult.SUCCESS;
     }
 }
-

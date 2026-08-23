@@ -36,15 +36,15 @@ public class DoctorCommand implements Command {
         consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Checking backend..."});
         try {
             boolean isUp = apiClient.health();
-            consoleUI.stopProgressAnimation();
             if (isUp) {
                 consoleUI.printSuccess("Backend is healthy.\nReady to answer your questions!");
             } else {
                 consoleUI.printError("Backend reachable but status is not UP.");
             }
         } catch (ApiException e) {
-            consoleUI.stopProgressAnimation();
             consoleUI.printError("Backend is unavailable.\nStart it using:\n    .\\mvnw.cmd spring-boot:run");
+        } finally {
+            consoleUI.stopProgressAnimation();
         }
         return CommandResult.SUCCESS; // Shell continues even if doctor fails
     }

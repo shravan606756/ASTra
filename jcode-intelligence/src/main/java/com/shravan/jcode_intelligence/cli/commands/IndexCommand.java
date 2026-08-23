@@ -54,7 +54,6 @@ public class IndexCommand implements Command {
 
         try {
             IndexResponse response = apiClient.index(request);
-            consoleUI.stopProgressAnimation();
             if ("SUCCESS".equalsIgnoreCase(response.getStatus())) {
                 consoleUI.showSignBunny("Repository mapped!", com.shravan.jcode_intelligence.cli.ui.BunnyState.SUCCESS);
                 
@@ -66,9 +65,10 @@ public class IndexCommand implements Command {
                 consoleUI.printError("Reason: " + response.getMessage());
             }
         } catch (ApiException e) {
-            consoleUI.stopProgressAnimation();
             consoleUI.printError("Indexing failed due to an error.");
             consoleUI.printError("Reason: " + e.getMessage());
+        } finally {
+            consoleUI.stopProgressAnimation();
         }
 
         return CommandResult.SUCCESS;

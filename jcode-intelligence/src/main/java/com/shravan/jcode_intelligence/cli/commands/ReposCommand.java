@@ -35,7 +35,6 @@ public class ReposCommand implements Command {
         consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.SEARCHING, new String[]{"Looking through my burrows..."});
         try {
             List<String> repos = apiClient.listRepositories();
-            consoleUI.stopProgressAnimation();
             if (repos == null || repos.isEmpty()) {
                 consoleUI.showBunny(com.shravan.jcode_intelligence.cli.ui.BunnyState.CONFUSED);
                 consoleUI.printInfo("  No repositories indexed.");
@@ -49,8 +48,9 @@ public class ReposCommand implements Command {
                 consoleUI.printTable(table);
             }
         } catch (ApiException e) {
-            consoleUI.stopProgressAnimation();
             consoleUI.printError("Failed to list repositories: " + e.getMessage());
+        } finally {
+            consoleUI.stopProgressAnimation();
         }
         return CommandResult.SUCCESS;
     }

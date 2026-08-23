@@ -44,7 +44,6 @@ public class RemoveCommand implements Command {
         consoleUI.startProgressAnimation(com.shravan.jcode_intelligence.cli.ui.BunnyState.DIGGING, new String[]{"Clearing out that burrow..."});
         try {
             boolean removed = apiClient.removeRepository(repoId);
-            consoleUI.stopProgressAnimation();
             if (removed) {
                 consoleUI.printSuccess("Poof! It's gone.");
 
@@ -56,8 +55,9 @@ public class RemoveCommand implements Command {
                 consoleUI.printWarning("Repository '" + repoId + "' not found.");
             }
         } catch (ApiException e) {
-            consoleUI.stopProgressAnimation();
             consoleUI.printError("Failed to remove repository: " + e.getMessage());
+        } finally {
+            consoleUI.stopProgressAnimation();
         }
         
         return CommandResult.SUCCESS;

@@ -167,7 +167,7 @@ The overall workflow is as follows:
 | **Database** | PostgreSQL |
 | **Vector Database** | pgvector |
 | **Embedding Model** | OpenAI / Grok / Llama-compatible embedding model |
-| **Large Language Model** | Grok or Llama 3.3 |
+| **Large Language Model** | Grok or GPT-OSS 120B |
 | **Build Tool** | Maven |
 | **Deployment** | Docker |
 

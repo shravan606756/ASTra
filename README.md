@@ -219,7 +219,7 @@ This confirms the retrieval pipeline grounds responses to exact class-, field-, 
 ## Engineering Highlights
 
 - **Adaptive Batch Processing** - Concurrent thread execution with intelligent batching yields a 15% reduction in total AST parsing and vector ingestion times.
-- **Strict Context Budgeting** - Retrieval pipelines enforce a strict token limit to prevent massive architectural contexts from overwhelming LLM limits (e.g., LLaMA-3.3 12k budget).
+- **Strict Context Budgeting** - Retrieval pipelines enforce a strict token limit to prevent massive architectural contexts from overwhelming LLM limits (e.g., GPT-OSS 120B budget).
 - **Structure-aware retrieval** - Chunking respects code semantics (class/method boundaries) rather than fixed-size text windows, improving retrieval precision over naive RAG.
 - **Separated Presentation Layer** - The CLI maintains a highly animated user experience via `ConsoleUI`, `BunnyRenderer`, and `AnswerFormatter` while remaining a completely decoupled thin client to the REST API.
 - **Provider-agnostic LLM/embedding layer** - Swap between OpenAI, Ollama, or Grok without touching business logic, via a clean `LLMClient` abstraction.
@@ -266,7 +266,7 @@ Build the project and start the Spring Boot application:
 .\mvnw.cmd spring-boot:run
 ```
 
-### 5. Launch the CLI Companion
+### 5. Launch the CLI Companion 
 In a new terminal window, start the ASTra interactive shell:
 
 ```bash

@@ -10,4 +10,6 @@ public class Ansi {
     public static final String RED = "\u001B[31m";
     public static final String WHITE = "\u001B[37m";
     public static final String GRAY = "\u001B[90m";
+    public static final String MAGENTA = "\u001B[35m";
+    public static final String BRIGHT_MAGENTA = "\u001B[95m";
 }

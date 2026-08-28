@@ -3,16 +3,33 @@ package com.shravan.jcode_intelligence.cli.ui;
 import com.shravan.jcode_intelligence.cli.util.TerminalUtils;
 
 public class ConsoleUI {
-    private static final String[] ASTRA_LOGO = {
-            "________  ________  _________  ________  ________     ",
-            "|\\   __  \\|\\   ____\\|\\___   ___\\\\   __  \\|\\   __  \\    ",
-            "\\ \\  \\|\\  \\ \\  \\___|\\|___ \\  \\_\\ \\  \\|\\  \\ \\  \\|\\  \\   ",
-            " \\ \\   __  \\ \\_____  \\   \\ \\  \\ \\   _  _\\ \\   __  \\  ",
-            "  \\ \\  \\ \\  \\|____|\\  \\   \\ \\  \\ \\  \\  \\\\  \\\\ \\  \\ \\  \\ ",
-            "   \\ \\__\\ \\__\\____\\_\\  \\   \\ \\  \\ \\  \\__\\\\ _\\\\ \\__\\ \\__\\",
-            "    \\|__|\\|__|\\_________\\   \\|__|  \\|__|\\|__|\\|__|\\|__|",
-            "             \\|_________|                              "
-    };
+    private static final String ANSI_M = "\u001b[35m";
+    private static final String ANSI_BM = "\u001b[95m";
+    private static final String ANSI_G = "\u001b[37m";
+    private static final String ANSI_BGM = "\u001b[45m";
+    private static final String ANSI_RESET = "\u001b[0m";
+
+    private static final String ASTRA_LOGO_TEMPLATE = """
+            {M}                   {R}{G} {R}{M}     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄{R}{G} {R}{M} ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄{R}{G} {R}{M}▄▄▄▄▄▄▄▄▄▄▄▄▄▄{R}{MM}▀{R}{M}▄ {R}{G} {R}{M}                   {R}
+            {M}   ▀▓{R}{MM}▄▄▄▄{R}{M}█▄▄       {R}{G} {R}{M}   ▄{R}{MM}▄██▓█▀▀▀▀▀▓███░{R}{MM}░▓{R}{G} {R}{M}▀{R}{MM}▓{R}{MM}▒▓█▀▓▓████{R}{BM}█{R}{MM}▓▀▀▀▓█▀{R}{MM}▄{R}{G} {R}{M}█{R}{MM}▀███ {R}{M}  ░▀{R}{MM}▒▓█▒{R}{M}█{R}{MM}▐{R}{M} {R}{G} {R}{M}   ▀▓{R}{MM}▄▄▄▄{R}{M}█▄▄       {R}
+            {M}   ░█{R}{MM}██▌▀▀▀█▄{R}{M}▄     {R}{G} {R}{M}  ░{R}{MM}▒{R}{MM}▓▓▒▓{R}{M}█▀   ░{R}{MM}░▓██▒{R}{MM}▓{R}{M}▌{R}{G} {R}{M}  ▀{R}{MM}░▄{R}{M}░{R}{MM}▒▓▓{R}{BM}███{R}{MM}░{R}{MM}▄{R}{M}▀▒{R}{MM}░{R}{BM}▓{R}{M}█{R}{MM}▄{R}{M} {R}{G} {R}{M}▓█{R}{MM}▓▓▓{R}{M}█   {R}{MM}▄▓▓▀{R}{MM}▄{R}{M}▀  {R}{G} {R}{M}   ░█{R}{MM}██▌▀▀▀█▄{R}{M}▄     {R}
+            {M}  ░▐{R}{MM}▐██{R}{M}█  ▀{R}{MM} {R}{MM}██{R}{M}▌    {R}{G} {R}{M}  █{R}{MM} {R}{MM}▒▒▒{R}{M}█▌     ▀▀▀▀▀  {R}{G} {R}{M}   ▀  {R}{MM}░▓▓▓▓░{R}{MM}▐{R}{M}  ░{R}{MM}▄▄{R}{M}▀  {R}{G} {R}{M}▒█{R}{MM}▄{R}{M}▀{R}{MM}▀{R}{MM}▄▄█▓▓▒{R}{MM}▄{R}{M}▀    {R}{G} {R}{M}  ░▐{R}{MM}▐██{R}{M}█  ▀{R}{MM} {R}{MM}██{R}{M}▌    {R}
+            {M}  ░█{R}{MM}▓▓░{R}{M}▌   ▓{R}{MM}▓▓▓{R}{M}▌   {R}{G} {R}{M}  ▓{R}{MM} {R}{MM}░░▒░{R}{M}▌ ▄▄▄▄▄▄     {R}{G} {R}{M}      {R}{MM}░{R}{MM}▒▒▒▒{R}{M}█{R}{MM}▓{R}{M}        {R}{G} {R}{M}░▓░{R}{MM}▄▓{R}{BM}▀{R}{M}▀▀{R}{MM}▀▓▒░{R}{M}▓▄   {R}{G} {R}{M}  ░█{R}{MM}▓▓░{R}{M}▌   ▓{R}{MM}▓▓▓{R}{M}▌   {R}
+            {M} ░▐{R}{MM}░▒▒ {R}{M}  ▄▄{R}{MM}▄▓▒▒▒{R}{M}▄▄ {R}{G} {R}{M}  {R}{BM}▄{R}{MM} ░░{R}{M}▀{R}{MM}▀{R}{MM}▄█▀▀▀▀■ ░░{R}{M}▄▀▄{R}{G} {R}{M}      {R}{MM}▓{R}{MM}░░░░{R}{M}█▓        {R}{G} {R}{M}░▓▌{R}{MM}▒{R}{BM}▌{R}{MM} {R}{M}  ░█{R}{MM}▓▒░ {R}{M}▌  {R}{G} {R}{M} ░▐{R}{MM}░▒▒ {R}{M}  ▄▄{R}{MM}▄▓▒▒▒{R}{M}▄▄ {R}
+            {M}▀▄█{R}{MM}░░{R}{MM}░{R}{M}▀▄█{R}{MM}▀{R}{MM}▄{R}{M}▀▓█{R}{MM}░░░{R}{M}▄ {R}{G} {R}{BM}▀{R}{M}█▄{R}{MM}▄{R}{MM}░{R}{M}▓{R}{MM}▌{R}{MM}▓░{R}{MM}▄{R}{M}▀ ▀░▄▀{R}{MM} {R}{MM}░{R}{M}█▌{R}{MM}▓{R}{G} {R}{M}      ▓{R}{MM}░░░░{R}{M}█{R}{MM}▓{R}{M}        {R}{G} {R}{M}▒█▒░{R}{MM}▀{R}{BM}▄{R}{M}   ▒{R}{MM} {R}{MM}░░░ {R}{M}▌ {R}{G} {R}{M}▀▄█{R}{MM}░░{R}{MM}░{R}{M}▀▄█{R}{MM}▀{R}{MM}▄{R}{M}▀▓█{R}{MM}░░░{R}{M}▄ {R}
+            {M}░▓█{R}{MM}░{R}{M}▀{R}{MM}▄▀{R}{M}▀▀   ░{R}{MM}░{R}{M}████ {R}{G} {R}{M} ▀▀{R}{MM}▄{R}{M}▄▄{R}{MM}▀{R}{MM}░{R}{MM}▐{R}{M}    ░{R}{MM}█▀▌  {R}{M}▌{R}{MM}▒{R}{G} {R}{M}      ▒{R}{MM}▌{R}{MM}░░░{R}{M}█{R}{MM}▐{R}{M}        {R}{G} {R}{M}▓{R}{MM}▀▀░{R}{M}▄▒▀  ░▐█{R}{MM}░░{R}{M}█▌ {R}{G} {R}{M}░▓█{R}{MM}░{R}{M}▀{R}{MM}▄▀{R}{M}▀▀   ░{R}{MM}░{R}{M}████ {R}
+            {M}░{R}{MM}░{R}{MM}░{R}{M}▌{R}{MM}▒░{R}{M}▌      ▒{R}{MM}░░{R}{M}██▌{R}{G} {R}{M}  ▄▄▄  ▀{R}{MM}▄▀{R}{M}▄▄ ▒{R}{MM}▓{R}{M}██{R}{MM}░░{R}{MM}▀░{R}{G} {R}{M}      ░{R}{MM}▌{R}{M}▓███{R}{MM}▐{R}{M}        {R}{G} {R}{M}▀██{R}{MM}░{R}{MM}░{R}{M}█    ░█{R}{MM}▓▒{R}{MM}▐{R}{M}█▌{R}{G} {R}{M}░{R}{MM}░{R}{MM}░{R}{M}▌{R}{MM}▒░{R}{M}▌      ▒{R}{MM}░░{R}{M}██▌{R}
+            {M}▐█{R}{MM}▀{R}{MM}▀{R}{M}▄▀        ▓{R}{MM}░░{R}{M}██{R}{G} {R}{M}▄{R}{MM}▓▒░{R}{MM}░{R}{M}█{R}{MM}░{R}{M}▄    ▄▒{R}{MM}░{R}{M}████{R}{MM}▄{R}{M}▀{R}{G} {R}{M}       {R}{MM}▌{R}{M}████{R}{MM}▐{R}{M}        {R}{G} {R}{M}▒██{R}{MM}░{R}{MM}░{R}{M}█    ▒{R}{MM}▒▒▒{R}{M}██▌{R}{G} {R}{M}▐█{R}{MM}▀{R}{MM}▀{R}{M}▄▀        ▓{R}{MM}░░{R}{M}██{R}
+            {MM}▀{R}{M}████{R}{MM}▀▓{R}{M}       ▄███▓{R}{G} {R}{M} ▀▀{R}{MM}▄██{R}{M}█{R}{MM}░{R}{M}█{R}{MM}▀{R}{M}▄{R}{MM}▀{R}{M}████{R}{MM}▄{R}{M}▀▀  {R}{G} {R}{M}     ▄{R}{MM}▀▒{R}{M}█████{R}{MM}▀{R}{M}▄      {R}{G} {R}{M}■▀▒▓██   ▀{R}{MM}▄{R}{MM}░▀{R}{M}██{R}{MM}▄{R}{M} {R}{G} {R}{MM}▀{R}{M}████{R}{MM}▀▓{R}{M}       ▄███▓{R}
+            """
+            .replace("{M}", ANSI_M)
+            .replace("{BM}", ANSI_BM)
+            .replace("{G}", ANSI_G)
+            .replace("{MM}", ANSI_M + ANSI_BGM)
+            .replace("{BMM}", ANSI_BM + ANSI_BGM)
+            .replace("{R}", ANSI_RESET);
+
+    private static final String[] ASTRA_LOGO = ASTRA_LOGO_TEMPLATE.split("\n");
 
     private static final int STARTUP_BLOCK_GAP = 4;
 
@@ -25,94 +42,117 @@ public class ConsoleUI {
     private Thread idleThread;
     private volatile boolean idleRunning;
 
+    private static final String[] BIG_BUNNY_ASCII = {
+            "              , ,",
+            "             /| |\\",
+            "            / | | \\",
+            "            | | | |     Neeeah, ready to explore some code?",
+            "            \\ | | /",
+            "             \\|w|/    /",
+            "             /_ _\\   /      ,",
+            "  /\\       _:()_():_       /]",
+            "  ||_     : ._=Y=_  :     / /",
+            " [)(_\\,   ',__\\W/ _,'    /  \\",
+            " [) \\_/\\    _/'='\\      /-/\\)",
+            "  [_| \\ \\  ///  \\ '._  / /",
+            "  :;   \\ \\///   / |  '` /",
+            "  ;::   \\ `|:   : |',_.'",
+            "  \"\"\"    \\_|:   : |",
+            "           |:   : |'\".",
+            "           /`._.'  \\/",
+            "          /  /|   /",
+            "         |  \\ /  /",
+            "          '. '. /",
+            "            '. '",
+            "            / \\ \\",
+            "           / / \\'=,",
+            "     .----' /   \\ (\\__",
+            "    (((____/     \\ \\  )",
+            "                  '.\\_)"
+    };
+
     public void printBanner() {
         clearScreen();
 
-        BunnyAnimator startupAnimator = new BunnyAnimator();
-        startupAnimator.setState(BunnyState.WELCOME);
+        // Disable line wrap for ASCII art to gracefully clip on narrow screens rather
+        // than break
+        System.out.print("\u001b[?7l");
 
-        int startupHeight = getStartupBlockHeight();
-        for (int i = 0; i < startupHeight; i++) {
+        try {
+            // 1. ASTra Logo Block
+            int logoMaxWidth = 0;
+            for (String line : ASTRA_LOGO) {
+                String clean = line.replaceAll("\u001b\\[[;\\d]*[mK]", "");
+                if (clean.length() > logoMaxWidth) {
+                    logoMaxWidth = clean.length();
+                }
+            }
+            int logoPad = Math.max(0, (TerminalUtils.getTerminalWidth() - logoMaxWidth) / 2);
+            String logoOffset = " ".repeat(logoPad);
+
             System.out.println();
+            for (String logoLine : ASTRA_LOGO) {
+                System.out.println(logoOffset + logoLine);
+            }
+
+            System.out.println();
+            System.out.println(TerminalUtils.center(ColorPalette.ACCENT + "Code Intelligence CLI" + ColorPalette.RESET,
+                    TerminalUtils.getTerminalWidth()));
+            System.out.println(
+                    TerminalUtils.center(ColorPalette.MUTED + "Understand • Search • Analyze" + ColorPalette.RESET,
+                            TerminalUtils.getTerminalWidth()));
+            System.out.println();
+            System.out.println();
+
+            // 2. Bunny Mascot Block
+            int bunnyMaxWidth = 0;
+            for (String line : BIG_BUNNY_ASCII) {
+                if (line.length() > bunnyMaxWidth) {
+                    bunnyMaxWidth = line.length();
+                }
+            }
+            int bunnyPad = Math.max(0, (TerminalUtils.getTerminalWidth() - bunnyMaxWidth) / 2);
+            String bunnyOffset = " ".repeat(bunnyPad);
+
+            for (String bunnyLine : BIG_BUNNY_ASCII) {
+                System.out.println(bunnyOffset + ColorPalette.MUTED + bunnyLine + ColorPalette.RESET);
+            }
+        } finally {
+            // Re-enable line wrap for normal text blocks and interactive prompts
+            System.out.print("\u001b[?7h");
         }
 
-        long start = System.currentTimeMillis();
-        boolean firstFrame = true;
+        System.out.println();
+        System.out.println();
 
-        while (System.currentTimeMillis() - start < 800) {
-            if (!firstFrame) {
-                System.out.print("\033[" + startupHeight + "A");
-            }
-            firstFrame = false;
-
-            renderStartupBlock(startupAnimator.getCurrentFrame());
-
-            try {
-                Thread.sleep(120);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
+        // 3. Help Box
+        String[] box = {
+                "┌───────────────────────────────┐",
+                "│  Type 'help' to see commands  │",
+                "└───────────────────────────────┘"
+        };
+        for (String boxLine : box) {
+            System.out.println(TerminalUtils.center(ColorPalette.ACCENT + boxLine + ColorPalette.RESET,
+                    TerminalUtils.getTerminalWidth()));
         }
 
         System.out.println();
-        System.out.println(TerminalUtils.center(ColorPalette.ACCENT + "Welcome to ASTra" + ColorPalette.RESET,
-                TerminalUtils.getTerminalWidth()));
-        System.out.println();
-        System.out.println(TerminalUtils.center(ColorPalette.MUTED + "Try:" + ColorPalette.RESET,
-                TerminalUtils.getTerminalWidth()));
-        System.out.println(TerminalUtils.center(ColorPalette.TEXT + "    help" + ColorPalette.RESET,
-                TerminalUtils.getTerminalWidth()));
         System.out.println();
 
-        startIdleAnimation(startupHeight + 6);
+        // 4. GitHub Link
+        System.out.println(TerminalUtils.center(ColorPalette.TEXT + "[ GitHub ]" + ColorPalette.RESET,
+                TerminalUtils.getTerminalWidth()));
+        System.out.println();
+        System.out.println(TerminalUtils.renderSeparator(""));
+        System.out.println();
     }
 
     public void startIdleAnimation(int linesUp) {
-        if (idleRunning) {
-            return;
-        }
-
-        idleRunning = true;
-        BunnyAnimator idleAnimator = new BunnyAnimator();
-        idleAnimator.setState(BunnyState.IDLE);
-
-        idleThread = new Thread(() -> {
-            while (idleRunning) {
-                try {
-                    Thread.sleep(800);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-
-                if (!idleRunning) {
-                    break;
-                }
-
-                synchronized (renderLock) {
-                    System.out.print("\033[s\033[" + linesUp + "A");
-                    renderStartupBlock(idleAnimator.getCurrentFrame());
-                    System.out.print("\033[u");
-                    System.out.flush();
-                }
-            }
-        });
-
-        idleThread.setDaemon(true);
-        idleThread.start();
+        // Idle animation disabled to preserve the new static layout
     }
 
     public void stopIdleAnimation() {
-        idleRunning = false;
-        if (idleThread != null) {
-            idleThread.interrupt();
-            try {
-                idleThread.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
+        // Idle animation disabled
     }
 
     public void printFarewell() {
@@ -271,8 +311,9 @@ public class ConsoleUI {
     private int getLogoWidth() {
         int max = 0;
         for (String line : ASTRA_LOGO) {
-            if (line.length() > max) {
-                max = line.length();
+            String clean = line.replaceAll("\u001b\\[[;\\d]*[mK]", "");
+            if (clean.length() > max) {
+                max = clean.length();
             }
         }
         return max;

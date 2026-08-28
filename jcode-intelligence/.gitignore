@@ -39,3 +39,7 @@ src/main/resources/application.properties
 # Environment variables
 .env
 .env.*
+
+#testing logs
+*.log
+build.txt

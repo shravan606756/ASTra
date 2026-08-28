@@ -12,4 +12,8 @@ public class Ansi {
     public static final String GRAY = "\u001B[90m";
     public static final String MAGENTA = "\u001B[35m";
     public static final String BRIGHT_MAGENTA = "\u001B[95m";
+
+    public static String hyperlink(String text, String url) {
+        return "\u001B]8;;" + url + "\u001B\\" + text + "\u001B]8;;\u001B\\";
+    }
 }

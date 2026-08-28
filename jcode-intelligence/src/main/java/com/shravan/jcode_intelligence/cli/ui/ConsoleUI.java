@@ -2,17 +2,34 @@ package com.shravan.jcode_intelligence.cli.ui;
 
 import com.shravan.jcode_intelligence.cli.util.TerminalUtils;
 
-public class ConsoleUI {
-    private static final String[] ASTRA_LOGO = {
-            "________  ________  _________  ________  ________     ",
-            "|\\   __  \\|\\   ____\\|\\___   ___\\\\   __  \\|\\   __  \\    ",
-            "\\ \\  \\|\\  \\ \\  \\___|\\|___ \\  \\_\\ \\  \\|\\  \\ \\  \\|\\  \\   ",
-            " \\ \\   __  \\ \\_____  \\   \\ \\  \\ \\   _  _\\ \\   __  \\  ",
-            "  \\ \\  \\ \\  \\|____|\\  \\   \\ \\  \\ \\  \\  \\\\  \\\\ \\  \\ \\  \\ ",
-            "   \\ \\__\\ \\__\\____\\_\\  \\   \\ \\  \\ \\  \\__\\\\ _\\\\ \\__\\ \\__\\",
-            "    \\|__|\\|__|\\_________\\   \\|__|  \\|__|\\|__|\\|__|\\|__|",
-            "             \\|_________|                              "
-    };
+public class ConsoleUI  {
+    private static final String ANSI_M = "\u001b[35m";
+    private static final String ANSI_BM = "\u001b[95m";
+    private static final String ANSI_G = "\u001b[37m";
+    private static final String ANSI_BGM = "\u001b[45m";
+    private static final String ANSI_RESET = "\u001b[0m";
+
+    private static final String ASTRA_LOGO_TEMPLATE = """
+            {M}                   {R}{G} {R}{M}     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄{R}{G} {R}{M} ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄{R}{G} {R}{M}▄▄▄▄▄▄▄▄▄▄▄▄▄▄{R}{MM}▀{R}{M}▄ {R}{G} {R}{M}                   {R}
+            {M}   ▀▓{R}{MM}▄▄▄▄{R}{M}█▄▄       {R}{G} {R}{M}   ▄{R}{MM}▄██▓█▀▀▀▀▀▓███░{R}{MM}░▓{R}{G} {R}{M}▀{R}{MM}▓{R}{MM}▒▓█▀▓▓████{R}{BM}█{R}{MM}▓▀▀▀▓█▀{R}{MM}▄{R}{G} {R}{M}█{R}{MM}▀███ {R}{M}  ░▀{R}{MM}▒▓█▒{R}{M}█{R}{MM}▐{R}{M} {R}{G} {R}{M}   ▀▓{R}{MM}▄▄▄▄{R}{M}█▄▄       {R}
+            {M}   ░█{R}{MM}██▌▀▀▀█▄{R}{M}▄     {R}{G} {R}{M}  ░{R}{MM}▒{R}{MM}▓▓▒▓{R}{M}█▀   ░{R}{MM}░▓██▒{R}{MM}▓{R}{M}▌{R}{G} {R}{M}  ▀{R}{MM}░▄{R}{M}░{R}{MM}▒▓▓{R}{BM}███{R}{MM}░{R}{MM}▄{R}{M}▀▒{R}{MM}░{R}{BM}▓{R}{M}█{R}{MM}▄{R}{M} {R}{G} {R}{M}▓█{R}{MM}▓▓▓{R}{M}█   {R}{MM}▄▓▓▀{R}{MM}▄{R}{M}▀  {R}{G} {R}{M}   ░█{R}{MM}██▌▀▀▀█▄{R}{M}▄     {R}
+            {M}  ░▐{R}{MM}▐██{R}{M}█  ▀{R}{MM} {R}{MM}██{R}{M}▌    {R}{G} {R}{M}  █{R}{MM} {R}{MM}▒▒▒{R}{M}█▌     ▀▀▀▀▀  {R}{G} {R}{M}   ▀  {R}{MM}░▓▓▓▓░{R}{MM}▐{R}{M}  ░{R}{MM}▄▄{R}{M}▀  {R}{G} {R}{M}▒█{R}{MM}▄{R}{M}▀{R}{MM}▀{R}{MM}▄▄█▓▓▒{R}{MM}▄{R}{M}▀    {R}{G} {R}{M}  ░▐{R}{MM}▐██{R}{M}█  ▀{R}{MM} {R}{MM}██{R}{M}▌    {R}
+            {M}  ░█{R}{MM}▓▓░{R}{M}▌   ▓{R}{MM}▓▓▓{R}{M}▌   {R}{G} {R}{M}  ▓{R}{MM} {R}{MM}░░▒░{R}{M}▌ ▄▄▄▄▄▄     {R}{G} {R}{M}      {R}{MM}░{R}{MM}▒▒▒▒{R}{M}█{R}{MM}▓{R}{M}        {R}{G} {R}{M}░▓░{R}{MM}▄▓{R}{BM}▀{R}{M}▀▀{R}{MM}▀▓▒░{R}{M}▓▄   {R}{G} {R}{M}  ░█{R}{MM}▓▓░{R}{M}▌   ▓{R}{MM}▓▓▓{R}{M}▌   {R}
+            {M} ░▐{R}{MM}░▒▒ {R}{M}  ▄▄{R}{MM}▄▓▒▒▒{R}{M}▄▄ {R}{G} {R}{M}  {R}{BM}▄{R}{MM} ░░{R}{M}▀{R}{MM}▀{R}{MM}▄█▀▀▀▀■ ░░{R}{M}▄▀▄{R}{G} {R}{M}      {R}{MM}▓{R}{MM}░░░░{R}{M}█▓        {R}{G} {R}{M}░▓▌{R}{MM}▒{R}{BM}▌{R}{MM} {R}{M}  ░█{R}{MM}▓▒░ {R}{M}▌  {R}{G} {R}{M} ░▐{R}{MM}░▒▒ {R}{M}  ▄▄{R}{MM}▄▓▒▒▒{R}{M}▄▄ {R}
+            {M}▀▄█{R}{MM}░░{R}{MM}░{R}{M}▀▄█{R}{MM}▀{R}{MM}▄{R}{M}▀▓█{R}{MM}░░░{R}{M}▄ {R}{G} {R}{BM}▀{R}{M}█▄{R}{MM}▄{R}{MM}░{R}{M}▓{R}{MM}▌{R}{MM}▓░{R}{MM}▄{R}{M}▀ ▀░▄▀{R}{MM} {R}{MM}░{R}{M}█▌{R}{MM}▓{R}{G} {R}{M}      ▓{R}{MM}░░░░{R}{M}█{R}{MM}▓{R}{M}        {R}{G} {R}{M}▒█▒░{R}{MM}▀{R}{BM}▄{R}{M}   ▒{R}{MM} {R}{MM}░░░ {R}{M}▌ {R}{G} {R}{M}▀▄█{R}{MM}░░{R}{MM}░{R}{M}▀▄█{R}{MM}▀{R}{MM}▄{R}{M}▀▓█{R}{MM}░░░{R}{M}▄ {R}
+            {M}░▓█{R}{MM}░{R}{M}▀{R}{MM}▄▀{R}{M}▀▀   ░{R}{MM}░{R}{M}████ {R}{G} {R}{M} ▀▀{R}{MM}▄{R}{M}▄▄{R}{MM}▀{R}{MM}░{R}{MM}▐{R}{M}    ░{R}{MM}█▀▌  {R}{M}▌{R}{MM}▒{R}{G} {R}{M}      ▒{R}{MM}▌{R}{MM}░░░{R}{M}█{R}{MM}▐{R}{M}        {R}{G} {R}{M}▓{R}{MM}▀▀░{R}{M}▄▒▀  ░▐█{R}{MM}░░{R}{M}█▌ {R}{G} {R}{M}░▓█{R}{MM}░{R}{M}▀{R}{MM}▄▀{R}{M}▀▀   ░{R}{MM}░{R}{M}████ {R}
+            {M}░{R}{MM}░{R}{MM}░{R}{M}▌{R}{MM}▒░{R}{M}▌      ▒{R}{MM}░░{R}{M}██▌{R}{G} {R}{M}  ▄▄▄  ▀{R}{MM}▄▀{R}{M}▄▄ ▒{R}{MM}▓{R}{M}██{R}{MM}░░{R}{MM}▀░{R}{G} {R}{M}      ░{R}{MM}▌{R}{M}▓███{R}{MM}▐{R}{M}        {R}{G} {R}{M}▀██{R}{MM}░{R}{MM}░{R}{M}█    ░█{R}{MM}▓▒{R}{MM}▐{R}{M}█▌{R}{G} {R}{M}░{R}{MM}░{R}{MM}░{R}{M}▌{R}{MM}▒░{R}{M}▌      ▒{R}{MM}░░{R}{M}██▌{R}
+            {M}▐█{R}{MM}▀{R}{MM}▀{R}{M}▄▀        ▓{R}{MM}░░{R}{M}██{R}{G} {R}{M}▄{R}{MM}▓▒░{R}{MM}░{R}{M}█{R}{MM}░{R}{M}▄    ▄▒{R}{MM}░{R}{M}████{R}{MM}▄{R}{M}▀{R}{G} {R}{M}       {R}{MM}▌{R}{M}████{R}{MM}▐{R}{M}        {R}{G} {R}{M}▒██{R}{MM}░{R}{MM}░{R}{M}█    ▒{R}{MM}▒▒▒{R}{M}██▌{R}{G} {R}{M}▐█{R}{MM}▀{R}{MM}▀{R}{M}▄▀        ▓{R}{MM}░░{R}{M}██{R}
+            {MM}▀{R}{M}████{R}{MM}▀▓{R}{M}       ▄███▓{R}{G} {R}{M} ▀▀{R}{MM}▄██{R}{M}█{R}{MM}░{R}{M}█{R}{MM}▀{R}{M}▄{R}{MM}▀{R}{M}████{R}{MM}▄{R}{M}▀▀  {R}{G} {R}{M}     ▄{R}{MM}▀▒{R}{M}█████{R}{MM}▀{R}{M}▄      {R}{G} {R}{M}■▀▒▓██   ▀{R}{MM}▄{R}{MM}░▀{R}{M}██{R}{MM}▄{R}{M} {R}{G} {R}{MM}▀{R}{M}████{R}{MM}▀▓{R}{M}       ▄███▓{R}
+            """
+            .replace("{M}", ANSI_M)
+            .replace("{BM}", ANSI_BM)
+            .replace("{G}", ANSI_G)
+            .replace("{MM}", ANSI_M + ANSI_BGM)
+            .replace("{BMM}", ANSI_BM + ANSI_BGM)
+            .replace("{R}", ANSI_RESET);
+
+    private static final String[] ASTRA_LOGO = ASTRA_LOGO_TEMPLATE.split("\n");
 
     private static final int STARTUP_BLOCK_GAP = 4;
 
@@ -271,8 +288,9 @@ public class ConsoleUI {
     private int getLogoWidth() {
         int max = 0;
         for (String line : ASTRA_LOGO) {
-            if (line.length() > max) {
-                max = line.length();
+            String clean = line.replaceAll("\u001b\\[[;\\d]*[mK]", "");
+            if (clean.length() > max) {
+                max = clean.length();
             }
         }
         return max;

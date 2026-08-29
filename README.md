@@ -15,20 +15,22 @@ ASTra was run end-to-end against the [JavaParser](https://github.com/javaparser/
 | Metric | Value |
 |---|---|
 | Packages | 91 |
-| Classes | 1,757 |
+| Classes | 1,763 |
 | Interfaces | 189 |
 | Enums | 53 |
-| Fields | 3,191 |
+| Fields | 3,259 |
 | Constructors | 1,821 |
-| Methods | 19,768 |
-| Total chunks generated | 27,079 |
+| Methods | 19,786 |
+| Total chunks generated | 27,170 |
 | Largest class parsed | `ASTParser` (334,531 chars) |
 | Indexing time (before optimization) | ~14.7 minutes (881,082 ms) |
-| Indexing time (after adaptive batching + multithreading) | **~10 minutes** |
+| Indexing time (after adaptive batching + multithreading) | **~7.5 minutes (452,552 ms)** |
 
-Same semantic coverage, ~32% faster - from a full sequential pass to a parallelized, adaptively-batched pipeline.
+**~49% faster** - from a full sequential pass on a single request thread to a parallelized, adaptively-batched pipeline distributed across a dedicated worker pool, on the same JavaParser codebase.
 
-![Indexing statistics terminal output](jcode-intelligence/assests/parsed_Javaparser_from_github.png)
+![Indexing statistics after parallel batch processing](jcode-intelligence/assets/after_parallel_batchProcessing.png)
+
+> **Multithreading, proven in the logs, not just claimed:** pre-optimization batches ran serially on a single thread (`nio-8080-exec-2`); post-optimization batches are distributed across a dedicated worker pool (`ool-10-thread-1`, `ool-10-thread-3`, `ool-10-thread-4`), executing concurrently. Class/field/method counts differ slightly between the two runs since each was indexed from a fresh clone at a different commit.
 
 **Ask it a real question, get a grounded answer** - actual system output, `content` fields truncated for readability:
 
@@ -124,7 +126,7 @@ Each command runs through the same AST-grounded retrieval pipeline - so whether 
 - **Structural parsing** - Walks the abstract syntax tree of each compilation unit to extract packages, classes, interfaces, enums, and methods, resolving symbols via a type-aware symbol table so hierarchy and cross-references are preserved instead of flattened into raw text.
 - **Semantic chunking** - Splits code along logical boundaries (class/method level) so retrieved context is coherent, not arbitrarily truncated.
 - **Vector search at scale** - Embeddings stored in PostgreSQL via `pgvector`, enabling fast approximate nearest-neighbor (ANN) search over large codebases.
-- **Adaptive batch processing** - Multithreaded, with batch sizes that adjust dynamically to cut indexing time by ~15%.
+- **Adaptive batch processing** - Multithreaded, with batch sizes that adjust dynamically to cut indexing time significantly (see benchmark above).
 - **Natural language Q&A** - Top-K retrieved code context feeds an LLM under a strict token budget, with provider flexibility across OpenAI, Ollama, and Grok.
 - **Interactive terminal companion** - A Windows-native CLI with an animated ASCII bunny, built as a fully decoupled thin client over the REST API.
 - **One-command indexing** - Point it at a local repo or clone directly from a Git provider.

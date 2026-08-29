@@ -43,3 +43,11 @@ src/main/resources/application.properties
 #testing logs
 *.log
 build.txt
+
+# debug outputs
+debug_out.txt
+clean_output*.txt
+test_output.txt
+TestChar.java
+TestChar.class
+DebugTest.java

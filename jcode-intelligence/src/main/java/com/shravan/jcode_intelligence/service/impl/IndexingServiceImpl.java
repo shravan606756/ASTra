@@ -44,15 +44,15 @@ public class IndexingServiceImpl implements IndexingService {
     private final com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService;
 
     public IndexingServiceImpl(JavaProjectParser parser,
-                               DocumentConverter converter,
-                               VectorStore vectorStore,
-                               GitService gitService,
-                               JdbcTemplate jdbcTemplate,
-                               PackageSummaryGenerator packageSummaryGenerator,
-                               IndexingStatisticsCalculator statisticsCalculator,
-                               EmbeddingBudgetValidator budgetValidator,
-                               ChunkingConfig chunkingConfig,
-                               com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
+            DocumentConverter converter,
+            VectorStore vectorStore,
+            GitService gitService,
+            JdbcTemplate jdbcTemplate,
+            PackageSummaryGenerator packageSummaryGenerator,
+            IndexingStatisticsCalculator statisticsCalculator,
+            EmbeddingBudgetValidator budgetValidator,
+            ChunkingConfig chunkingConfig,
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
 
         this.parser = parser;
         this.converter = converter;
@@ -122,7 +122,8 @@ public class IndexingServiceImpl implements IndexingService {
         int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
         int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
 
-        log.info("[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
+        log.info(
+                "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
                 totalDocs, totalBatches, batchSize, workerCount);
 
         long embeddingStartTime = System.currentTimeMillis();
@@ -148,8 +149,9 @@ public class IndexingServiceImpl implements IndexingService {
 
                     int doneDocs = completedDocs.addAndGet(batch.size());
                     double pct = ((double) doneDocs / totalDocs) * 100.0;
-                    log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({%.1f%%})",
-                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs, pct);
+                    log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
+                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                            String.format("%.1f%%", pct));
                 }));
             }
 
@@ -167,7 +169,8 @@ public class IndexingServiceImpl implements IndexingService {
         }
 
         long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
-        log.info("[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
+        log.info(
+                "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
                 totalDocs, totalBatches, embeddingDuration, workerCount);
 
         long duration = System.currentTimeMillis() - startTime;
@@ -175,7 +178,7 @@ public class IndexingServiceImpl implements IndexingService {
         // [STEP 7] Compute and log structured indexing statistics
         IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
         log.info("\n{}", stats);
-        
+
         if (repositoryId != null && !repositoryId.isBlank()) {
             repositoryManagementService.saveRepositoryStats(repositoryId, stats);
         }
@@ -216,7 +219,8 @@ public class IndexingServiceImpl implements IndexingService {
     }
 
     private String extractRepoName(String gitUrl) {
-        if (gitUrl == null) return "git-repo";
+        if (gitUrl == null)
+            return "git-repo";
         String name = gitUrl.substring(gitUrl.lastIndexOf('/') + 1);
         if (name.endsWith(".git")) {
             name = name.substring(0, name.length() - 4);

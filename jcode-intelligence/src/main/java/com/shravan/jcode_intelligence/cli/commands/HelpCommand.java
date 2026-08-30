@@ -9,7 +9,8 @@ import java.util.List;
 /**
  * Displays all available commands with their descriptions.
  *
- * <p>Reads from {@link CommandDispatcher#getRegisteredCommands()} to avoid
+ * <p>
+ * Reads from {@link CommandDispatcher#getRegisteredCommands()} to avoid
  * maintaining a duplicate command registry.
  */
 public class HelpCommand implements Command {
@@ -34,49 +35,56 @@ public class HelpCommand implements Command {
 
     @Override
     public CommandResult execute(List<String> args) {
-        consoleUI.showSignBunny("Quick Start", com.shravan.jcode_intelligence.cli.ui.BunnyState.WELCOME);
-        consoleUI.printInfo("");
-        consoleUI.printInfo("  1. index");
-        consoleUI.printInfo("  2. repos");
-        consoleUI.printInfo("  3. use");
-        consoleUI.printInfo("  4. summary");
-        consoleUI.printInfo("  5. ask");
-        consoleUI.printInfo("");
-        
-        consoleUI.printHeader("All Commands");
-        
+        String accent = com.shravan.jcode_intelligence.cli.ui.ColorPalette.ACCENT;
+        String text = com.shravan.jcode_intelligence.cli.ui.ColorPalette.TEXT;
+        String muted = com.shravan.jcode_intelligence.cli.ui.ColorPalette.MUTED;
+        String reset = com.shravan.jcode_intelligence.cli.ui.ColorPalette.RESET;
+
+        System.out.println(accent + "ASTra :: Code Intelligence CLI" + reset);
+        System.out.println(muted + "────────────────────────────────────────────────────────" + reset);
+        System.out.println();
+        System.out.println(text + "QUICK START" + reset);
+        System.out.println(text + "[1] index" + reset);
+        System.out.println(text + "[2] repos" + reset);
+        System.out.println(text + "[3] use" + reset);
+        System.out.println(text + "[4] summary" + reset);
+        System.out.println(text + "[5] ask" + reset);
+        System.out.println();
+
         java.util.Map<String, java.util.List<Command>> groups = new java.util.LinkedHashMap<>();
-        groups.put("Repository", new java.util.ArrayList<>());
-        groups.put("Context", new java.util.ArrayList<>());
-        groups.put("AI Queries", new java.util.ArrayList<>());
-        groups.put("System", new java.util.ArrayList<>());
-        
+        groups.put("REPOSITORY", new java.util.ArrayList<>());
+        groups.put("CONTEXT", new java.util.ArrayList<>());
+        groups.put("AI QUERIES", new java.util.ArrayList<>());
+        groups.put("SYSTEM", new java.util.ArrayList<>());
+
         for (Command cmd : dispatcher.getRegisteredCommands()) {
             String name = cmd.name();
             if (List.of("doctor", "repos", "stats", "remove", "index").contains(name)) {
-                groups.get("Repository").add(cmd);
+                groups.get("REPOSITORY").add(cmd);
             } else if (List.of("use").contains(name)) {
-                groups.get("Context").add(cmd);
+                groups.get("CONTEXT").add(cmd);
             } else if (List.of("help", "clear", "exit").contains(name)) {
-                groups.get("System").add(cmd);
+                groups.get("SYSTEM").add(cmd);
             } else {
-                groups.get("AI Queries").add(cmd);
+                groups.get("AI QUERIES").add(cmd);
             }
         }
-        
+
         for (java.util.Map.Entry<String, java.util.List<Command>> entry : groups.entrySet()) {
-            if (entry.getValue().isEmpty()) continue;
-            consoleUI.printSection(entry.getKey());
-            com.shravan.jcode_intelligence.cli.ui.TableRenderer table = new com.shravan.jcode_intelligence.cli.ui.TableRenderer("Command", "Description");
+            if (entry.getValue().isEmpty())
+                continue;
+
+            System.out.println(text + entry.getKey() + reset);
+            System.out.println();
             for (Command cmd : entry.getValue()) {
-                table.addRow(cmd.name(), cmd.description());
+                System.out.printf("%s> %-13s %s%s%s%n", accent, cmd.name(), text, cmd.description(), reset);
             }
-            consoleUI.printTable(table);
+            System.out.println();
         }
-        
-        consoleUI.printInfo("");
-        consoleUI.printInfo(com.shravan.jcode_intelligence.cli.ui.ColorPalette.ACCENT + "Tip from the bunny: " + com.shravan.jcode_intelligence.cli.ui.BunnyDialogue.getTip() + com.shravan.jcode_intelligence.cli.ui.ColorPalette.RESET);
-        
+
+        System.out.println(muted + "────────────────────────────────────────────────────────" + reset);
+        System.out.println();
+
         return CommandResult.SUCCESS;
     }
 }

@@ -10,7 +10,13 @@ ASTra parses Java codebases at the AST level and turns them into a searchable, s
 
 ## Demo
 
-**[Watch ASTra in action](https://drive.google.com/file/d/1vfSgg-PW9mg9aFuq93alI2otVJ11tzm1/view?usp=sharing)**
+> **ASTra in action** — from indexing a real Java codebase to answering natural-language questions with source-grounded results.
+
+<p align="center">
+  <a href="https://drive.google.com/file/d/1vfSgg-PW9mg9aFuq93alI2otVJ11tzm1/view?usp=sharing">
+    <img src="https://img.shields.io/badge/▶%20Watch%20Demo-Google%20Drive-4285F4?style=for-the-badge&logo=google-drive&logoColor=white" alt="Watch ASTra Demo">
+  </a>
+</p>
 ---
 
 ## Proof, Not Promises

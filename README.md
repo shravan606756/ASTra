@@ -8,6 +8,11 @@ ASTra parses Java codebases at the AST level and turns them into a searchable, s
 
 ---
 
+## Demo
+
+**[Watch ASTra in action](https://drive.google.com/file/d/1vfSgg-PW9mg9aFuq93alI2otVJ11tzm1/view?usp=sharing)**
+---
+
 ## Proof, Not Promises
 
 ASTra was run end-to-end against the [JavaParser](https://github.com/javaparser/javaparser) codebase - a real, non-trivial project with over 1,700 classes.

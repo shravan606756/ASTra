@@ -17,7 +17,6 @@ ASTra parses Java codebases at the AST level and turns them into a searchable, s
     <img src="https://img.shields.io/badge/▶%20Watch%20Demo-Google%20Drive-4285F4?style=for-the-badge&logo=google-drive&logoColor=white" alt="Watch ASTra Demo">
   </a>
 </p>
----
 
 ## Proof, Not Promises
 

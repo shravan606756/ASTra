@@ -158,8 +158,6 @@ Each command runs through the same AST-grounded retrieval pipeline - so whether 
 
 ## Architecture
 
-Five layers, cleanly separated: **CLI → API → Service → Parsing → LLM Orchestration**, backed by a vector-native persistence layer.
-
 ```mermaid
 flowchart TB
     %% Define Styles

@@ -276,6 +276,32 @@ class RetrievalEvaluatorTest {
         assertEquals(1.0 / 3.0, metrics.getReciprocalRank(), 0.0001);
     }
 
+    @Test
+    @DisplayName("matches rejects path when additional extension characters follow gtPath")
+    void testMatchesRejectsFilenameExtensionSubstring() {
+        Document backupDoc = createDocument("src/main/java/Foo.java.backup", "Foo", "bar");
+        RelevantChunkDefinition gt = new RelevantChunkDefinition("src/main/java/Foo.java", "bar", 3);
+
+        assertFalse(evaluator.matches(backupDoc, gt), "Foo.java.backup must not match Foo.java");
+    }
+
+    @Test
+    @DisplayName("matches validates line bounds when specified in ground truth")
+    void testMatchesLineBounds() {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("filePath", "src/Foo.java");
+        meta.put("elementName", "bar");
+        meta.put("startLine", 10);
+        meta.put("endLine", 25);
+        Document doc = new Document("code", meta);
+
+        RelevantChunkDefinition overlappingGt = new RelevantChunkDefinition("src/Foo.java", "bar", 20, 35, 3);
+        assertTrue(evaluator.matches(doc, overlappingGt), "Overlapping line ranges should match");
+
+        RelevantChunkDefinition nonOverlappingGt = new RelevantChunkDefinition("src/Foo.java", "bar", 50, 80, 3);
+        assertFalse(evaluator.matches(doc, nonOverlappingGt), "Non-overlapping line ranges should not match");
+    }
+
     private Document createDocument(String filePath, String className, String elementName) {
         Map<String, Object> meta = new HashMap<>();
         meta.put("filePath", filePath);

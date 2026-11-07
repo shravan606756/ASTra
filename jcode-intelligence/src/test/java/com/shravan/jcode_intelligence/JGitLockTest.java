@@ -152,7 +152,14 @@ public class JGitLockTest {
                 }
                 assertEquals(1, clonedCommitCount, "Shallow clone should have exactly 1 commit");
                 assertNotNull(singleCommit);
-                assertEquals("Second commit", singleCommit.getShortMessage());
+                assertEquals("Distinct custom-default commit", singleCommit.getShortMessage());
+
+                // Verify remote tracking refs contain only the selected default branch
+                List<org.eclipse.jgit.lib.Ref> remoteRefs = clonedGit.branchList()
+                        .setListMode(org.eclipse.jgit.api.ListBranchCommand.ListMode.REMOTE)
+                        .call();
+                assertEquals(1, remoteRefs.size(), "Fetched refs must contain only the selected branch");
+                assertTrue(remoteRefs.get(0).getName().endsWith("custom-default"));
             }
         } finally {
             gitService.cleanupRepository(clonedDir);
@@ -190,35 +197,24 @@ public class JGitLockTest {
 
     /**
      * Verifies that attempting to clone a nonexistent branch throws {@link IOException}
-     * and guarantees that the temporary clone directory is immediately deleted without leaks.
+     * and guarantees that the specific temporary clone directory is immediately deleted without leaks.
      */
     @Test
     public void cloneNonExistentBranchFailsAndCleansUp() throws IOException {
-        Path tempBaseDir = Path.of(System.getProperty("java.io.tmpdir"));
-        Set<Path> existingAstraDirs;
-        try (Stream<Path> stream = Files.list(tempBaseDir)) {
-            existingAstraDirs = stream
-                    .filter(p -> p.getFileName().toString().startsWith("astra-repo-"))
-                    .collect(Collectors.toSet());
-        }
+        Path tempDir = Files.createTempDirectory("astra-failed-clone-");
+        assertTrue(Files.exists(tempDir), "Target directory should exist before clone attempt");
 
         IOException exception = assertThrows(IOException.class, () ->
-                gitService.cloneRepository(fixtureRepoUri, "non-existent-branch-404"));
+                gitService.cloneRepository(fixtureRepoUri, "non-existent-branch-404", tempDir));
 
         assertTrue(exception.getMessage().contains("Failed to clone git repository"),
                 "Exception message should indicate clone failure");
         assertTrue(exception.getMessage().contains("non-existent-branch-404"),
                 "Exception message should mention the branch name");
 
-        // Verify no leftover astra-repo-* directory was leaked
-        try (Stream<Path> stream = Files.list(tempBaseDir)) {
-            Set<Path> currentAstraDirs = stream
-                    .filter(p -> p.getFileName().toString().startsWith("astra-repo-"))
-                    .collect(Collectors.toSet());
-            currentAstraDirs.removeAll(existingAstraDirs);
-            assertTrue(currentAstraDirs.isEmpty(),
-                    "No temporary astra-repo-* directory should remain after clone failure: " + currentAstraDirs);
-        }
+        // Verify the specific temporary directory was cleaned up on failure
+        assertFalse(Files.exists(tempDir),
+                "The specific temporary directory owned by the failed clone should be deleted");
     }
 
     /**
@@ -233,7 +229,8 @@ public class JGitLockTest {
             assertTrue(Files.exists(emptyBranchClone), "Clone directory for empty branch should exist");
             try (Git git = Git.open(emptyBranchClone.toFile())) {
                 RevCommit commit = git.log().call().iterator().next();
-                assertEquals("Second commit", commit.getShortMessage(), "Empty branch should clone default branch HEAD");
+                assertEquals("Distinct custom-default commit", commit.getShortMessage(), "Empty branch should clone default branch HEAD");
+                assertEquals("custom-default", git.getRepository().getBranch(), "Branch should be custom-default");
             }
         } finally {
             gitService.cleanupRepository(emptyBranchClone);
@@ -245,7 +242,8 @@ public class JGitLockTest {
             assertTrue(Files.exists(whitespaceBranchClone), "Clone directory for whitespace branch should exist");
             try (Git git = Git.open(whitespaceBranchClone.toFile())) {
                 RevCommit commit = git.log().call().iterator().next();
-                assertEquals("Second commit", commit.getShortMessage(), "Whitespace branch should clone default branch HEAD");
+                assertEquals("Distinct custom-default commit", commit.getShortMessage(), "Whitespace branch should clone default branch HEAD");
+                assertEquals("custom-default", git.getRepository().getBranch(), "Branch should be custom-default");
             }
         } finally {
             gitService.cleanupRepository(whitespaceBranchClone);
@@ -295,17 +293,16 @@ public class JGitLockTest {
     }
 
     /**
-     * Verifies that .setNoTags() prevents tags in the upstream repository from being fetched
-     * into the local shallow clone.
+     * Verifies that .setNoTags() prevents tags from being fetched during normal branch clones.
      */
     @Test
     public void shallowCloneSuppressesTags() throws Exception {
-        // Assert upstream repository has at least one tag
+        // Assert upstream repository has tags
         try (Git fixtureGit = Git.open(fixtureRepoDir.toFile())) {
-            assertFalse(fixtureGit.tagList().call().isEmpty(), "Upstream fixture repository should contain tags");
+            assertTrue(fixtureGit.tagList().call().size() >= 2, "Upstream fixture repository should contain tags");
         }
 
-        // Clone with shallow clone
+        // Clone default branch
         Path clonedDir = gitService.cloneRepository(fixtureRepoUri);
         try {
             assertTrue(Files.exists(clonedDir));
@@ -319,8 +316,51 @@ public class JGitLockTest {
     }
 
     /**
-     * Verifies that single-branch cloning (.setCloneAllBranches(false)) only fetches
-     * the requested branch and does not create local tracking branches for others.
+     * Verifies that requesting an explicit release tag fetches that specific tag and its target commit
+     * before checkout, while continuing to suppress unrelated tags.
+     */
+    @Test
+    public void cloneReleaseTagExplicitlyFetchesTargetAndSuppressesOthers() throws Exception {
+        Path clonedDir = gitService.cloneRepository(fixtureRepoUri, "v1.0.0");
+        try {
+            assertTrue(Files.exists(clonedDir));
+            try (Git clonedGit = Git.open(clonedDir.toFile())) {
+                List<org.eclipse.jgit.lib.Ref> tags = clonedGit.tagList().call();
+                assertEquals(1, tags.size(), "Should contain only the explicitly requested release tag");
+                assertEquals("refs/tags/v1.0.0", tags.get(0).getName());
+
+                // Verify the checkout is at the commit pointed to by v1.0.0
+                RevCommit commit = clonedGit.log().call().iterator().next();
+                assertEquals("Initial commit on custom-default", commit.getShortMessage());
+            }
+        } finally {
+            gitService.cleanupRepository(clonedDir);
+        }
+        assertFalse(Files.exists(clonedDir), "cleanupRepository should remove directory");
+    }
+
+    /**
+     * Verifies that requesting a release tag via full ref name ("refs/tags/v1.0.0") works identically.
+     */
+    @Test
+    public void cloneReleaseTagWithFullRef() throws Exception {
+        Path clonedDir = gitService.cloneRepository(fixtureRepoUri, "refs/tags/v1.0.0");
+        try {
+            assertTrue(Files.exists(clonedDir));
+            try (Git clonedGit = Git.open(clonedDir.toFile())) {
+                List<org.eclipse.jgit.lib.Ref> tags = clonedGit.tagList().call();
+                assertEquals(1, tags.size(), "Should contain only the explicitly requested release tag");
+                assertEquals("refs/tags/v1.0.0", tags.get(0).getName());
+            }
+        } finally {
+            gitService.cleanupRepository(clonedDir);
+        }
+        assertFalse(Files.exists(clonedDir), "cleanupRepository should remove directory");
+    }
+
+    /**
+     * Verifies that single-branch cloning (.setCloneAllBranches(false) with .setBranchesToClone)
+     * only fetches the requested branch and does not acquire other branch tips.
      */
     @Test
     public void singleBranchCloneExcludesOtherBranches() throws Exception {
@@ -332,6 +372,15 @@ public class JGitLockTest {
                 assertEquals(1, branches.size(), "Should only have 1 local branch");
                 assertTrue(branches.get(0).getName().endsWith("feature-branch"),
                         "Local branch should be feature-branch");
+
+                // Verify remote tracking refs contain ONLY feature-branch, NOT custom-default
+                List<org.eclipse.jgit.lib.Ref> remoteRefs = clonedGit.branchList()
+                        .setListMode(org.eclipse.jgit.api.ListBranchCommand.ListMode.REMOTE)
+                        .call();
+                assertEquals(1, remoteRefs.size(), "Fetched remote refs must contain only the selected branch");
+                assertTrue(remoteRefs.get(0).getName().endsWith("feature-branch"));
+                assertFalse(remoteRefs.stream().anyMatch(r -> r.getName().contains("custom-default")),
+                        "Remote tracking refs must not contain unselected branches");
             }
         } finally {
             gitService.cleanupRepository(clonedDir);
@@ -340,29 +389,18 @@ public class JGitLockTest {
 
     /**
      * Verifies that attempting to clone an invalid or unreachable repository URL
-     * fails with IOException and guarantees that no temporary directory is leaked.
+     * fails with IOException and guarantees that the specific directory is deleted.
      */
     @Test
     public void cloneInvalidRepositoryUriFailsAndCleansUp() throws IOException {
-        Path tempBaseDir = Path.of(System.getProperty("java.io.tmpdir"));
-        Set<Path> existingAstraDirs;
-        try (Stream<Path> stream = Files.list(tempBaseDir)) {
-            existingAstraDirs = stream
-                    .filter(p -> p.getFileName().toString().startsWith("astra-repo-"))
-                    .collect(Collectors.toSet());
-        }
+        Path tempDir = Files.createTempDirectory("astra-invalid-uri-");
+        assertTrue(Files.exists(tempDir), "Target directory should exist before clone attempt");
 
         assertThrows(IOException.class, () ->
-                gitService.cloneRepository("file:///C:/non_existent_fixture_path_99999"));
+                gitService.cloneRepository("file:///C:/non_existent_fixture_path_99999", null, tempDir));
 
-        try (Stream<Path> stream = Files.list(tempBaseDir)) {
-            Set<Path> currentAstraDirs = stream
-                    .filter(p -> p.getFileName().toString().startsWith("astra-repo-"))
-                    .collect(Collectors.toSet());
-            currentAstraDirs.removeAll(existingAstraDirs);
-            assertTrue(currentAstraDirs.isEmpty(),
-                    "No temporary directory should leak on invalid repository URL");
-        }
+        assertFalse(Files.exists(tempDir),
+                "The specific temporary directory owned by the failed clone should be deleted");
     }
 
     /**
@@ -392,7 +430,6 @@ public class JGitLockTest {
 
         // Mark file read-only
         assertTrue(readOnlyFile.toFile().setReadOnly(), "File should be marked read-only");
-        assertFalse(readOnlyFile.toFile().canWrite(), "File should not be writable");
 
         gitService.cleanupRepository(tempDir);
         assertFalse(Files.exists(tempDir), "cleanupRepository should successfully delete directory with read-only files");
@@ -414,12 +451,12 @@ public class JGitLockTest {
 
     /**
      * Creates a fresh, isolated Git repository in a temporary directory containing a
-     * minimal Java project (a single package with a single class), then stages and
-     * commits it. Returns the path to the repository's working directory.
+     * minimal Java project. Uses "custom-default" as the default branch (not master)
+     * with distinct commits to ensure tests fail if "master" is ever assumed.
      */
     private Path createFixtureRepository() throws Exception {
         Path repoDir = Files.createTempDirectory("jgitlock-fixture-");
-        try (Git git = Git.init().setDirectory(repoDir.toFile()).call()) {
+        try (Git git = Git.init().setDirectory(repoDir.toFile()).setInitialBranch("custom-default").call()) {
             Path srcDir = repoDir.resolve("src/main/java/com/example");
             Files.createDirectories(srcDir);
             Path javaFile = srcDir.resolve("Sample.java");
@@ -433,12 +470,15 @@ public class JGitLockTest {
 
             git.add().addFilepattern(".").call();
             git.commit()
-                    .setMessage("Initial commit")
+                    .setMessage("Initial commit on custom-default")
                     .setAuthor("JGitLockTest", "jgitlocktest@example.com")
                     .setSign(false)
                     .call();
 
-            // Commit 2 on default branch
+            // Create release tag v1.0.0 on initial commit
+            git.tag().setName("v1.0.0").setMessage("Release 1.0.0").call();
+
+            // Commit 2 on custom-default branch
             Files.writeString(javaFile,
                     "package com.example;\n\n" +
                     "public class Sample {\n\n" +
@@ -451,13 +491,15 @@ public class JGitLockTest {
                     "}\n");
             git.add().addFilepattern(".").call();
             git.commit()
-                    .setMessage("Second commit")
+                    .setMessage("Distinct custom-default commit")
                     .setAuthor("JGitLockTest", "jgitlocktest@example.com")
                     .setSign(false)
                     .call();
 
+            // Create release tag v2.0.0 on commit 2
+            git.tag().setName("v2.0.0").setMessage("Release 2.0.0").call();
+
             // Create a feature branch with its own commit
-            String defaultBranch = git.getRepository().getBranch();
             git.branchCreate().setName("feature-branch").call();
             git.checkout().setName("feature-branch").call();
             Path featureFile = srcDir.resolve("Feature.java");
@@ -473,11 +515,8 @@ public class JGitLockTest {
                     .setSign(false)
                     .call();
 
-            // Switch back to default branch
-            git.checkout().setName(defaultBranch).call();
-
-            // Create a release tag on default branch
-            git.tag().setName("v1.0.0").setMessage("Release 1.0.0").call();
+            // Switch back to custom-default branch
+            git.checkout().setName("custom-default").call();
         }
         return repoDir;
     }

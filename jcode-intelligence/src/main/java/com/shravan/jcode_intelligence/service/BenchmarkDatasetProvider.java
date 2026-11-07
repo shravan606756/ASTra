@@ -52,7 +52,8 @@ public class BenchmarkDatasetProvider {
             for (Resource resource : resources) {
                 try (InputStream is = resource.getInputStream()) {
                     BenchmarkSuite suite = objectMapper.readValue(is, BenchmarkSuite.class);
-                    if (suite.getSuiteName() != null && !suite.getSuiteName().isBlank()) {
+                    if (suite != null && suite.getSuiteName() != null && !suite.getSuiteName().isBlank()
+                            && suite.getQueries() != null && !suite.getQueries().contains(null)) {
                         loadedSuites.put(suite.getSuiteName().toLowerCase(Locale.ROOT), suite);
                         // Also register with filename base (e.g. "default-benchmark" from "default-benchmark.json")
                         String filename = resource.getFilename();

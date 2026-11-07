@@ -1,24 +1,33 @@
-# ASTra
+<p align="center">
+  <img src="jcode-intelligence/assets/logo.png" alt="ASTra Logo" width="180">
+</p>
 
-## Your codebase, understood.
+<h1 align="center">ASTra</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Java-21-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white" alt="Java 21">
-  <img src="https://img.shields.io/badge/Spring_Boot-3.x-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" alt="Spring Boot">
-  <img src="https://img.shields.io/badge/Spring_AI-6DB33F?style=for-the-badge&logo=spring&logoColor=white" alt="Spring AI">
-  <img src="https://img.shields.io/badge/JavaParser-AST-orange?style=for-the-badge" alt="JavaParser">
-  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/pgvector-Vector_DB-4169E1?style=for-the-badge" alt="pgvector">
-  <img src="https://img.shields.io/badge/Ollama-000000?style=for-the-badge&logo=ollama&logoColor=white" alt="Ollama">
-  <img src="https://img.shields.io/badge/Groq-F55036?style=for-the-badge" alt="Groq">
-  <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+  <strong>Stop reading code like text. Query it like a compiler.</strong><br>
+  AST-Level Semantic Intelligence & Surgical Retrieval for Java Codebases
 </p>
 
 <p align="center">
-  <strong>Parse the structure. Find the context. Understand the code.</strong>
+  <a href="https://github.com/shravan606756/ASTra/actions/workflows/ci.yml"><img src="https://github.com/shravan606756/ASTra/actions/workflows/ci.yml/badge.svg" alt="Build Status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/shravan606756/ASTra/releases"><img src="https://img.shields.io/badge/version-v1.0.0-informational.svg" alt="Version"></a>
+  <a href="https://github.com/shravan606756/ASTra/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
+  <a href="https://github.com/shravan606756/ASTra/issues"><img src="https://img.shields.io/github/issues/shravan606756/ASTra" alt="Open Issues"></a>
 </p>
 
-ASTra parses Java codebases at the AST level and turns them into a searchable, semantic index you can query in plain English - classes, methods, dependencies, architecture, workflows, all of it.
+<p align="center">
+  <strong>Zero guesswork. Zero blind token splits. Complete architectural dominion.</strong>
+</p>
+
+Standard AI code search is fundamentally broken. Blindly slicing source files into arbitrary token chunks butchers method boundaries, severs inheritance chains, and feeds LLMs hallucinated noise.
+
+**ASTra doesn't guess. It dissects.**
+
+By compiling the Abstract Syntax Tree of every compilation unit, ASTra maps your entire Java repository into an interconnected, type-aware semantic graph. Ask anything in plain English-trace end-to-end execution flows, uncover hidden cross-package dependencies, or isolate exact implementations across hundreds of thousands of lines of code.
+
+No hallucinations. No superficial keyword matching. Just surgical, line-accurate truth in milliseconds.
 ---
 
 ## Demo
@@ -27,7 +36,7 @@ ASTra parses Java codebases at the AST level and turns them into a searchable, s
 
 <p align="center">
   <a href="https://drive.google.com/file/d/1vfSgg-PW9mg9aFuq93alI2otVJ11tzm1/view?usp=sharing">
-    <img src="https://img.shields.io/badge/▶%20Watch%20Demo-Google%20Drive-4285F4?style=for-the-badge&logo=google-drive&logoColor=white" alt="Watch ASTra Demo">
+    <img src="https://img.shields.io/badge/▶%20Watch%20Demo-Google%20Drive-4285F4?logo=google-drive&logoColor=white" alt="Watch ASTra Demo">
   </a>
 </p>
 

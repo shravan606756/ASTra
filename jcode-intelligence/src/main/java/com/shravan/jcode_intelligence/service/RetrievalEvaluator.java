@@ -29,26 +29,47 @@ public class RetrievalEvaluator {
     public QueryQualityMetricsDTO evaluateQuery(List<Document> documents,
                                                 List<RelevantChunkDefinition> groundTruths,
                                                 List<RetrievedChunkDTO> retrievedChunks) {
+        return evaluateQuery(documents, groundTruths, retrievedChunks, documents != null ? documents.size() : 0);
+    }
+
+    /**
+     * Evaluates a ranked list of retrieved documents against expected relevant chunks for a query,
+     * limiting the number of chunks added to retrievedChunks to maxDisplayChunks.
+     *
+     * @param documents        retrieved ranked documents
+     * @param groundTruths     expected relevant chunks with graded relevance
+     * @param retrievedChunks  list to populate with scored chunk representations
+     * @param maxDisplayChunks maximum chunks to populate in retrievedChunks (<= 0 for all)
+     * @return calculated per-query quality metrics
+     */
+    public QueryQualityMetricsDTO evaluateQuery(List<Document> documents,
+                                                List<RelevantChunkDefinition> groundTruths,
+                                                List<RetrievedChunkDTO> retrievedChunks,
+                                                int maxDisplayChunks) {
         if (documents == null) {
             documents = List.of();
         }
         if (groundTruths == null || groundTruths.isEmpty()) {
-            populateRetrievedChunks(documents, retrievedChunks);
+            populateRetrievedChunks(documents, retrievedChunks, maxDisplayChunks);
             return null;
         }
 
         QueryQualityMetricsDTO metrics = new QueryQualityMetricsDTO();
 
         // 1. Score each retrieved document against ground truths
+        // To prevent duplicate inflation, each ground-truth item can only be satisfied once
         List<Integer> relevanceGrades = new ArrayList<>(documents.size());
         Set<RelevantChunkDefinition> matchedGroundTruths = new HashSet<>();
+        Set<RelevantChunkDefinition> unsatisfiedGts = new HashSet<>(groundTruths);
+
+        int displayLimit = (maxDisplayChunks > 0) ? Math.min(maxDisplayChunks, documents.size()) : documents.size();
 
         for (int i = 0; i < documents.size(); i++) {
             Document doc = documents.get(i);
             int grade = 0;
             RelevantChunkDefinition matchedGt = null;
 
-            for (RelevantChunkDefinition gt : groundTruths) {
+            for (RelevantChunkDefinition gt : unsatisfiedGts) {
                 if (matches(doc, gt)) {
                     if (gt.getRelevance() > grade) {
                         grade = gt.getRelevance();
@@ -59,11 +80,12 @@ public class RetrievalEvaluator {
 
             if (matchedGt != null && grade > 0) {
                 matchedGroundTruths.add(matchedGt);
+                unsatisfiedGts.remove(matchedGt); // Consumed: prevent duplicate inflation
             }
 
             relevanceGrades.add(grade);
 
-            if (retrievedChunks != null) {
+            if (retrievedChunks != null && i < displayLimit) {
                 Map<String, Object> meta = doc.getMetadata();
                 String chunkId = String.valueOf(meta.getOrDefault("chunkId", ""));
                 String filePath = String.valueOf(meta.getOrDefault("filePath", ""));
@@ -117,8 +139,17 @@ public class RetrievalEvaluator {
      * Relevant flag and relevanceGrade are left null.
      */
     public void populateRetrievedChunks(List<Document> documents, List<RetrievedChunkDTO> retrievedChunks) {
+        populateRetrievedChunks(documents, retrievedChunks, documents != null ? documents.size() : 0);
+    }
+
+    /**
+     * Populates retrieved chunk representations when ground truth is not provided,
+     * limiting output to maxDisplayChunks.
+     */
+    public void populateRetrievedChunks(List<Document> documents, List<RetrievedChunkDTO> retrievedChunks, int maxDisplayChunks) {
         if (documents == null || retrievedChunks == null) return;
-        for (int i = 0; i < documents.size(); i++) {
+        int displayLimit = (maxDisplayChunks > 0) ? Math.min(maxDisplayChunks, documents.size()) : documents.size();
+        for (int i = 0; i < displayLimit; i++) {
             Document doc = documents.get(i);
             Map<String, Object> meta = doc.getMetadata();
             String chunkId = String.valueOf(meta.getOrDefault("chunkId", ""));
@@ -370,20 +401,29 @@ public class RetrievalEvaluator {
         String elementName = String.valueOf(meta.getOrDefault("elementName", ""));
         String className = String.valueOf(meta.getOrDefault("className", ""));
         String methodName = String.valueOf(meta.getOrDefault("methodName", ""));
+        String type = String.valueOf(meta.getOrDefault("type", "")).toUpperCase(Locale.ROOT);
 
         boolean pathMatches = false;
         if (!gtPath.isBlank() && !docPath.isBlank()) {
-            pathMatches = docPath.endsWith(gtPath) || gtPath.endsWith(docPath) || docPath.contains(gtPath);
+            pathMatches = docPath.equals(gtPath)
+                    || docPath.endsWith("/" + gtPath)
+                    || docPath.contains("/" + gtPath);
         }
 
         boolean symbolMatches = false;
         String gtSymbol = (gt.getSymbol() != null) ? gt.getSymbol().trim() : "";
         if (!gtSymbol.isBlank()) {
-            symbolMatches = gtSymbol.equalsIgnoreCase(elementName)
-                    || gtSymbol.equalsIgnoreCase(className)
-                    || gtSymbol.equalsIgnoreCase(methodName)
+            boolean elemMatch = gtSymbol.equalsIgnoreCase(elementName)
                     || elementName.startsWith(gtSymbol + "#")
+                    || elementName.startsWith(gtSymbol + "(")
                     || elementName.equalsIgnoreCase(gtSymbol + "()");
+            boolean methodMatch = gtSymbol.equalsIgnoreCase(methodName)
+                    || methodName.startsWith(gtSymbol + "(")
+                    || methodName.equalsIgnoreCase(gtSymbol + "()");
+            boolean classChunkMatch = ("CLASS".equals(type) || "INTERFACE".equals(type) || "RECORD".equals(type) || "ENUM".equals(type))
+                    && gtSymbol.equalsIgnoreCase(className);
+
+            symbolMatches = elemMatch || methodMatch || classChunkMatch;
         }
 
         // If both path and symbol are specified, both must match

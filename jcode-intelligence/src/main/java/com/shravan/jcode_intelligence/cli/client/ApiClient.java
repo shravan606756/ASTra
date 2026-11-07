@@ -108,6 +108,15 @@ public class ApiClient {
     }
 
     /**
+     * Requests a retrieval evaluation benchmark with a ten-minute timeout.
+     *
+     * @throws ApiException if the backend returns an error or communication or response parsing fails
+     */
+    public com.shravan.jcode_intelligence.dto.response.BenchmarkResponse runBenchmark(com.shravan.jcode_intelligence.dto.request.BenchmarkRequest request) {
+        return post("/api/v1/benchmark/run", request, com.shravan.jcode_intelligence.dto.response.BenchmarkResponse.class, Duration.ofMinutes(10));
+    }
+
+    /**
      * Reusable GET helper.
      */
     private <T> T get(String path, Class<T> responseType) {

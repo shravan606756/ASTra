@@ -131,4 +131,12 @@ public class IntentRetrievalConfig {
         weights.put("RECORD", clazz);  // Treat RECORD same as CLASS
         return weights;
     }
+
+    @org.springframework.context.annotation.Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
+    public com.fasterxml.jackson.databind.ObjectMapper objectMapper() {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        mapper.findAndRegisterModules();
+        return mapper;
+    }
 }

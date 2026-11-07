@@ -1,140 +1,467 @@
 package com.shravan.jcode_intelligence.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.shravan.jcode_intelligence.dto.request.BenchmarkRequest;
 import com.shravan.jcode_intelligence.dto.request.ChatMode;
+import com.shravan.jcode_intelligence.dto.response.BenchmarkResponse;
+import com.shravan.jcode_intelligence.dto.response.BenchmarkSummaryDTO;
+import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO;
+import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.QueryOperationalMetricsDTO;
+import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.QueryQualityMetricsDTO;
+import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.RetrievedChunkDTO;
+import com.shravan.jcode_intelligence.exception.BenchmarkConflictException;
 import com.shravan.jcode_intelligence.model.QueryIntent;
-import com.shravan.jcode_intelligence.service.impl.RetrievalServiceImpl;
+import com.shravan.jcode_intelligence.model.benchmark.BenchmarkQueryDefinition;
+import com.shravan.jcode_intelligence.model.benchmark.BenchmarkSuite;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Retrieval quality evaluation framework.
- *
- * <p>Runs a predefined set of benchmark queries through the retrieval pipeline
- * and produces structured evaluation results for each query:
- * <ul>
- *   <li>Classified intent</li>
- *   <li>Retrieved chunk types and counts</li>
- *   <li>Top element names</li>
- *   <li>Retrieval latency</li>
- *   <li>Pass/fail assessment against expected intent</li>
- * </ul>
+ * Deterministic retrieval evaluation service.
+ * <p>
+ * Executes curated benchmark query suites loaded from external datasets against indexed repositories,
+ * computes standard IR quality metrics (Hit Rate, Recall, Precision, MRR, NDCG, Context Precision/Recall),
+ * isolates per-query failures, tracks operational performance, and persists execution history.
  */
 @Component
 public class RetrievalBenchmark {
 
     private static final Logger log = LoggerFactory.getLogger(RetrievalBenchmark.class);
 
-    private final RetrievalServiceImpl retrievalService;
+    private final RetrievalService retrievalService;
     private final QueryIntentClassifier intentClassifier;
+    private final BenchmarkDatasetProvider datasetProvider;
+    private final RetrievalEvaluator evaluator;
+    private final RepositoryManagementService repositoryManagementService;
+    private final ObjectMapper objectMapper;
+    private final String historyDir;
 
-    public RetrievalBenchmark(RetrievalServiceImpl retrievalService,
-                               QueryIntentClassifier intentClassifier) {
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+
+    @Autowired
+    public RetrievalBenchmark(RetrievalService retrievalService,
+                              QueryIntentClassifier intentClassifier,
+                              BenchmarkDatasetProvider datasetProvider,
+                              RetrievalEvaluator evaluator,
+                              @Autowired(required = false) RepositoryManagementService repositoryManagementService,
+                              @Autowired(required = false) ObjectMapper objectMapper,
+                              @Value("${astra.benchmark.history-dir:target/benchmark-runs/}") String historyDir) {
         this.retrievalService = retrievalService;
         this.intentClassifier = intentClassifier;
+        this.datasetProvider = (datasetProvider != null) ? datasetProvider : new BenchmarkDatasetProvider(objectMapper);
+        this.evaluator = (evaluator != null) ? evaluator : new RetrievalEvaluator();
+        this.repositoryManagementService = repositoryManagementService;
+        this.objectMapper = (objectMapper != null) ? objectMapper.copy().enable(SerializationFeature.INDENT_OUTPUT)
+                : new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.historyDir = historyDir;
+    }
+
+    public RetrievalBenchmark(RetrievalService retrievalService,
+                              QueryIntentClassifier intentClassifier,
+                              BenchmarkDatasetProvider datasetProvider,
+                              RetrievalEvaluator evaluator) {
+        this(retrievalService, intentClassifier, datasetProvider, evaluator, null, null, "target/benchmark-runs/");
+    }
+
+    public RetrievalBenchmark(RetrievalService retrievalService,
+                              QueryIntentClassifier intentClassifier,
+                              BenchmarkDatasetProvider datasetProvider,
+                              RetrievalEvaluator evaluator,
+                              RepositoryManagementService repositoryManagementService) {
+        this(retrievalService, intentClassifier, datasetProvider, evaluator, repositoryManagementService, null, "target/benchmark-runs/");
+    }
+
+    public RetrievalBenchmark(RetrievalService retrievalService,
+                              QueryIntentClassifier intentClassifier) {
+        this(retrievalService, intentClassifier, null, null, null, null, "target/benchmark-runs/");
     }
 
     /**
-     * Runs the full benchmark suite against the specified repository.
+     * Executes the requested suite or custom questions. Query exceptions are recorded as
+     * failed results so later queries can run. The response is also written to the history
+     * directory when possible; persistence failures do not prevent it from being returned.
      *
-     * @param repositoryId the target repository to benchmark against
-     * @return list of benchmark results
+     * @param request the benchmark configuration request
+     * @return {@link BenchmarkResponse} containing summary and per-query metrics
+     * @throws BenchmarkConflictException if another benchmark is executing on this instance
+     * @throws IllegalArgumentException if the request or repository is invalid, the repository
+     *         is ambiguous or not indexed, the suite is unavailable, or custom questions are blank
+     * @throws org.springframework.dao.DataAccessException if repository lookup encounters a data access error
      */
-    public List<BenchmarkResult> runBenchmark(String repositoryId) {
-        List<BenchmarkQuery> queries = buildBenchmarkQueries();
-        List<BenchmarkResult> results = new ArrayList<>();
+    public BenchmarkResponse runBenchmark(BenchmarkRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("BenchmarkRequest must not be null");
+        }
+        if (request.isAsync()) {
+            throw new IllegalArgumentException("Asynchronous benchmark execution is not yet supported");
+        }
+        ChatMode chatMode = resolveChatMode(request.getRetrievalConfiguration());
+        String requestedRepo = request.getResolvedRepositoryName();
+        String resolvedRepo = resolveAndValidateRepository(requestedRepo);
 
-        log.info("Starting retrieval benchmark with {} queries against repository '{}'",
-                queries.size(), repositoryId);
-
-        for (BenchmarkQuery bq : queries) {
-            BenchmarkResult result = evaluateQuery(bq, repositoryId);
-            results.add(result);
-
-            log.info("BENCHMARK | query='{}' | expectedIntent={} | actualIntent={} | pass={} " +
-                     "| chunkTypes={} | topElements={} | latencyMs={}",
-                    bq.query, bq.expectedIntent, result.classifiedIntent,
-                    result.intentMatch, result.chunkTypeCounts,
-                    result.topElementNames, result.latencyMs);
+        // Concurrency Guard: reject overlapping benchmark executions
+        if (!isRunning.compareAndSet(false, true)) {
+            log.warn("Benchmark execution rejected: a benchmark suite is already currently executing.");
+            throw new BenchmarkConflictException("A benchmark suite is already currently executing. Please wait for it to complete.");
         }
 
-        // Summary
-        long passCount = results.stream().filter(r -> r.intentMatch).count();
-        log.info("BENCHMARK SUMMARY | total={} | pass={} | fail={} | accuracy={}%",
-                results.size(), passCount, results.size() - passCount,
-                results.isEmpty() ? 0 : (passCount * 100 / results.size()));
+        long startTime = System.currentTimeMillis();
+        try {
+            boolean isCustom = request.isCustomQuestionMode();
+            List<BenchmarkQueryDefinition> queries;
+            String suiteName;
 
-        return results;
+            if (isCustom) {
+                suiteName = (request.getSuiteName() != null && !request.getSuiteName().isBlank() && !"default".equalsIgnoreCase(request.getSuiteName()))
+                        ? request.getSuiteName() : "custom";
+                queries = buildCustomQueries(request, resolvedRepo);
+            } else {
+                BenchmarkSuite suite = datasetProvider.getSuite(request.getSuiteName());
+                suiteName = suite.getSuiteName();
+                queries = suite.getQueries();
+            }
+
+            int effectiveTopK = (request.getTopK() > 0) ? request.getTopK() : 5;
+            log.info("Starting retrieval benchmark (mode={}, suite='{}') with {} queries against repo '{}' at topK={}",
+                    isCustom ? "CUSTOM_QUESTIONS" : "DATASET", suiteName, queries.size(), resolvedRepo, effectiveTopK);
+
+            List<QueryBenchmarkResultDTO> results = new ArrayList<>();
+            int timeoutCount = 0;
+
+            for (BenchmarkQueryDefinition bq : queries) {
+                QueryBenchmarkResultDTO result = evaluateSingleQuery(bq, resolvedRepo, effectiveTopK, chatMode);
+                results.add(result);
+            }
+
+            long totalDurationMs = System.currentTimeMillis() - startTime;
+            BenchmarkSummaryDTO summary = evaluator.aggregateSummary(results, totalDurationMs, timeoutCount);
+
+            BenchmarkResponse response = new BenchmarkResponse(
+                    resolvedRepo,
+                    suiteName,
+                    request.getRetrievalConfiguration(),
+                    effectiveTopK,
+                    summary,
+                    results
+            );
+            response.setRepositoryName(resolvedRepo);
+            response.setRepositoryId(resolvedRepo);
+            response.setMode(isCustom ? "CUSTOM_QUESTIONS" : "DATASET");
+
+            if (summary.isHasGroundTruth()) {
+                log.info("BENCHMARK COMPLETED | repo='{}' | mode='{}' | suite='{}' | queries={} | success={} | failed={} | HR@5={}% | MRR={} | NDCG@5={} | avgLatency={}ms",
+                        resolvedRepo, response.getMode(), suiteName, results.size(),
+                        summary.getSuccessfulQueries(), summary.getFailedQueries(),
+                        summary.getHitRateAt5() != null ? Math.round(summary.getHitRateAt5() * 100.0) : 0,
+                        summary.getMrr(), summary.getNdcgAt5(), summary.getAvgTotalLatencyMs());
+            } else {
+                log.info("BENCHMARK COMPLETED | repo='{}' | mode='{}' | suite='{}' | queries={} | success={} | failed={} | avgLatency={}ms | avgChunks={}",
+                        resolvedRepo, response.getMode(), suiteName, results.size(),
+                        summary.getSuccessfulQueries(), summary.getFailedQueries(),
+                        summary.getAvgTotalLatencyMs(), summary.getAvgRetrievedChunks());
+            }
+
+            // Persist run history
+            persistBenchmarkRun(response);
+
+            return response;
+        } finally {
+            isRunning.set(false);
+        }
     }
 
-    private BenchmarkResult evaluateQuery(BenchmarkQuery bq, String repositoryId) {
-        long start = System.currentTimeMillis();
+    private List<BenchmarkQueryDefinition> buildCustomQueries(BenchmarkRequest request, String repositoryName) {
+        List<BenchmarkQueryDefinition> queries = new ArrayList<>();
+        int counter = 1;
 
-        // Classify intent
-        QueryIntent classified = intentClassifier.classify(bq.query);
-
-        // Retrieve documents
-        List<Document> documents = retrievalService.retrieve(
-                bq.query, 0, repositoryId, ChatMode.AUTO);
-
-        long latency = System.currentTimeMillis() - start;
-
-        // Compute chunk type counts
-        Map<String, Integer> chunkTypeCounts = new LinkedHashMap<>();
-        for (Document doc : documents) {
-            String type = String.valueOf(doc.getMetadata().getOrDefault("type", "UNKNOWN"));
-            chunkTypeCounts.merge(type, 1, Integer::sum);
-        }
-
-        // Extract top element names
-        List<String> topElements = new ArrayList<>();
-        for (Document doc : documents) {
-            String element = String.valueOf(doc.getMetadata().getOrDefault("elementName", ""));
-            if (!element.isBlank() && topElements.size() < 10) {
-                topElements.add(element);
+        if (request.getCustomQuestions() != null) {
+            for (com.shravan.jcode_intelligence.dto.request.CustomBenchmarkQuestionDTO cq : request.getCustomQuestions()) {
+                if (cq == null || cq.getQuery() == null || cq.getQuery().isBlank()) {
+                    continue;
+                }
+                String qid = (cq.getQueryId() != null && !cq.getQueryId().isBlank())
+                        ? cq.getQueryId() : "custom-" + counter++;
+                queries.add(new BenchmarkQueryDefinition(
+                        qid,
+                        cq.getQuery().trim(),
+                        (cq.getCategory() != null && !cq.getCategory().isBlank()) ? cq.getCategory() : "Custom",
+                        repositoryName,
+                        cq.getExpectedIntent(),
+                        cq.getRelevantChunks() != null ? cq.getRelevantChunks() : Collections.emptyList(),
+                        cq.getReferenceAnswer(),
+                        Collections.emptyList()
+                ));
             }
         }
 
-        // Determine top chunk type
-        String topChunkType = chunkTypeCounts.entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse("NONE");
+        if (request.getQuestions() != null) {
+            for (String q : request.getQuestions()) {
+                if (q == null || q.isBlank()) {
+                    continue;
+                }
+                queries.add(new BenchmarkQueryDefinition(
+                        "custom-" + counter++,
+                        q.trim(),
+                        "Custom",
+                        repositoryName,
+                        null,
+                        Collections.emptyList(),
+                        null,
+                        Collections.emptyList()
+                ));
+            }
+        }
 
-        return new BenchmarkResult(
-                bq.query,
-                bq.expectedIntent.name(),
-                classified.name(),
-                classified == bq.expectedIntent,
-                chunkTypeCounts,
-                topElements,
-                topChunkType,
-                documents.size(),
-                latency
-        );
+        if (queries.isEmpty()) {
+            throw new IllegalArgumentException("At least one valid question is required for custom question benchmark");
+        }
+
+        return queries;
     }
 
-    // ── Benchmark Query Definitions ───────────────────────────
+    /**
+     * Evaluates a single benchmark query with full failure isolation.
+     */
+    private QueryBenchmarkResultDTO evaluateSingleQuery(BenchmarkQueryDefinition bq,
+                                                       String repositoryId,
+                                                       int topK,
+                                                       ChatMode chatMode) {
+        long queryStart = System.currentTimeMillis();
+        List<RetrievedChunkDTO> retrievedChunks = new ArrayList<>();
+        boolean hasGroundTruth = (bq.getRelevantChunks() != null && !bq.getRelevantChunks().isEmpty());
 
-    private List<BenchmarkQuery> buildBenchmarkQueries() {
-        return List.of(
-                new BenchmarkQuery("Explain Node", QueryIntent.CLASS),
-                new BenchmarkQuery("Explain findAll()", QueryIntent.METHOD),
-                new BenchmarkQuery("Where is LexicalPreservingPrinter?", QueryIntent.SEARCH),
-                new BenchmarkQuery("Explain package structure", QueryIntent.PACKAGE),
-                new BenchmarkQuery("Architecture overview", QueryIntent.ARCHITECTURE),
-                new BenchmarkQuery("How does JavaParser parse a Java source file?", QueryIntent.WORKFLOW),
-                new BenchmarkQuery("Where is BackupExecutionService?", QueryIntent.SEARCH),
-                new BenchmarkQuery("Which classes use NodeList?", QueryIntent.RELATIONSHIP)
-        );
+        try {
+            // Step 1: Classify intent
+            QueryIntent classified = (intentClassifier != null)
+                    ? intentClassifier.classify(bq.getQuery())
+                    : QueryIntent.UNKNOWN;
+
+            boolean intentMatch = false;
+            if (bq.getExpectedIntent() != null) {
+                intentMatch = bq.getExpectedIntent().equalsIgnoreCase(classified.name());
+            }
+
+            // Step 2: Retrieve documents with configured topK and retrieval mode
+            // When ground truth is present, retrieve at least 25 candidates so Cutoff @ 25 metrics
+            // evaluate true ranking depth, while retrievedChunks is capped at topK for display.
+            int retrievalTopK = hasGroundTruth ? Math.max(topK, 25) : topK;
+            long retrieveStart = System.currentTimeMillis();
+            List<Document> documents = retrievalService.retrieve(
+                    bq.getQuery(), retrievalTopK, repositoryId, chatMode != null ? chatMode : ChatMode.AUTO
+            );
+            long retrieveLatency = System.currentTimeMillis() - retrieveStart;
+
+            // Step 3: Compute deterministic IR quality metrics against ground truth if present
+            QueryQualityMetricsDTO qualityMetrics = null;
+            if (hasGroundTruth) {
+                qualityMetrics = evaluator.evaluateQuery(
+                        documents, bq.getRelevantChunks(), retrievedChunks, topK
+                );
+            } else {
+                evaluator.populateRetrievedChunks(documents, retrievedChunks, topK);
+            }
+
+            long totalQueryLatency = System.currentTimeMillis() - queryStart;
+
+            // Step 4: Record operational metrics
+            QueryOperationalMetricsDTO operationalMetrics = new QueryOperationalMetricsDTO(
+                    totalQueryLatency,
+                    0L, // embedding latency if isolated
+                    retrieveLatency,
+                    0L, // reranking latency if isolated
+                    retrievedChunks.size()
+            );
+
+            QueryBenchmarkResultDTO result = new QueryBenchmarkResultDTO(
+                    bq.getQueryId(),
+                    bq.getQuery(),
+                    bq.getCategory(),
+                    bq.getExpectedIntent(),
+                    classified.name(),
+                    intentMatch,
+                    "SUCCESS",
+                    null,
+                    retrievedChunks,
+                    qualityMetrics,
+                    operationalMetrics
+            );
+            result.setHasGroundTruth(hasGroundTruth);
+            return result;
+        } catch (Exception ex) {
+            long totalQueryLatency = System.currentTimeMillis() - queryStart;
+            log.warn("Benchmark query '{}' failed: {}", bq.getQueryId(), ex.getMessage());
+
+            QueryOperationalMetricsDTO operationalMetrics = new QueryOperationalMetricsDTO(
+                    totalQueryLatency, 0L, 0L, 0L, 0
+            );
+
+            QueryBenchmarkResultDTO result = new QueryBenchmarkResultDTO(
+                    bq.getQueryId(),
+                    bq.getQuery(),
+                    bq.getCategory(),
+                    bq.getExpectedIntent(),
+                    "UNKNOWN",
+                    false,
+                    "FAILED",
+                    ex.getMessage(),
+                    retrievedChunks,
+                    null,
+                    operationalMetrics
+            );
+            result.setHasGroundTruth(hasGroundTruth);
+            return result;
+        }
     }
 
-    // ── Data Classes ──────────────────────────────────────────
+    /**
+     * Resolves the target repository by name, matching case-insensitively and checking for ambiguity.
+     */
+    private String resolveAndValidateRepository(String requestedName) {
+        if (requestedName == null || requestedName.isBlank()) {
+            throw new IllegalArgumentException("repositoryName is required");
+        }
 
-    private record BenchmarkQuery(String query, QueryIntent expectedIntent) {}
+        if (repositoryManagementService == null) {
+            return requestedName.trim();
+        }
+
+        List<String> indexedRepos = repositoryManagementService.listRepositories();
+        if (indexedRepos == null) {
+            return requestedName.trim();
+        }
+
+        String target = requestedName.trim();
+
+        // 1. Exact match
+        if (indexedRepos.contains(target)) {
+            return target;
+        }
+
+        // 2. Case-insensitive exact match
+        List<String> caseMatches = indexedRepos.stream()
+                .filter(r -> r.equalsIgnoreCase(target))
+                .toList();
+        if (caseMatches.size() == 1) {
+            return caseMatches.get(0);
+        } else if (caseMatches.size() > 1) {
+            throw new IllegalArgumentException("Ambiguous repository name '" + requestedName + "'. Multiple matches found: " + caseMatches);
+        }
+
+        // 3. Case-insensitive contains/prefix match
+        List<String> partialMatches = indexedRepos.stream()
+                .filter(r -> r.toLowerCase().contains(target.toLowerCase()))
+                .toList();
+        if (partialMatches.size() == 1) {
+            return partialMatches.get(0);
+        } else if (partialMatches.size() > 1) {
+            throw new IllegalArgumentException("Ambiguous repository name '" + requestedName + "'. Multiple matches found: " + partialMatches);
+        }
+
+        // 4. Not found
+        throw new IllegalArgumentException("Repository '" + requestedName + "' is not indexed. Available repositories: " + indexedRepos);
+    }
+
+    /**
+     * Resolves the requested retrieval configuration into a supported ChatMode.
+     */
+    private ChatMode resolveChatMode(String config) {
+        if (config == null || config.isBlank() || "DENSE_ONLY".equalsIgnoreCase(config) || "AUTO".equalsIgnoreCase(config)) {
+            return ChatMode.AUTO;
+        }
+        try {
+            return ChatMode.valueOf(config.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unsupported retrievalConfiguration: '" + config + "'. Valid options: DENSE_ONLY, AUTO, or a valid ChatMode name.");
+        }
+    }
+
+    /**
+     * Persists the benchmark response as structured JSON for historical regression tracking.
+     */
+    private void persistBenchmarkRun(BenchmarkResponse response) {
+        try {
+            Path targetPath = Paths.get(historyDir);
+            Files.createDirectories(targetPath);
+
+            String repoIdentifier = response.getRepositoryName() != null ? response.getRepositoryName() : response.getRepositoryId();
+            String safeRepo = (repoIdentifier != null ? repoIdentifier : "unknown").replaceAll("[^a-zA-Z0-9.-]", "_");
+            String safeSuite = (response.getSuiteName() != null ? response.getSuiteName() : "benchmark").replaceAll("[^a-zA-Z0-9.-]", "_");
+            String timestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replaceAll("[:.]", "-");
+
+            String fileName = String.format("benchmark-%s-%s-%s.json", safeRepo, safeSuite, timestamp);
+            File outputFile = targetPath.resolve(fileName).toFile();
+
+            objectMapper.writeValue(outputFile, response);
+            log.info("Persisted benchmark run history to: {}", outputFile.getAbsolutePath());
+        } catch (Exception e) {
+            log.warn("Failed to persist benchmark run history: {}", e.getMessage());
+        }
+    }
+
+    // ── Legacy Compatibility Overload ─────────────────────────
+
+    /**
+     * Runs the default suite and adapts its results to the legacy format.
+     *
+     * @param repositoryId repository name; null selects {@code javaparser}
+     * @return legacy results for the suite's queries
+     * @throws BenchmarkConflictException if another benchmark is executing on this instance
+     * @throws IllegalArgumentException if the repository is invalid, ambiguous or not indexed,
+     *         or the default suite is unavailable
+     * @throws org.springframework.dao.DataAccessException if repository lookup encounters a data access error
+     */
+    public List<BenchmarkResult> runBenchmark(String repositoryId) {
+        BenchmarkRequest request = new BenchmarkRequest(repositoryId != null ? repositoryId : "javaparser");
+        BenchmarkResponse response = runBenchmark(request);
+
+        List<BenchmarkResult> legacyResults = new ArrayList<>();
+        for (QueryBenchmarkResultDTO qr : response.getResults()) {
+            Map<String, Integer> chunkTypeCounts = new LinkedHashMap<>();
+            List<String> topElements = new ArrayList<>();
+
+            for (RetrievedChunkDTO chunk : qr.getRetrievedChunks()) {
+                String type = (chunk.getType() != null && !chunk.getType().isBlank()) ? chunk.getType() : "UNKNOWN";
+                chunkTypeCounts.merge(type, 1, Integer::sum);
+                if (chunk.getElementName() != null && !chunk.getElementName().isBlank() && topElements.size() < 10) {
+                    topElements.add(chunk.getElementName());
+                }
+            }
+
+            String topChunkType = chunkTypeCounts.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse("NONE");
+
+            legacyResults.add(new BenchmarkResult(
+                    qr.getQuery(),
+                    qr.getExpectedIntent() != null ? qr.getExpectedIntent() : "UNKNOWN",
+                    qr.getClassifiedIntent(),
+                    qr.isIntentMatch(),
+                    chunkTypeCounts,
+                    topElements,
+                    topChunkType,
+                    qr.getRetrievedChunks().size(),
+                    qr.getOperationalMetrics() != null ? qr.getOperationalMetrics().getTotalLatencyMs() : 0L
+            ));
+        }
+        return legacyResults;
+    }
+
+    // ── Legacy Data Classes ───────────────────────────────────
 
     public record BenchmarkResult(
             String query,

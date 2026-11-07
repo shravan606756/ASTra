@@ -1,20 +1,25 @@
 package com.shravan.jcode_intelligence.controller;
 
+import com.shravan.jcode_intelligence.dto.request.BenchmarkRequest;
+import com.shravan.jcode_intelligence.dto.response.BenchmarkResponse;
 import com.shravan.jcode_intelligence.service.RetrievalBenchmark;
-import com.shravan.jcode_intelligence.service.RetrievalBenchmark.BenchmarkResult;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-import java.util.Map;
-
 /**
- * REST endpoint for running retrieval quality benchmarks.
+ * REST endpoint for executing retrieval evaluation benchmarks.
  *
  * <p>Usage:
  * <pre>
  *   POST /api/v1/benchmark/run
- *   Body: { "repositoryId": "javaparser" }
+ *   Body: {
+ *     "repositoryId": "javaparser",
+ *     "suiteName": "default",
+ *     "topK": 5,
+ *     "retrievalConfiguration": "DENSE_ONLY",
+ *     "async": false
+ *   }
  * </pre>
  */
 @RestController
@@ -28,25 +33,8 @@ public class BenchmarkController {
     }
 
     @PostMapping("/run")
-    public ResponseEntity<Map<String, Object>> runBenchmark(@RequestBody Map<String, String> request) {
-        String repositoryId = request.getOrDefault("repositoryId", null);
-
-        List<BenchmarkResult> results = benchmark.runBenchmark(repositoryId);
-
-        long passCount = results.stream().filter(BenchmarkResult::intentMatch).count();
-        double accuracy = results.isEmpty() ? 0.0 : (passCount * 100.0 / results.size());
-        long avgLatency = results.isEmpty() ? 0 :
-                results.stream().mapToLong(BenchmarkResult::latencyMs).sum() / results.size();
-
-        Map<String, Object> response = Map.of(
-                "totalQueries", results.size(),
-                "passed", passCount,
-                "failed", results.size() - passCount,
-                "accuracyPercent", accuracy,
-                "averageLatencyMs", avgLatency,
-                "results", results
-        );
-
+    public ResponseEntity<BenchmarkResponse> runBenchmark(@Valid @RequestBody BenchmarkRequest request) {
+        BenchmarkResponse response = benchmark.runBenchmark(request);
         return ResponseEntity.ok(response);
     }
 }

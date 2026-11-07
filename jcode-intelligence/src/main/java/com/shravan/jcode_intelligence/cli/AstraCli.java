@@ -3,6 +3,7 @@ package com.shravan.jcode_intelligence.cli;
 import com.shravan.jcode_intelligence.cli.client.ApiClient;
 import com.shravan.jcode_intelligence.cli.commands.ArchitectureCommand;
 import com.shravan.jcode_intelligence.cli.commands.AskCommand;
+import com.shravan.jcode_intelligence.cli.commands.BenchmarkCommand;
 import com.shravan.jcode_intelligence.cli.commands.CallsCommand;
 import com.shravan.jcode_intelligence.cli.commands.ClassCommand;
 import com.shravan.jcode_intelligence.cli.commands.ClearCommand;
@@ -56,6 +57,7 @@ public class AstraCli {
         RemoveCommand removeCmd = new RemoveCommand(apiClient, context, consoleUI);
         StatsCommand statsCmd = new StatsCommand(apiClient, consoleUI);
         IndexCommand indexCmd = new IndexCommand(apiClient, consoleUI);
+        BenchmarkCommand benchmarkCmd = new BenchmarkCommand(apiClient, context, consoleUI);
         AskCommand askCmd = new AskCommand(apiClient, context, consoleUI);
         ClassCommand classCmd = new ClassCommand(apiClient, context, consoleUI);
         MethodCommand methodCmd = new MethodCommand(apiClient, context, consoleUI);
@@ -70,7 +72,7 @@ public class AstraCli {
         // -- Command infrastructure -----------------------------------------
         CommandParser parser = new CommandParser();
         CommandDispatcher dispatcher = new CommandDispatcher(
-                List.of(exitCmd, clearCmd, useCmd, doctorCmd, reposCmd, removeCmd, statsCmd, indexCmd, askCmd,
+                List.of(exitCmd, clearCmd, useCmd, doctorCmd, reposCmd, removeCmd, statsCmd, indexCmd, benchmarkCmd, askCmd,
                         classCmd, methodCmd, archCmd, workflowCmd, depCmd, callsCmd, searchCmd, summaryCmd, designCmd),
                 consoleUI
         );

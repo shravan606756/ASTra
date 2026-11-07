@@ -239,9 +239,12 @@ public class RetrievalBenchmark {
             }
 
             // Step 2: Retrieve documents with configured topK
+            // When ground truth is present, retrieve at least 25 candidates so Cutoff @ 25 metrics
+            // evaluate true ranking depth, while retrievedChunks is capped at topK for display.
+            int retrievalTopK = hasGroundTruth ? Math.max(topK, 25) : topK;
             long retrieveStart = System.currentTimeMillis();
             List<Document> documents = retrievalService.retrieve(
-                    bq.getQuery(), topK, repositoryId, ChatMode.AUTO
+                    bq.getQuery(), retrievalTopK, repositoryId, ChatMode.AUTO
             );
             long retrieveLatency = System.currentTimeMillis() - retrieveStart;
 
@@ -249,10 +252,10 @@ public class RetrievalBenchmark {
             QueryQualityMetricsDTO qualityMetrics = null;
             if (hasGroundTruth) {
                 qualityMetrics = evaluator.evaluateQuery(
-                        documents, bq.getRelevantChunks(), retrievedChunks
+                        documents, bq.getRelevantChunks(), retrievedChunks, topK
                 );
             } else {
-                evaluator.populateRetrievedChunks(documents, retrievedChunks);
+                evaluator.populateRetrievedChunks(documents, retrievedChunks, topK);
             }
 
             long totalQueryLatency = System.currentTimeMillis() - queryStart;
@@ -263,7 +266,7 @@ public class RetrievalBenchmark {
                     0L, // embedding latency if isolated
                     retrieveLatency,
                     0L, // reranking latency if isolated
-                    documents != null ? documents.size() : 0
+                    retrievedChunks.size()
             );
 
             QueryBenchmarkResultDTO result = new QueryBenchmarkResultDTO(

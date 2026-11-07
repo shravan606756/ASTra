@@ -78,6 +78,14 @@ public class RetrievalBenchmark {
     }
 
     public RetrievalBenchmark(RetrievalService retrievalService,
+                              QueryIntentClassifier intentClassifier,
+                              BenchmarkDatasetProvider datasetProvider,
+                              RetrievalEvaluator evaluator,
+                              RepositoryManagementService repositoryManagementService) {
+        this(retrievalService, intentClassifier, datasetProvider, evaluator, repositoryManagementService, null, "target/benchmark-runs/");
+    }
+
+    public RetrievalBenchmark(RetrievalService retrievalService,
                               QueryIntentClassifier intentClassifier) {
         this(retrievalService, intentClassifier, null, null, null, null, "target/benchmark-runs/");
     }

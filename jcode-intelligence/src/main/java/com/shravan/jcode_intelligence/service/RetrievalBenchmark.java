@@ -98,6 +98,10 @@ public class RetrievalBenchmark {
         if (request == null) {
             throw new IllegalArgumentException("BenchmarkRequest must not be null");
         }
+        if (request.isAsync()) {
+            throw new IllegalArgumentException("Asynchronous benchmark execution is not yet supported");
+        }
+        ChatMode chatMode = resolveChatMode(request.getRetrievalConfiguration());
         String requestedRepo = request.getResolvedRepositoryName();
         String resolvedRepo = resolveAndValidateRepository(requestedRepo);
 
@@ -131,7 +135,7 @@ public class RetrievalBenchmark {
             int timeoutCount = 0;
 
             for (BenchmarkQueryDefinition bq : queries) {
-                QueryBenchmarkResultDTO result = evaluateSingleQuery(bq, resolvedRepo, effectiveTopK);
+                QueryBenchmarkResultDTO result = evaluateSingleQuery(bq, resolvedRepo, effectiveTopK, chatMode);
                 results.add(result);
             }
 
@@ -178,7 +182,7 @@ public class RetrievalBenchmark {
 
         if (request.getCustomQuestions() != null) {
             for (com.shravan.jcode_intelligence.dto.request.CustomBenchmarkQuestionDTO cq : request.getCustomQuestions()) {
-                if (cq.getQuery() == null || cq.getQuery().isBlank()) {
+                if (cq == null || cq.getQuery() == null || cq.getQuery().isBlank()) {
                     continue;
                 }
                 String qid = (cq.getQueryId() != null && !cq.getQueryId().isBlank())
@@ -226,7 +230,8 @@ public class RetrievalBenchmark {
      */
     private QueryBenchmarkResultDTO evaluateSingleQuery(BenchmarkQueryDefinition bq,
                                                        String repositoryId,
-                                                       int topK) {
+                                                       int topK,
+                                                       ChatMode chatMode) {
         long queryStart = System.currentTimeMillis();
         List<RetrievedChunkDTO> retrievedChunks = new ArrayList<>();
         boolean hasGroundTruth = (bq.getRelevantChunks() != null && !bq.getRelevantChunks().isEmpty());
@@ -242,13 +247,13 @@ public class RetrievalBenchmark {
                 intentMatch = bq.getExpectedIntent().equalsIgnoreCase(classified.name());
             }
 
-            // Step 2: Retrieve documents with configured topK
+            // Step 2: Retrieve documents with configured topK and retrieval mode
             // When ground truth is present, retrieve at least 25 candidates so Cutoff @ 25 metrics
             // evaluate true ranking depth, while retrievedChunks is capped at topK for display.
             int retrievalTopK = hasGroundTruth ? Math.max(topK, 25) : topK;
             long retrieveStart = System.currentTimeMillis();
             List<Document> documents = retrievalService.retrieve(
-                    bq.getQuery(), retrievalTopK, repositoryId, ChatMode.AUTO
+                    bq.getQuery(), retrievalTopK, repositoryId, chatMode != null ? chatMode : ChatMode.AUTO
             );
             long retrieveLatency = System.currentTimeMillis() - retrieveStart;
 
@@ -327,7 +332,7 @@ public class RetrievalBenchmark {
         }
 
         List<String> indexedRepos = repositoryManagementService.listRepositories();
-        if (indexedRepos == null || indexedRepos.isEmpty()) {
+        if (indexedRepos == null) {
             return requestedName.trim();
         }
 
@@ -360,6 +365,20 @@ public class RetrievalBenchmark {
 
         // 4. Not found
         throw new IllegalArgumentException("Repository '" + requestedName + "' is not indexed. Available repositories: " + indexedRepos);
+    }
+
+    /**
+     * Resolves the requested retrieval configuration into a supported ChatMode.
+     */
+    private ChatMode resolveChatMode(String config) {
+        if (config == null || config.isBlank() || "DENSE_ONLY".equalsIgnoreCase(config) || "AUTO".equalsIgnoreCase(config)) {
+            return ChatMode.AUTO;
+        }
+        try {
+            return ChatMode.valueOf(config.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unsupported retrievalConfiguration: '" + config + "'. Valid options: DENSE_ONLY, AUTO, or a valid ChatMode name.");
+        }
     }
 
     /**

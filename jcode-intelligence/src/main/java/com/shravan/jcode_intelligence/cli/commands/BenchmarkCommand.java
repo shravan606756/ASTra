@@ -4,6 +4,7 @@ import com.shravan.jcode_intelligence.cli.client.ApiClient;
 import com.shravan.jcode_intelligence.cli.client.ApiException;
 import com.shravan.jcode_intelligence.cli.shell.CommandResult;
 import com.shravan.jcode_intelligence.cli.shell.ShellContext;
+import com.shravan.jcode_intelligence.cli.ui.BenchmarkTableFormatter;
 import com.shravan.jcode_intelligence.cli.ui.BunnyState;
 import com.shravan.jcode_intelligence.cli.ui.ConsoleUI;
 import com.shravan.jcode_intelligence.cli.ui.TableRenderer;
@@ -247,30 +248,11 @@ public class BenchmarkCommand implements Command {
                 if ("FAILED".equalsIgnoreCase(qStatus)) {
                     consoleUI.printError("   Error: " + qr.getErrorMessage());
                 } else if (qr.getRetrievedChunks() != null && !qr.getRetrievedChunks().isEmpty()) {
-                    TableRenderer chunkTable;
-                    if (qr.isHasGroundTruth() && qr.getRetrievedChunks().get(0).getRelevant() != null) {
-                        chunkTable = new TableRenderer("Rank", "File Path", "Element / Symbol", "Type", "Relevant?", "Grade");
-                        for (RetrievedChunkDTO chunk : qr.getRetrievedChunks()) {
-                            chunkTable.addRow(
-                                    String.valueOf(chunk.getRank()),
-                                    chunk.getFilePath() != null ? chunk.getFilePath() : "-",
-                                    chunk.getElementName() != null ? chunk.getElementName() : "-",
-                                    chunk.getType() != null ? chunk.getType() : "-",
-                                    Boolean.TRUE.equals(chunk.getRelevant()) ? "YES" : "NO",
-                                    chunk.getRelevanceGrade() != null ? String.valueOf(chunk.getRelevanceGrade()) : "-"
-                            );
-                        }
-                    } else {
-                        chunkTable = new TableRenderer("Rank", "File Path", "Element / Symbol", "Type");
-                        for (RetrievedChunkDTO chunk : qr.getRetrievedChunks()) {
-                            chunkTable.addRow(
-                                    String.valueOf(chunk.getRank()),
-                                    chunk.getFilePath() != null ? chunk.getFilePath() : "-",
-                                    chunk.getElementName() != null ? chunk.getElementName() : "-",
-                                    chunk.getType() != null ? chunk.getType() : "-"
-                            );
-                        }
+                    List<RetrievedChunkDTO> displayChunks = qr.getRetrievedChunks();
+                    if (response.getTopK() > 0 && displayChunks.size() > response.getTopK()) {
+                        displayChunks = displayChunks.subList(0, response.getTopK());
                     }
+                    TableRenderer chunkTable = BenchmarkTableFormatter.formatChunksTable(displayChunks, qr.isHasGroundTruth());
                     consoleUI.printTable(chunkTable);
                 }
                 System.out.println();

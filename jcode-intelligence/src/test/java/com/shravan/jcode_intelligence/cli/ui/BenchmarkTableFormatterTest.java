@@ -62,12 +62,12 @@ class BenchmarkTableFormatterTest {
     @DisplayName("formatChunksTable renders appropriate columns with and without ground truth")
     void testFormatChunksTable() {
         RetrievedChunkDTO chunk1 = new RetrievedChunkDTO(
-                1,
                 "c1",
                 "C:/Users/Temp/astra-repo-1/javaparser-core/src/main/java/com/github/javaparser/JavaParser.java",
                 "JavaParser",
                 "parse",
                 "METHOD",
+                1,
                 true,
                 3
         );
@@ -89,12 +89,12 @@ class BenchmarkTableFormatterTest {
 
         // Without ground truth
         RetrievedChunkDTO chunkNoGt = new RetrievedChunkDTO(
-                1,
                 "c2",
                 "src/main/java/com/example/Service.java",
                 "Service",
                 "execute",
                 "METHOD",
+                1,
                 null,
                 null
         );

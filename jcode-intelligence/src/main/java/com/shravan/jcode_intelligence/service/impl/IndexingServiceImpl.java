@@ -197,18 +197,35 @@ public class IndexingServiceImpl implements IndexingService {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int indexGitRepository(String gitUrl) throws IOException {
         String repoId = extractRepoName(gitUrl);
-        return indexGitRepository(gitUrl, repoId);
+        return indexGitRepository(gitUrl, repoId, null);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int indexGitRepository(String gitUrl, String repositoryId) throws IOException {
+        return indexGitRepository(gitUrl, repositoryId, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Shallow clones the repository using {@link GitService#cloneRepository(String, String)},
+     * parses and vectors the project files, and guarantees removal of temporary files upon completion.
+     */
+    @Override
+    public int indexGitRepository(String gitUrl, String repositoryId, String branch) throws IOException {
         Path tempDir = null;
         try {
-            log.info("Cloning Git repository: {}", gitUrl);
-            tempDir = gitService.cloneRepository(gitUrl);
+            log.info("Cloning Git repository: {}, branch: {}", gitUrl, (branch != null && !branch.isBlank() ? branch.trim() : "DEFAULT"));
+            tempDir = gitService.cloneRepository(gitUrl, branch);
             return indexProject(tempDir.toString(), repositoryId);
         } finally {
             if (tempDir != null) {

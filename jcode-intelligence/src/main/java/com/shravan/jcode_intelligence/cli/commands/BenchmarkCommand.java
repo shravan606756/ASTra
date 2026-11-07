@@ -201,15 +201,15 @@ public class BenchmarkCommand implements Command {
         System.out.println();
 
         // 1. Overview Table
-        TableRenderer overviewTable = new TableRenderer("Repository", "Mode", "Total Queries", "Success", "Failed", "Avg Latency", "Avg Chunks");
+        TableRenderer overviewTable = new TableRenderer("Repo", "Mode", "Queries", "Success", "Failed", "Avg Latency", "Avg Chunks");
         overviewTable.addRow(
                 response.getRepositoryName() != null ? response.getRepositoryName() : response.getRepositoryId(),
                 response.getMode() != null ? response.getMode() : response.getSuiteName(),
                 String.valueOf(summary != null ? summary.getTotalQueries() : 0),
                 String.valueOf(summary != null ? summary.getSuccessfulQueries() : 0),
                 String.valueOf(summary != null ? summary.getFailedQueries() : 0),
-                (summary != null ? summary.getAvgTotalLatencyMs() : 0) + " ms",
-                String.valueOf(summary != null ? summary.getAvgRetrievedChunks() : 0)
+                String.format("%.1f ms", summary != null ? summary.getAvgTotalLatencyMs() : 0.0),
+                String.format("%.2f", summary != null ? summary.getAvgRetrievedChunks() : 0.0)
         );
         consoleUI.printTable(overviewTable);
         System.out.println();
@@ -224,7 +224,7 @@ public class BenchmarkCommand implements Command {
             qualityTable.addRow("NDCG", formatNum(summary.getNdcgAt3()), formatNum(summary.getNdcgAt5()), formatNum(summary.getNdcgAt25()));
             consoleUI.printTable(qualityTable);
 
-            TableRenderer globalTable = new TableRenderer("MRR (Mean Reciprocal Rank)", "Context Precision", "Context Recall");
+            TableRenderer globalTable = new TableRenderer("MRR", "Context Precision", "Context Recall");
             globalTable.addRow(formatNum(summary.getMrr()), formatNum(summary.getContextPrecision()), formatNum(summary.getContextRecall()));
             consoleUI.printTable(globalTable);
             System.out.println();

@@ -81,7 +81,7 @@ class BenchmarkTableFormatterTest {
         assertTrue(renderedWithGt.contains("File"));
         assertTrue(renderedWithGt.contains("Symbol"));
         assertTrue(renderedWithGt.contains("Type"));
-        assertTrue(renderedWithGt.contains("Relevant?"));
+        assertTrue(renderedWithGt.contains("Rel?"));
         assertTrue(renderedWithGt.contains("Grade"));
         assertTrue(renderedWithGt.contains("YES"));
         assertTrue(renderedWithGt.contains("3"));
@@ -102,7 +102,7 @@ class BenchmarkTableFormatterTest {
         String renderedWithoutGt = tableWithoutGt.render();
         assertTrue(renderedWithoutGt.contains("Rank"));
         assertTrue(renderedWithoutGt.contains("File"));
-        assertFalse(renderedWithoutGt.contains("Relevant?"));
+        assertFalse(renderedWithoutGt.contains("Rel?"));
         assertFalse(renderedWithoutGt.contains("Grade"));
 
         // Empty chunks

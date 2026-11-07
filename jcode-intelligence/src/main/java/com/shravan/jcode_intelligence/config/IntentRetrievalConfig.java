@@ -135,6 +135,8 @@ public class IntentRetrievalConfig {
     @org.springframework.context.annotation.Bean
     @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
     public com.fasterxml.jackson.databind.ObjectMapper objectMapper() {
-        return new com.fasterxml.jackson.databind.ObjectMapper();
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        mapper.findAndRegisterModules();
+        return mapper;
     }
 }

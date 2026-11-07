@@ -122,7 +122,7 @@ public class BenchmarkRequest {
     }
 
     public void setTopK(int topK) {
-        this.topK = (topK > 0) ? topK : 5;
+        this.topK = topK;
     }
 
     public String getRetrievalConfiguration() {

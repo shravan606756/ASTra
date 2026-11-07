@@ -61,8 +61,8 @@ public class RetrievalEvaluator {
         // 1. Score each retrieved document against ground truths
         // To prevent duplicate inflation, each ground-truth item can only be satisfied once
         List<Integer> relevanceGrades = new ArrayList<>(documents.size());
-        Set<RelevantChunkDefinition> matchedGroundTruths = new HashSet<>();
-        Set<RelevantChunkDefinition> unsatisfiedGts = new HashSet<>(groundTruths);
+        Set<RelevantChunkDefinition> matchedGroundTruths = new LinkedHashSet<>();
+        Set<RelevantChunkDefinition> unsatisfiedGts = new LinkedHashSet<>(groundTruths);
 
         int displayLimit = (maxDisplayChunks > 0) ? Math.min(maxDisplayChunks, documents.size()) : documents.size();
 
@@ -191,6 +191,7 @@ public class RetrievalEvaluator {
         int successCount = 0;
         int failureCount = 0;
         int groundTruthQueryCount = 0;
+        int totalAnnotatedQueries = 0;
 
         double sumHr3 = 0, sumHr5 = 0, sumHr25 = 0;
         double sumRec3 = 0, sumRec5 = 0, sumRec25 = 0;
@@ -206,6 +207,9 @@ public class RetrievalEvaluator {
         long sumRetrievedChunks = 0;
 
         for (QueryBenchmarkResultDTO r : results) {
+            if (r.isHasGroundTruth()) {
+                totalAnnotatedQueries++;
+            }
             if ("SUCCESS".equalsIgnoreCase(r.getStatus())) {
                 successCount++;
                 if (r.getQualityMetrics() != null && r.isHasGroundTruth()) {
@@ -249,29 +253,31 @@ public class RetrievalEvaluator {
         summary.setFailedQueries(failureCount);
         summary.setFailureCount(failureCount);
 
-        if (groundTruthQueryCount > 0) {
+        if (totalAnnotatedQueries > 0) {
             summary.setHasGroundTruth(true);
-            int n = groundTruthQueryCount;
-            summary.setHitRateAt3(round(sumHr3 / n));
-            summary.setHitRateAt5(round(sumHr5 / n));
-            summary.setHitRateAt25(round(sumHr25 / n));
+            if (groundTruthQueryCount > 0) {
+                int n = groundTruthQueryCount;
+                summary.setHitRateAt3(round(sumHr3 / n));
+                summary.setHitRateAt5(round(sumHr5 / n));
+                summary.setHitRateAt25(round(sumHr25 / n));
 
-            summary.setRecallAt3(round(sumRec3 / n));
-            summary.setRecallAt5(round(sumRec5 / n));
-            summary.setRecallAt25(round(sumRec25 / n));
+                summary.setRecallAt3(round(sumRec3 / n));
+                summary.setRecallAt5(round(sumRec5 / n));
+                summary.setRecallAt25(round(sumRec25 / n));
 
-            summary.setPrecisionAt3(round(sumPrec3 / n));
-            summary.setPrecisionAt5(round(sumPrec5 / n));
-            summary.setPrecisionAt25(round(sumPrec25 / n));
+                summary.setPrecisionAt3(round(sumPrec3 / n));
+                summary.setPrecisionAt5(round(sumPrec5 / n));
+                summary.setPrecisionAt25(round(sumPrec25 / n));
 
-            summary.setMrr(round(sumMrr / n));
+                summary.setMrr(round(sumMrr / n));
 
-            summary.setNdcgAt3(round(sumNdcg3 / n));
-            summary.setNdcgAt5(round(sumNdcg5 / n));
-            summary.setNdcgAt25(round(sumNdcg25 / n));
+                summary.setNdcgAt3(round(sumNdcg3 / n));
+                summary.setNdcgAt5(round(sumNdcg5 / n));
+                summary.setNdcgAt25(round(sumNdcg25 / n));
 
-            summary.setContextPrecision(round(sumContextPrec / n));
-            summary.setContextRecall(round(sumContextRec / n));
+                summary.setContextPrecision(round(sumContextPrec / n));
+                summary.setContextRecall(round(sumContextRec / n));
+            }
         } else {
             summary.setHasGroundTruth(false);
         }
@@ -306,16 +312,27 @@ public class RetrievalEvaluator {
      */
     public double computeRecall(List<Integer> grades, int k, int totalRelevantGt,
                                 List<Document> documents, List<RelevantChunkDefinition> groundTruths) {
-        if (totalRelevantGt == 0) return 0.0;
+        if (totalRelevantGt == 0 || documents == null || groundTruths == null || k <= 0) return 0.0;
         int limit = Math.min(k, documents.size());
 
-        Set<RelevantChunkDefinition> matchedAtK = new HashSet<>();
+        Set<RelevantChunkDefinition> matchedAtK = new LinkedHashSet<>();
+        Set<RelevantChunkDefinition> remaining = new LinkedHashSet<>(groundTruths);
+
         for (int i = 0; i < limit; i++) {
             Document doc = documents.get(i);
-            for (RelevantChunkDefinition gt : groundTruths) {
+            RelevantChunkDefinition bestMatch = null;
+            int bestGrade = 0;
+            for (RelevantChunkDefinition gt : remaining) {
                 if (gt.getRelevance() > 0 && matches(doc, gt)) {
-                    matchedAtK.add(gt);
+                    if (gt.getRelevance() > bestGrade) {
+                        bestGrade = gt.getRelevance();
+                        bestMatch = gt;
+                    }
                 }
+            }
+            if (bestMatch != null) {
+                matchedAtK.add(bestMatch);
+                remaining.remove(bestMatch);
             }
         }
         return (double) matchedAtK.size() / totalRelevantGt;
@@ -442,7 +459,7 @@ public class RetrievalEvaluator {
         if (!gtPath.isBlank() && !docPath.isBlank()) {
             pathMatches = docPath.equals(gtPath)
                     || docPath.endsWith("/" + gtPath)
-                    || docPath.contains("/" + gtPath);
+                    || docPath.contains("/" + gtPath + "/");
         }
 
         boolean symbolMatches = false;
@@ -459,6 +476,24 @@ public class RetrievalEvaluator {
                     && gtSymbol.equalsIgnoreCase(className);
 
             symbolMatches = elemMatch || methodMatch || classChunkMatch;
+        }
+
+        // Optional line range bounds check if specified in ground truth
+        if (gt.getStartLine() != null || gt.getEndLine() != null) {
+            Object docStartObj = meta.get("startLine");
+            Object docEndObj = meta.get("endLine");
+            if (docStartObj != null && docEndObj != null) {
+                try {
+                    int docStart = Integer.parseInt(String.valueOf(docStartObj));
+                    int docEnd = Integer.parseInt(String.valueOf(docEndObj));
+                    if (gt.getStartLine() != null && docEnd < gt.getStartLine()) {
+                        return false;
+                    }
+                    if (gt.getEndLine() != null && docStart > gt.getEndLine()) {
+                        return false;
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
         }
 
         // If both path and symbol are specified, both must match

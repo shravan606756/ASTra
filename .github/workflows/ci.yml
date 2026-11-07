@@ -7,20 +7,51 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up JDK 21
-      uses: actions/setup-java@v4
-      with:
-        java-version: '21'
-        distribution: 'temurin'
-        cache: maven
-        
-    - name: Build and Test with Maven
-      run: mvn -B clean verify
-      working-directory: ./jcode-intelligence
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+          cache-dependency-path: 'jcode-intelligence/pom.xml'
+
+      - name: Build and Test with Maven
+        shell: bash
+        working-directory: ./jcode-intelligence
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            ./mvnw.cmd -B clean verify
+          else
+            chmod +x ./mvnw
+            ./mvnw -B clean verify
+          fi
+
+      - name: Upload Surefire Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.os }}
+          path: jcode-intelligence/target/surefire-reports/
+          retention-days: 7
+

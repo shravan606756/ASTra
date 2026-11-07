@@ -108,6 +108,13 @@ public class ApiClient {
     }
 
     /**
+     * Executes a retrieval evaluation benchmark.
+     */
+    public com.shravan.jcode_intelligence.dto.response.BenchmarkResponse runBenchmark(com.shravan.jcode_intelligence.dto.request.BenchmarkRequest request) {
+        return post("/api/v1/benchmark/run", request, com.shravan.jcode_intelligence.dto.response.BenchmarkResponse.class, Duration.ofMinutes(10));
+    }
+
+    /**
      * Reusable GET helper.
      */
     private <T> T get(String path, Class<T> responseType) {

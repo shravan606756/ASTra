@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.service.impl;
 
 import com.shravan.jcode_intelligence.service.GitService;
+import org.eclipse.jgit.api.CloneCommand;
 import org.eclipse.jgit.api.Git;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,35 +12,80 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+/**
+ * Implementation of {@link GitService} leveraging Eclipse JGit for local repository operations.
+ * <p>
+ * Employs shallow cloning (depth 1, single branch, no tags) to dramatically accelerate repository
+ * acquisition for AST parsing and vector indexing. Also manages repository lifecycles and fail-safe
+ * cleanup on Windows and POSIX filesystems.
+ */
 @Service
 public class GitServiceImpl implements GitService {
 
     private static final Logger log = LoggerFactory.getLogger(GitServiceImpl.class);
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Path cloneRepository(String gitUrl) throws IOException {
+        return cloneRepository(gitUrl, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Configures JGit {@link CloneCommand} with:
+     * <ul>
+     *   <li>{@code .setDepth(1)}: limits commit history to the latest commit</li>
+     *   <li>{@code .setCloneAllBranches(false)}: restricts acquisition to the target/default branch</li>
+     *   <li>{@code .setNoTags()}: avoids fetching unneeded git tags</li>
+     *   <li>{@code .setBranch(branch)}: targets a specific branch when provided</li>
+     * </ul>
+     * If an error occurs during cloning (e.g. nonexistent branch or unreachable remote), any
+     * partially created temporary directory is cleaned up immediately before re-throwing {@link IOException}.
+     */
+    @Override
+    public Path cloneRepository(String gitUrl, String branch) throws IOException {
         Path tempDir = Files.createTempDirectory("astra-repo-");
         long startTime = System.currentTimeMillis();
+        String branchDisplay = (branch != null && !branch.isBlank()) ? branch.trim() : "DEFAULT";
         try {
-            log.info("Clone Started - URL: {}, Directory: {}", gitUrl, tempDir);
-            Git.cloneRepository()
+            log.info("Clone Started - URL: {}, Branch: {}, Directory: {}", gitUrl, branchDisplay, tempDir);
+            CloneCommand cloneCommand = Git.cloneRepository()
                     .setURI(gitUrl)
                     .setDirectory(tempDir.toFile())
+                    .setDepth(1)
                     .setCloneAllBranches(false)
-                    .call()
-                    .close();
-            
+                    .setNoTags();
+
+            if (branch != null && !branch.isBlank()) {
+                cloneCommand.setBranch(branch.trim());
+            }
+
+            try (Git git = cloneCommand.call()) {
+                // Ensure JGit repository handle is closed immediately
+            }
+
             long duration = System.currentTimeMillis() - startTime;
-            log.info("Clone Completed - URL: {}, Elapsed Time: {} ms", gitUrl, duration);
+            log.info("Clone Completed - URL: {}, Branch: {}, Elapsed Time: {} ms", gitUrl, branchDisplay, duration);
             return tempDir;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
-            log.error("Clone Failed - URL: {}, Elapsed Time: {} ms, Error: {}", gitUrl, duration, e.getMessage());
+            log.error("Clone Failed - URL: {}, Branch: {}, Elapsed Time: {} ms, Error: {}",
+                    gitUrl, branchDisplay, duration, e.getMessage());
             cleanupRepository(tempDir);
-            throw new IOException("Failed to clone git repository: " + gitUrl, e);
+            String branchInfo = (branch != null && !branch.isBlank()) ? " (branch: " + branch.trim() + ")" : "";
+            throw new IOException("Failed to clone git repository: " + gitUrl + branchInfo, e);
         }
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Performs a recursive walk across the target directory, marking each file writable before
+     * deletion to avoid access violations on read-only git index / pack files (especially on Windows).
+     */
     @Override
     public void cleanupRepository(Path directory) {
         if (directory != null && Files.exists(directory)) {

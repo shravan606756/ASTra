@@ -356,6 +356,65 @@ class RetrievalBenchmarkTest {
         assertTrue(exMissing.getMessage().contains("Repository 'unknown-repo' is not indexed"));
     }
 
+    @Test
+    @DisplayName("Empty repository list rejects requested repository as unindexed")
+    void testEmptyRepositoryListRejectsRepo() {
+        RepositoryManagementService emptyRepoService = new RepositoryManagementService() {
+            @Override public List<String> listRepositories() { return Collections.emptyList(); }
+            @Override public boolean removeRepository(String repositoryId) { return false; }
+            @Override public void saveRepositoryStats(String repositoryId, com.shravan.jcode_intelligence.model.IndexingStatistics stats) {}
+            @Override public com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId) { return null; }
+        };
+
+        RetrievalBenchmark benchmark = new RetrievalBenchmark(
+                new FixedDocumentsRetrievalService(List.of()),
+                intentClassifier,
+                datasetProvider,
+                evaluator,
+                emptyRepoService
+        );
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                benchmark.runBenchmark(new BenchmarkRequest("any-repo")));
+        assertTrue(ex.getMessage().contains("Repository 'any-repo' is not indexed"));
+    }
+
+    @Test
+    @DisplayName("Asynchronous execution flag is rejected until non-blocking mode is implemented")
+    void testAsyncExecutionRejected() {
+        RetrievalBenchmark benchmark = new RetrievalBenchmark(
+                new FixedDocumentsRetrievalService(List.of()),
+                intentClassifier,
+                datasetProvider,
+                evaluator
+        );
+
+        BenchmarkRequest request = new BenchmarkRequest("javaparser");
+        request.setAsync(true);
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                benchmark.runBenchmark(request));
+        assertTrue(ex.getMessage().contains("Asynchronous benchmark execution is not yet supported"));
+    }
+
+    @Test
+    @DisplayName("Unsupported retrievalConfiguration is rejected with clear error")
+    void testUnsupportedRetrievalConfigurationRejected() {
+        RetrievalBenchmark benchmark = new RetrievalBenchmark(
+                new FixedDocumentsRetrievalService(List.of()),
+                intentClassifier,
+                datasetProvider,
+                evaluator
+        );
+
+        BenchmarkRequest request = new BenchmarkRequest("javaparser");
+        request.setRetrievalConfiguration("NON_EXISTENT_MODE");
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                benchmark.runBenchmark(request));
+        assertTrue(ex.getMessage().contains("Unsupported retrievalConfiguration"));
+    }
+
     // ── Stub Retrieval Service ────────────────────────────────
 
     private static class FixedDocumentsRetrievalService extends RetrievalServiceImpl {

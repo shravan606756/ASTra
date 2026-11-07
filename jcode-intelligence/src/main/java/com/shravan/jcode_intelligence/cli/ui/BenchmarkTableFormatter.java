@@ -1,5 +1,6 @@
 package com.shravan.jcode_intelligence.cli.ui;
 
+import com.shravan.jcode_intelligence.cli.util.TerminalUtils;
 import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.RetrievedChunkDTO;
 
 import java.util.List;
@@ -97,10 +98,35 @@ public class BenchmarkTableFormatter {
     }
 
     /**
-     * Builds an aligned TableRenderer for retrieved chunks.
+     * Builds an aligned TableRenderer for retrieved chunks that dynamically fits
+     * within the active terminal width to prevent horizontal line wrapping.
      */
     public static TableRenderer formatChunksTable(List<RetrievedChunkDTO> chunks, boolean hasGroundTruth) {
-        return formatChunksTable(chunks, hasGroundTruth, DEFAULT_MAX_FILE_WIDTH, DEFAULT_MAX_SYMBOL_WIDTH, DEFAULT_MAX_TYPE_WIDTH);
+        int termWidth = TerminalUtils.getTerminalWidth();
+        if (termWidth <= 0) {
+            termWidth = 100;
+        }
+        // Subtract 2 characters margin for terminal window borders/safety
+        int effectiveWidth = Math.max(76, Math.min(termWidth - 2, 120));
+
+        boolean showRelevance = hasGroundTruth && chunks != null && chunks.stream().anyMatch(c -> c.getRelevant() != null);
+        int maxFileWidth;
+        int maxSymbolWidth;
+        int maxTypeWidth = 7;
+
+        if (showRelevance) {
+            // Fixed chars: 19 (borders/spaces) + 4 (Rank) + 7 (Type) + 4 (Rel?) + 5 (Grade) = 39
+            int available = Math.max(30, effectiveWidth - 39);
+            maxFileWidth = (int) (available * 0.62);
+            maxSymbolWidth = available - maxFileWidth;
+        } else {
+            // Fixed chars: 13 (borders/spaces) + 4 (Rank) + 7 (Type) = 24
+            int available = Math.max(30, effectiveWidth - 24);
+            maxFileWidth = (int) (available * 0.65);
+            maxSymbolWidth = available - maxFileWidth;
+        }
+
+        return formatChunksTable(chunks, hasGroundTruth, maxFileWidth, maxSymbolWidth, maxTypeWidth);
     }
 
     /**
@@ -116,7 +142,7 @@ public class BenchmarkTableFormatter {
 
         TableRenderer table;
         if (showRelevance) {
-            table = new TableRenderer("Rank", "File", "Symbol", "Type", "Relevant?", "Grade");
+            table = new TableRenderer("Rank", "File", "Symbol", "Type", "Rel?", "Grade");
         } else {
             table = new TableRenderer("Rank", "File", "Symbol", "Type");
         }

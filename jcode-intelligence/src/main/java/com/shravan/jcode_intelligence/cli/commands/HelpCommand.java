@@ -59,7 +59,7 @@ public class HelpCommand implements Command {
 
         for (Command cmd : dispatcher.getRegisteredCommands()) {
             String name = cmd.name();
-            if (List.of("doctor", "repos", "stats", "remove", "index").contains(name)) {
+            if (List.of("doctor", "repos", "stats", "remove", "index", "benchmark").contains(name)) {
                 groups.get("REPOSITORY").add(cmd);
             } else if (List.of("use").contains(name)) {
                 groups.get("CONTEXT").add(cmd);

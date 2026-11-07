@@ -21,10 +21,10 @@ public class RetrievalEvaluator {
     /**
      * Evaluates a ranked list of retrieved documents against expected relevant chunks for a query.
      *
-     * @param documents      retrieved ranked documents
-     * @param groundTruths   expected relevant chunks with graded relevance
-     * @param retrievedChunks list to populate with scored chunk representations
-     * @return calculated per-query quality metrics
+     * @param documents ranked documents; null is treated as empty
+     * @param groundTruths expected relevant chunks with graded relevance
+     * @param retrievedChunks optional list to append chunk representations to
+     * @return per-query quality metrics, or null when ground truth is null or empty
      */
     public QueryQualityMetricsDTO evaluateQuery(List<Document> documents,
                                                 List<RelevantChunkDefinition> groundTruths,
@@ -33,14 +33,16 @@ public class RetrievalEvaluator {
     }
 
     /**
-     * Evaluates a ranked list of retrieved documents against expected relevant chunks for a query,
-     * limiting the number of chunks added to retrievedChunks to maxDisplayChunks.
+     * Evaluates all ranked documents against expected relevant chunks, consuming each
+     * ground-truth definition at most once for chunk scoring. The display limit does not
+     * limit the documents used for metrics.
      *
-     * @param documents        retrieved ranked documents
-     * @param groundTruths     expected relevant chunks with graded relevance
-     * @param retrievedChunks  list to populate with scored chunk representations
-     * @param maxDisplayChunks maximum chunks to populate in retrievedChunks (<= 0 for all)
-     * @return calculated per-query quality metrics
+     * @param documents ranked documents; null is treated as empty
+     * @param groundTruths expected relevant chunks with graded relevance
+     * @param retrievedChunks optional list to append chunk representations to
+     * @param maxDisplayChunks maximum chunks to append; zero or less includes all
+     * @return per-query quality metrics, or null when ground truth is null or empty;
+     *         in that case appended chunks have null relevance fields
      */
     public QueryQualityMetricsDTO evaluateQuery(List<Document> documents,
                                                 List<RelevantChunkDefinition> groundTruths,
@@ -143,8 +145,9 @@ public class RetrievalEvaluator {
     }
 
     /**
-     * Populates retrieved chunk representations when ground truth is not provided,
-     * limiting output to maxDisplayChunks.
+     * Appends retrieved chunk representations with null relevance fields.
+     *
+     * @param maxDisplayChunks maximum chunks to append; zero or less includes all
      */
     public void populateRetrievedChunks(List<Document> documents, List<RetrievedChunkDTO> retrievedChunks, int maxDisplayChunks) {
         if (documents == null || retrievedChunks == null) return;
@@ -166,7 +169,12 @@ public class RetrievalEvaluator {
     }
 
     /**
-     * Aggregates individual query benchmark results into a top-level summary.
+     * Aggregates query results into a summary. Quality metrics are averaged over
+     * successful results with ground truth and quality metrics; operational averages
+     * use all results, including failures and results without operational metrics.
+     *
+     * @param totalDurationMs total run duration in milliseconds
+     * @param timeoutCount number of timeouts to include in the summary
      */
     public BenchmarkSummaryDTO aggregateSummary(List<QueryBenchmarkResultDTO> results,
                                                long totalDurationMs,
@@ -280,6 +288,7 @@ public class RetrievalEvaluator {
 
     // ── Metric Calculation Helpers ────────────────────────────
 
+    /** Returns 1 if a positive grade occurs within the first {@code k} ranks, otherwise 0. */
     public double computeHitRate(List<Integer> grades, int k) {
         int limit = Math.min(k, grades.size());
         for (int i = 0; i < limit; i++) {
@@ -290,6 +299,11 @@ public class RetrievalEvaluator {
         return 0.0;
     }
 
+    /**
+     * Returns the number of distinct positive-relevance definitions matched by the first
+     * {@code k} documents divided by {@code totalRelevantGt}, or zero if that total is zero.
+     * One document can match multiple definitions; the grades parameter is not used.
+     */
     public double computeRecall(List<Integer> grades, int k, int totalRelevantGt,
                                 List<Document> documents, List<RelevantChunkDefinition> groundTruths) {
         if (totalRelevantGt == 0) return 0.0;
@@ -307,6 +321,10 @@ public class RetrievalEvaluator {
         return (double) matchedAtK.size() / totalRelevantGt;
     }
 
+    /**
+     * Returns the number of positive grades in the first {@code k} ranks divided by
+     * {@code k}, including when fewer grades are available; returns zero for nonpositive k.
+     */
     public double computePrecision(List<Integer> grades, int k) {
         if (k <= 0) return 0.0;
         int limit = Math.min(k, grades.size());
@@ -319,6 +337,7 @@ public class RetrievalEvaluator {
         return (double) relevantCount / k;
     }
 
+    /** Returns the reciprocal of the first positive grade's one-based rank, or zero if absent. */
     public double computeReciprocalRank(List<Integer> grades) {
         for (int i = 0; i < grades.size(); i++) {
             if (grades.get(i) > 0) {
@@ -328,6 +347,10 @@ public class RetrievalEvaluator {
         return 0.0;
     }
 
+    /**
+     * Returns graded DCG at {@code k} divided by the ideal DCG from positive ground-truth
+     * grades, capped at 1. Returns zero for nonpositive k or zero ideal DCG.
+     */
     public double computeNdcg(List<Integer> grades, int k, List<RelevantChunkDefinition> groundTruths) {
         if (k <= 0) return 0.0;
         int limit = Math.min(k, grades.size());
@@ -368,6 +391,10 @@ public class RetrievalEvaluator {
         return Math.min(1.0, dcg / idcg);
     }
 
+    /**
+     * Returns the mean precision at ranks with positive grades, or zero if grades are
+     * null, empty, or contain no positive grades.
+     */
     public double computeContextPrecision(List<Integer> grades) {
         if (grades == null || grades.isEmpty()) return 0.0;
 
@@ -391,6 +418,14 @@ public class RetrievalEvaluator {
 
     // ── Matching Logic ────────────────────────────────────────
 
+    /**
+     * Tests the specified path and symbol against document metadata. Both must match when
+     * both are present; a definition with neither does not match. Paths use normalized
+     * slashes, and class-name matches require a class, interface, record, or enum chunk.
+     * Line bounds in the definition are not considered.
+     *
+     * @return false if either argument is null or the specified fields do not match
+     */
     public boolean matches(Document doc, RelevantChunkDefinition gt) {
         if (doc == null || gt == null) return false;
 

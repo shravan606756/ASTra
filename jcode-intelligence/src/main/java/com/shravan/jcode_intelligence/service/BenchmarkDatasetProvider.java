@@ -43,7 +43,8 @@ public class BenchmarkDatasetProvider {
     }
 
     /**
-     * Loads all benchmark suites found under classpath:benchmarks/*.json
+     * Loads suites found under {@code classpath*:benchmarks/*.json}. Discovery and
+     * resource loading errors are caught and do not propagate to the caller.
      */
     public synchronized void loadClasspathSuites() {
         try {
@@ -74,7 +75,8 @@ public class BenchmarkDatasetProvider {
     /**
      * Retrieves a benchmark suite by name.
      *
-     * @param suiteName the name or filename of the suite (e.g. "default")
+     * @param suiteName the suite name or filename base without {@code .json}, matched
+     *                  case-insensitively; null or blank selects {@code default}
      * @return the loaded {@link BenchmarkSuite}
      * @throws IllegalArgumentException if the suite is not found
      */

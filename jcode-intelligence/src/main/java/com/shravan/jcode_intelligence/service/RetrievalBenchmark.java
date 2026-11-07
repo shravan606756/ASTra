@@ -83,12 +83,16 @@ public class RetrievalBenchmark {
     }
 
     /**
-     * Executes the benchmark suite specified in the request.
+     * Executes the requested suite or custom questions. Query exceptions are recorded as
+     * failed results so later queries can run. The response is also written to the history
+     * directory when possible; persistence failures do not prevent it from being returned.
      *
      * @param request the benchmark configuration request
-     * @return strongly-typed {@link BenchmarkResponse} containing summary and per-query metrics
-     * @throws BenchmarkConflictException if another benchmark suite is currently executing
-     * @throws IllegalArgumentException    if repositoryId is invalid or unindexed
+     * @return {@link BenchmarkResponse} containing summary and per-query metrics
+     * @throws BenchmarkConflictException if another benchmark is executing on this instance
+     * @throws IllegalArgumentException if the request or repository is invalid, the repository
+     *         is ambiguous or not indexed, the suite is unavailable, or custom questions are blank
+     * @throws org.springframework.dao.DataAccessException if repository lookup encounters a data access error
      */
     public BenchmarkResponse runBenchmark(BenchmarkRequest request) {
         if (request == null) {
@@ -384,8 +388,14 @@ public class RetrievalBenchmark {
     // ── Legacy Compatibility Overload ─────────────────────────
 
     /**
-     * Legacy runner method for backward compatibility with existing tests.
-     * Delegates to the externalized benchmark dataset infrastructure.
+     * Runs the default suite and adapts its results to the legacy format.
+     *
+     * @param repositoryId repository name; null selects {@code javaparser}
+     * @return legacy results for the suite's queries
+     * @throws BenchmarkConflictException if another benchmark is executing on this instance
+     * @throws IllegalArgumentException if the repository is invalid, ambiguous or not indexed,
+     *         or the default suite is unavailable
+     * @throws org.springframework.dao.DataAccessException if repository lookup encounters a data access error
      */
     public List<BenchmarkResult> runBenchmark(String repositoryId) {
         BenchmarkRequest request = new BenchmarkRequest(repositoryId != null ? repositoryId : "javaparser");

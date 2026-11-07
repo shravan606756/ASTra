@@ -22,7 +22,8 @@ public class BenchmarkTableFormatter {
     public static final int DEFAULT_MAX_TYPE_WIDTH = 12;
 
     /**
-     * Cleans an absolute or temporary filesystem path into a repository-relative path with normalized forward slashes.
+     * Normalizes slashes and removes recognized temporary extraction prefixes and leading
+     * slashes. Returns {@code "-"} for a null or blank input.
      */
     public static String cleanRepoPath(String rawPath) {
         if (rawPath == null || rawPath.isBlank()) {
@@ -51,8 +52,10 @@ public class BenchmarkTableFormatter {
     }
 
     /**
-     * Intelligently truncates a path to fit within maxLen using '...' while preserving
-     * the filename and innermost parent directories.
+     * Cleans and truncates a path to fit within {@code maxLen}, retaining the end of
+     * the filename and as many innermost parent directories as fit.
+     *
+     * @throws StringIndexOutOfBoundsException if truncation is needed and maxLen is less than 3
      */
     public static String truncatePath(String rawPath, int maxLen) {
         String clean = cleanRepoPath(rawPath);
@@ -84,7 +87,10 @@ public class BenchmarkTableFormatter {
     }
 
     /**
-     * Truncates a symbol or element name if it exceeds maxLen.
+     * Trims and truncates a symbol with an ellipsis if it exceeds {@code maxLen}.
+     * Returns {@code "-"} for a null or blank symbol.
+     *
+     * @throws StringIndexOutOfBoundsException if truncation is needed and maxLen is less than 3
      */
     public static String truncateSymbol(String symbol, int maxLen) {
         if (symbol == null || symbol.isBlank()) {

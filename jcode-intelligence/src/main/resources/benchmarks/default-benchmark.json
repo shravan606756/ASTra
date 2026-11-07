@@ -1,0 +1,1015 @@
+{
+  "suiteName": "default",
+  "description": "Curated 50-question ground-truth benchmark dataset covering 7 core retrieval categories for Java codebases.",
+  "version": "1.0.0",
+  "defaultRepositoryId": "javaparser",
+  "queries": [
+    {
+      "queryId": "Q01",
+      "query": "Where is LexicalPreservingPrinter implemented?",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/printer/lexicalpreservation/LexicalPreservingPrinter.java",
+          "symbol": "LexicalPreservingPrinter",
+          "startLine": 73,
+          "endLine": 934,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "LexicalPreservingPrinter is implemented in the com.github.javaparser.printer.lexicalpreservation package.",
+      "expectedCitations": ["LexicalPreservingPrinter.java"]
+    },
+    {
+      "queryId": "Q02",
+      "query": "Explain Node class responsibilities",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "Node",
+          "startLine": 60,
+          "endLine": 500,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "Node is the abstract base class for all nodes in the JavaParser Abstract Syntax Tree.",
+      "expectedCitations": ["Node.java"]
+    },
+    {
+      "queryId": "Q03",
+      "query": "Which class represents a compilation unit in JavaParser?",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/CompilationUnit.java",
+          "symbol": "CompilationUnit",
+          "startLine": 45,
+          "endLine": 350,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "CompilationUnit represents a complete Java source file.",
+      "expectedCitations": ["CompilationUnit.java"]
+    },
+    {
+      "queryId": "Q04",
+      "query": "Where is MethodDeclaration located?",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/body/MethodDeclaration.java",
+          "symbol": "MethodDeclaration",
+          "startLine": 40,
+          "endLine": 280,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "MethodDeclaration is located in com.github.javaparser.ast.body representing method signatures and bodies.",
+      "expectedCitations": ["MethodDeclaration.java"]
+    },
+    {
+      "queryId": "Q05",
+      "query": "What is ClassOrInterfaceDeclaration?",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/body/ClassOrInterfaceDeclaration.java",
+          "symbol": "ClassOrInterfaceDeclaration",
+          "startLine": 35,
+          "endLine": 320,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "Represents the declaration of a Java class or interface in the AST.",
+      "expectedCitations": ["ClassOrInterfaceDeclaration.java"]
+    },
+    {
+      "queryId": "Q06",
+      "query": "Explain NodeList collection class",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/NodeList.java",
+          "symbol": "NodeList",
+          "startLine": 40,
+          "endLine": 260,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "NodeList is an observable, parent-aware collection of AST nodes.",
+      "expectedCitations": ["NodeList.java"]
+    },
+    {
+      "queryId": "Q07",
+      "query": "Where is JavaParserFacade located?",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/symbolsolver/javaparsermodel/JavaParserFacade.java",
+          "symbol": "JavaParserFacade",
+          "startLine": 50,
+          "endLine": 450,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "JavaParserFacade is the primary entry point for type solving.",
+      "expectedCitations": ["JavaParserFacade.java"]
+    },
+    {
+      "queryId": "Q08",
+      "query": "What is ModifierVisitor?",
+      "category": "Class identification",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/visitor/ModifierVisitor.java",
+          "symbol": "ModifierVisitor",
+          "startLine": 30,
+          "endLine": 400,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "ModifierVisitor is an AST visitor that allows mutating or replacing nodes during traversal.",
+      "expectedCitations": ["ModifierVisitor.java"]
+    },
+    {
+      "queryId": "Q09",
+      "query": "Explain findAll() method implementation",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "findAll",
+          "startLine": 310,
+          "endLine": 330,
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "Node",
+          "startLine": 60,
+          "endLine": 500,
+          "relevance": 1
+        }
+      ],
+      "referenceAnswer": "findAll recursively traverses the subtree collecting all nodes assignable to the specified class.",
+      "expectedCitations": ["Node.java#findAll"]
+    },
+    {
+      "queryId": "Q10",
+      "query": "How is parse() implemented in JavaParser?",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/JavaParser.java",
+          "symbol": "parse",
+          "startLine": 120,
+          "endLine": 175,
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/JavaParser.java",
+          "symbol": "JavaParser",
+          "startLine": 40,
+          "endLine": 300,
+          "relevance": 1
+        }
+      ],
+      "referenceAnswer": "parse initiates lexing and LL(k) parsing on the provided input source.",
+      "expectedCitations": ["JavaParser.java#parse"]
+    },
+    {
+      "queryId": "Q11",
+      "query": "Explain findFirst() implementation",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "findFirst",
+          "startLine": 335,
+          "endLine": 355,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "findFirst finds the first node of the given type encountered in breadth-first or depth-first traversal.",
+      "expectedCitations": ["Node.java#findFirst"]
+    },
+    {
+      "queryId": "Q12",
+      "query": "How does getParentNode() resolve its parent?",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "getParentNode",
+          "startLine": 180,
+          "endLine": 195,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "getParentNode returns an Optional containing the parent node reference if attached.",
+      "expectedCitations": ["Node.java#getParentNode"]
+    },
+    {
+      "queryId": "Q13",
+      "query": "Explain remove() method in Node",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "remove",
+          "startLine": 240,
+          "endLine": 270,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "remove detaches the node from its parent AST hierarchy.",
+      "expectedCitations": ["Node.java#remove"]
+    },
+    {
+      "queryId": "Q14",
+      "query": "How does replace() work in Node?",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "replace",
+          "startLine": 275,
+          "endLine": 305,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "replace swaps the target node with a replacement node within its parent.",
+      "expectedCitations": ["Node.java#replace"]
+    },
+    {
+      "queryId": "Q15",
+      "query": "Explain clone() implementation on Node",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "clone",
+          "startLine": 410,
+          "endLine": 435,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "clone performs a deep copy of the node and all child descendants.",
+      "expectedCitations": ["Node.java#clone"]
+    },
+    {
+      "queryId": "Q16",
+      "query": "Explain walk() method in Node",
+      "category": "Method implementation",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "walk",
+          "startLine": 360,
+          "endLine": 385,
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "walk traverses the AST yielding a Stream of child and descendant nodes.",
+      "expectedCitations": ["Node.java#walk"]
+    },
+    {
+      "queryId": "Q17",
+      "query": "How does JavaParser parse a Java source file from start to finish?",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/JavaParser.java",
+          "symbol": "parse",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/GeneratedJavaParser.java",
+          "symbol": "CompilationUnit",
+          "relevance": 2
+        },
+        {
+          "filePath": "com/github/javaparser/ParseResult.java",
+          "symbol": "ParseResult",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "JavaParser instantiates GeneratedJavaParser, streams tokens, constructs the AST, and encapsulates it in a ParseResult.",
+      "expectedCitations": ["JavaParser.java", "ParseResult.java"]
+    },
+    {
+      "queryId": "Q18",
+      "query": "Trace the LexicalPreservingPrinter setup and print workflow",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/printer/lexicalpreservation/LexicalPreservingPrinter.java",
+          "symbol": "setup",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/printer/lexicalpreservation/LexicalPreservingPrinter.java",
+          "symbol": "print",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/printer/ConcreteSyntaxModel.java",
+          "symbol": "genericPrettyPrint",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "setup attaches an AstObserver to track node mutations; print synthesizes original formatting with modified tokens.",
+      "expectedCitations": ["LexicalPreservingPrinter.java", "ConcreteSyntaxModel.java"]
+    },
+    {
+      "queryId": "Q19",
+      "query": "How does symbol solving resolve a method call expression?",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/symbolsolver/javaparsermodel/JavaParserFacade.java",
+          "symbol": "solveMethodAsUsage",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/expr/MethodCallExpr.java",
+          "symbol": "MethodCallExpr",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "JavaParserFacade resolves scope, method declaration candidates, and performs type inference on arguments.",
+      "expectedCitations": ["JavaParserFacade.java", "MethodCallExpr.java"]
+    },
+    {
+      "queryId": "Q20",
+      "query": "Trace the visitor traversal flow in VoidVisitorAdapter",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/visitor/VoidVisitorAdapter.java",
+          "symbol": "visit",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "accept",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Each node accept() dispatches to the corresponding visit() method which recurses over child nodes.",
+      "expectedCitations": ["VoidVisitorAdapter.java", "Node.java"]
+    },
+    {
+      "queryId": "Q21",
+      "query": "How are comments attributed to AST nodes during parsing?",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/comments/CommentsCollection.java",
+          "symbol": "CommentsCollection",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "setComment",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Comments are collected during tokenization and assigned to nearest AST nodes using position attribution heuristics.",
+      "expectedCitations": ["CommentsCollection.java", "Node.java"]
+    },
+    {
+      "queryId": "Q22",
+      "query": "Describe the pretty printing pipeline from CompilationUnit to string",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/printer/DefaultPrettyPrinter.java",
+          "symbol": "print",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/printer/configuration/PrettyPrinterConfiguration.java",
+          "symbol": "PrettyPrinterConfiguration",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "CompilationUnit delegates to DefaultPrettyPrinterVisitor which formats tokens according to PrettyPrinterConfiguration.",
+      "expectedCitations": ["DefaultPrettyPrinter.java"]
+    },
+    {
+      "queryId": "Q23",
+      "query": "How does source root processing batch-parse multiple files?",
+      "category": "Multi-class execution flows",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/utils/SourceRoot.java",
+          "symbol": "tryToParse",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/utils/SourceRoot.java",
+          "symbol": "SourceRoot",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "SourceRoot traverses folder paths and invokes JavaParser concurrently or serially across Java source files.",
+      "expectedCitations": ["SourceRoot.java"]
+    },
+    {
+      "queryId": "Q24",
+      "query": "Which classes use or extend Node?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "Node",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/body/BodyDeclaration.java",
+          "symbol": "BodyDeclaration",
+          "relevance": 2
+        },
+        {
+          "filePath": "com/github/javaparser/ast/expr/Expression.java",
+          "symbol": "Expression",
+          "relevance": 2
+        },
+        {
+          "filePath": "com/github/javaparser/ast/stmt/Statement.java",
+          "symbol": "Statement",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Almost all AST elements including BodyDeclaration, Expression, and Statement extend Node.",
+      "expectedCitations": ["Node.java", "BodyDeclaration.java", "Expression.java", "Statement.java"]
+    },
+    {
+      "queryId": "Q25",
+      "query": "Which classes use NodeList?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/NodeList.java",
+          "symbol": "NodeList",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/body/ClassOrInterfaceDeclaration.java",
+          "symbol": "getMembers",
+          "relevance": 2
+        },
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "getChildNodes",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "ClassOrInterfaceDeclaration, BlockStmt, and MethodDeclaration use NodeList to hold collections of child nodes.",
+      "expectedCitations": ["NodeList.java"]
+    },
+    {
+      "queryId": "Q26",
+      "query": "What implements the Visitable interface?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/visitor/Visitable.java",
+          "symbol": "Visitable",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "Node",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "The Node class implements Visitable, allowing all AST nodes to participate in the visitor pattern.",
+      "expectedCitations": ["Visitable.java", "Node.java"]
+    },
+    {
+      "queryId": "Q27",
+      "query": "Which classes call ParserConfiguration?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ParserConfiguration.java",
+          "symbol": "ParserConfiguration",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/JavaParser.java",
+          "symbol": "JavaParser",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "JavaParser and SourceRoot inject and query ParserConfiguration settings.",
+      "expectedCitations": ["ParserConfiguration.java", "JavaParser.java"]
+    },
+    {
+      "queryId": "Q28",
+      "query": "What are the callers of getChildNodes()?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "getChildNodes",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "walk",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "The walk() method and AST navigators call getChildNodes() for hierarchy traversal.",
+      "expectedCitations": ["Node.java#getChildNodes"]
+    },
+    {
+      "queryId": "Q29",
+      "query": "What interfaces does BodyDeclaration implement?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/body/BodyDeclaration.java",
+          "symbol": "BodyDeclaration",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/nodeTypes/NodeWithAnnotations.java",
+          "symbol": "NodeWithAnnotations",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "BodyDeclaration implements NodeWithAnnotations and extends Node.",
+      "expectedCitations": ["BodyDeclaration.java"]
+    },
+    {
+      "queryId": "Q30",
+      "query": "Which classes implement GenericVisitor?",
+      "category": "Dependencies and caller relationships",
+      "repositoryId": "javaparser",
+      "expectedIntent": "RELATIONSHIP",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/visitor/GenericVisitor.java",
+          "symbol": "GenericVisitor",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/visitor/GenericVisitorAdapter.java",
+          "symbol": "GenericVisitorAdapter",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "GenericVisitorAdapter and custom query visitors implement GenericVisitor.",
+      "expectedCitations": ["GenericVisitor.java", "GenericVisitorAdapter.java"]
+    },
+    {
+      "queryId": "Q31",
+      "query": "Where is ParseProblemException defined and when is it thrown?",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ParseProblemException.java",
+          "symbol": "ParseProblemException",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ParseResult.java",
+          "symbol": "getResult",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "ParseProblemException is thrown when a syntax or tokenization problem aborts parsing.",
+      "expectedCitations": ["ParseProblemException.java"]
+    },
+    {
+      "queryId": "Q32",
+      "query": "How are ParseProblem instances collected during parsing?",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/Problem.java",
+          "symbol": "Problem",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ParseResult.java",
+          "symbol": "getProblems",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Problems are accumulated in ParseResult rather than throwing directly, enabling resilient parsing.",
+      "expectedCitations": ["Problem.java", "ParseResult.java"]
+    },
+    {
+      "queryId": "Q33",
+      "query": "Explain NoSuchElementException handling in findFirst",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "findFirst",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "findFirst returns Optional.empty() rather than throwing NoSuchElementException when no match is found.",
+      "expectedCitations": ["Node.java#findFirst"]
+    },
+    {
+      "queryId": "Q34",
+      "query": "Where is UnsolvedSymbolException thrown in symbol solver?",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/resolution/UnsolvedSymbolException.java",
+          "symbol": "UnsolvedSymbolException",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "Thrown when a type, method, or field symbol cannot be resolved against the classpath.",
+      "expectedCitations": ["UnsolvedSymbolException.java"]
+    },
+    {
+      "queryId": "Q35",
+      "query": "How does JavaParser handle encoding and file read IOExceptions?",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/StaticJavaParser.java",
+          "symbol": "parse",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/JavaParser.java",
+          "symbol": "parse",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "File read operations catch IOException and rethrow or return a ParseResult with file IO problems.",
+      "expectedCitations": ["StaticJavaParser.java"]
+    },
+    {
+      "queryId": "Q36",
+      "query": "What causes an IllegalStateException in LexicalPreservingPrinter?",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/printer/lexicalpreservation/LexicalPreservingPrinter.java",
+          "symbol": "setup",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "Thrown when trying to set up lexical preservation on a node that already has observers attached.",
+      "expectedCitations": ["LexicalPreservingPrinter.java"]
+    },
+    {
+      "queryId": "Q37",
+      "query": "How are recovery tokens handled when syntax errors occur?",
+      "category": "Exception handling",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/GeneratedJavaParser.java",
+          "symbol": "recoverFromError",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "The generated parser attempts error recovery by skipping invalid tokens up to a synchronization point.",
+      "expectedCitations": ["GeneratedJavaParser.java"]
+    },
+    {
+      "queryId": "Q38",
+      "query": "Explain type resolution logic in TypeSolver",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/symbolsolver/model/resolution/TypeSolver.java",
+          "symbol": "TypeSolver",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/symbolsolver/resolution/typesolvers/CombinedTypeSolver.java",
+          "symbol": "tryToSolveType",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "TypeSolver queries registered source and JAR solvers sequentially until the qualified type is resolved.",
+      "expectedCitations": ["TypeSolver.java", "CombinedTypeSolver.java"]
+    },
+    {
+      "queryId": "Q39",
+      "query": "How does MethodCallExpr compute its argument types?",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/expr/MethodCallExpr.java",
+          "symbol": "getArguments",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/symbolsolver/javaparsermodel/JavaParserFacade.java",
+          "symbol": "getType",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Arguments are traversed and their types are inferred by evaluating expressions against the type solver context.",
+      "expectedCitations": ["MethodCallExpr.java", "JavaParserFacade.java"]
+    },
+    {
+      "queryId": "Q40",
+      "query": "Explain line and column range calculation in Range",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/Range.java",
+          "symbol": "Range",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/Position.java",
+          "symbol": "Position",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Range encapsulates begin and end Position objects representing 1-based line and column coordinates.",
+      "expectedCitations": ["Range.java", "Position.java"]
+    },
+    {
+      "queryId": "Q41",
+      "query": "How does Node determine if it contains another node?",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/Node.java",
+          "symbol": "contains",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/Range.java",
+          "symbol": "contains",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Evaluates coordinate containment via Range.contains() and verifies tree ancestor relationships.",
+      "expectedCitations": ["Node.java#contains"]
+    },
+    {
+      "queryId": "Q42",
+      "query": "Explain import ordering and duplicate elimination logic",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/CompilationUnit.java",
+          "symbol": "addImport",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "addImport checks for existing import declarations and inserts new imports preserving standard Java conventions.",
+      "expectedCitations": ["CompilationUnit.java#addImport"]
+    },
+    {
+      "queryId": "Q43",
+      "query": "How are variable declarations fragmented into individual declarators?",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ast/body/VariableDeclarator.java",
+          "symbol": "VariableDeclarator",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ast/expr/VariableDeclarationExpr.java",
+          "symbol": "VariableDeclarationExpr",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "VariableDeclarationExpr holds a NodeList of VariableDeclarator objects sharing common modifiers and types.",
+      "expectedCitations": ["VariableDeclarator.java"]
+    },
+    {
+      "queryId": "Q44",
+      "query": "Explain javadoc parsing and tag extraction logic",
+      "category": "Business logic",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/javadoc/Javadoc.java",
+          "symbol": "Javadoc",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/javadoc/JavadocBlockTag.java",
+          "symbol": "JavadocBlockTag",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Javadoc parses raw comment blocks into descriptions and structured block tags (@param, @return, @throws).",
+      "expectedCitations": ["Javadoc.java"]
+    },
+    {
+      "queryId": "Q45",
+      "query": "Explain ParserConfiguration options and language levels",
+      "category": "Configuration and initialization",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ParserConfiguration.java",
+          "symbol": "ParserConfiguration",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/ParserConfiguration.java",
+          "symbol": "setLanguageLevel",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "ParserConfiguration controls Java language level, lexical preservation, symbol solving, and tab width.",
+      "expectedCitations": ["ParserConfiguration.java"]
+    },
+    {
+      "queryId": "Q46",
+      "query": "How is StaticJavaParser configured?",
+      "category": "Configuration and initialization",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/StaticJavaParser.java",
+          "symbol": "setConfiguration",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/StaticJavaParser.java",
+          "symbol": "getConfiguration",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "StaticJavaParser holds a global singleton ParserConfiguration applied to all static parse calls.",
+      "expectedCitations": ["StaticJavaParser.java"]
+    },
+    {
+      "queryId": "Q47",
+      "query": "Explain CombinedTypeSolver initialization with reflection and jar solvers",
+      "category": "Configuration and initialization",
+      "repositoryId": "javaparser",
+      "expectedIntent": "WORKFLOW",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/symbolsolver/resolution/typesolvers/CombinedTypeSolver.java",
+          "symbol": "CombinedTypeSolver",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/symbolsolver/resolution/typesolvers/ReflectionTypeSolver.java",
+          "symbol": "ReflectionTypeSolver",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Instantiates CombinedTypeSolver and registers ReflectionTypeSolver and JarTypeSolver instances.",
+      "expectedCitations": ["CombinedTypeSolver.java"]
+    },
+    {
+      "queryId": "Q48",
+      "query": "How is PrettyPrinterConfiguration customized for indentation and comments?",
+      "category": "Configuration and initialization",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/printer/configuration/PrettyPrinterConfiguration.java",
+          "symbol": "PrettyPrinterConfiguration",
+          "relevance": 3
+        },
+        {
+          "filePath": "com/github/javaparser/printer/configuration/PrettyPrinterConfiguration.java",
+          "symbol": "setIndentSize",
+          "relevance": 2
+        }
+      ],
+      "referenceAnswer": "Configures tab vs space indentation, line endings, and comment preservation flags.",
+      "expectedCitations": ["PrettyPrinterConfiguration.java"]
+    },
+    {
+      "queryId": "Q49",
+      "query": "Explain SourceRoot initialization and root directory configuration",
+      "category": "Configuration and initialization",
+      "repositoryId": "javaparser",
+      "expectedIntent": "CLASS",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/utils/SourceRoot.java",
+          "symbol": "SourceRoot",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "SourceRoot binds to a root Path directory and configures parsing options for all nested compilation units.",
+      "expectedCitations": ["SourceRoot.java"]
+    },
+    {
+      "queryId": "Q50",
+      "query": "How do you enable lexical preservation on ParserConfiguration?",
+      "category": "Configuration and initialization",
+      "repositoryId": "javaparser",
+      "expectedIntent": "METHOD",
+      "relevantChunks": [
+        {
+          "filePath": "com/github/javaparser/ParserConfiguration.java",
+          "symbol": "setLexicalPreservationEnabled",
+          "relevance": 3
+        }
+      ],
+      "referenceAnswer": "Call setLexicalPreservationEnabled(true) on ParserConfiguration before invoking parser.",
+      "expectedCitations": ["ParserConfiguration.java#setLexicalPreservationEnabled"]
+    }
+  ]
+}
+

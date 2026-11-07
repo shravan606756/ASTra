@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/shravan606756/ASTra/actions/workflows/ci.yml"><img src="https://github.com/shravan606756/ASTra/actions/workflows/ci.yml/badge.svg" alt="Build Status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://github.com/shravan606756/ASTra/releases"><img src="https://img.shields.io/badge/version-v1.0.0-informational.svg" alt="Version"></a>
   <a href="https://github.com/shravan606756/ASTra/pulls"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <a href="https://github.com/shravan606756/ASTra/issues"><img src="https://img.shields.io/github/issues/shravan606756/ASTra" alt="Open Issues"></a>

@@ -40,7 +40,9 @@ public class GitServiceImpl implements GitService {
      *   <li>{@code .setDepth(1)}: limits commit history to the latest commit</li>
      *   <li>{@code .setCloneAllBranches(false)}: restricts acquisition to the target/default branch</li>
      *   <li>{@code .setNoTags()}: avoids fetching unneeded git tags</li>
-     *   <li>{@code .setBranch(branch)}: targets a specific branch when provided</li>
+     *   <li>{@code .setBranch(selectedRef)}: targets the resolved branch or release tag</li>
+     *   <li>{@code .setBranchesToClone(List.of(selectedRef))}: restricts remote fetch refspecs strictly to
+     *       the selected branch or release tag, avoiding downloading unrequested branch tips</li>
      * </ul>
      * If an error occurs during cloning (e.g. nonexistent branch or unreachable remote), any
      * partially created temporary directory is cleaned up immediately before re-throwing {@link IOException}.
@@ -48,20 +50,40 @@ public class GitServiceImpl implements GitService {
     @Override
     public Path cloneRepository(String gitUrl, String branch) throws IOException {
         Path tempDir = Files.createTempDirectory("astra-repo-");
+        return cloneRepository(gitUrl, branch, tempDir);
+    }
+
+    /**
+     * Internal implementation of repository cloning into a designated target directory.
+     *
+     * @param gitUrl  the remote Git repository URL
+     * @param branch  the target branch, tag, or {@code null}/blank for default branch
+     * @param tempDir the destination directory for the clone
+     * @return the destination directory
+     * @throws IOException if cloning fails
+     */
+    public Path cloneRepository(String gitUrl, String branch, Path tempDir) throws IOException {
         long startTime = System.currentTimeMillis();
         String branchDisplay = (branch != null && !branch.isBlank()) ? branch.trim() : "DEFAULT";
         try {
             log.info("Clone Started - URL: {}, Branch: {}, Directory: {}", gitUrl, branchDisplay, tempDir);
+
+            // Step 1: Query remote refs via lsRemote to discover HEAD and available branches/tags
+            java.util.Map<String, org.eclipse.jgit.lib.Ref> remoteRefs = Git.lsRemoteRepository()
+                    .setRemote(gitUrl)
+                    .callAsMap();
+
+            // Step 2: Resolve the target ref (branch or tag) to clone
+            String selectedRef = resolveTargetRef(remoteRefs, branch, gitUrl);
+
             CloneCommand cloneCommand = Git.cloneRepository()
                     .setURI(gitUrl)
                     .setDirectory(tempDir.toFile())
                     .setDepth(1)
                     .setCloneAllBranches(false)
-                    .setNoTags();
-
-            if (branch != null && !branch.isBlank()) {
-                cloneCommand.setBranch(branch.trim());
-            }
+                    .setNoTags()
+                    .setBranch(selectedRef)
+                    .setBranchesToClone(java.util.Collections.singletonList(selectedRef));
 
             try (Git git = cloneCommand.call()) {
                 // Ensure JGit repository handle is closed immediately
@@ -78,6 +100,55 @@ public class GitServiceImpl implements GitService {
             String branchInfo = (branch != null && !branch.isBlank()) ? " (branch: " + branch.trim() + ")" : "";
             throw new IOException("Failed to clone git repository: " + gitUrl + branchInfo, e);
         }
+    }
+
+    private String resolveTargetRef(java.util.Map<String, org.eclipse.jgit.lib.Ref> remoteRefs,
+                                    String branch,
+                                    String gitUrl) throws IOException {
+        if (remoteRefs == null || remoteRefs.isEmpty()) {
+            throw new IOException("Remote repository has no refs available: " + gitUrl);
+        }
+
+        if (branch == null || branch.isBlank()) {
+            // Default branch request: resolve remote HEAD
+            org.eclipse.jgit.lib.Ref headRef = remoteRefs.get("HEAD");
+            if (headRef != null) {
+                if (headRef.isSymbolic()) {
+                    return headRef.getTarget().getName();
+                }
+                // If HEAD is direct ObjectId, find the matching branch ref
+                for (java.util.Map.Entry<String, org.eclipse.jgit.lib.Ref> entry : remoteRefs.entrySet()) {
+                    if (entry.getKey().startsWith("refs/heads/")
+                            && entry.getValue().getObjectId() != null
+                            && entry.getValue().getObjectId().equals(headRef.getObjectId())) {
+                        return entry.getKey();
+                    }
+                }
+            }
+            return "refs/heads/main";
+        }
+
+        String trimmed = branch.trim();
+
+        // Check if already a full ref name
+        if (remoteRefs.containsKey(trimmed)) {
+            return trimmed;
+        }
+
+        // Check branch: refs/heads/<trimmed>
+        String branchRef = "refs/heads/" + trimmed;
+        if (remoteRefs.containsKey(branchRef)) {
+            return branchRef;
+        }
+
+        // Check release tag: refs/tags/<trimmed>
+        String tagRef = "refs/tags/" + trimmed;
+        if (remoteRefs.containsKey(tagRef)) {
+            return tagRef;
+        }
+
+        // If not found in lsRemote, return branchRef so JGit triggers appropriate ref-not-found error
+        return branchRef;
     }
 
     /**

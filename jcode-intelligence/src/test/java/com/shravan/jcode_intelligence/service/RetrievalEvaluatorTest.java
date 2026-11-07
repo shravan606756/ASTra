@@ -1,6 +1,8 @@
 package com.shravan.jcode_intelligence.service;
 
+import com.shravan.jcode_intelligence.dto.response.BenchmarkSummaryDTO;
 import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO;
+import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.QueryOperationalMetricsDTO;
 import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.QueryQualityMetricsDTO;
 import com.shravan.jcode_intelligence.dto.response.QueryBenchmarkResultDTO.RetrievedChunkDTO;
 import com.shravan.jcode_intelligence.model.benchmark.RelevantChunkDefinition;
@@ -190,10 +192,9 @@ class RetrievalEvaluatorTest {
         qr1.setStatus("SUCCESS");
         qr1.setHasGroundTruth(false);
         qr1.setQualityMetrics(null);
-        qr1.setOperationalMetrics(new QueryBenchmarkResultDTO.QueryOperationalMetricsDTO(100L, 10L, 20L, 5L, 3));
+        qr1.setOperationalMetrics(new QueryOperationalMetricsDTO(100L, 10L, 20L, 5L, 3));
 
-        com.shravan.jcode_intelligence.dto.response.BenchmarkSummaryDTO summary =
-                evaluator.aggregateSummary(List.of(qr1), 100L, 0);
+        BenchmarkSummaryDTO summary = evaluator.aggregateSummary(List.of(qr1), 100L, 0);
 
         assertNotNull(summary);
         assertFalse(summary.isHasGroundTruth());
@@ -204,6 +205,75 @@ class RetrievalEvaluatorTest {
         assertNull(summary.getNdcgAt5());
         assertEquals(100.0, summary.getAvgTotalLatencyMs());
         assertEquals(3.0, summary.getAvgRetrievedChunks());
+    }
+
+    @Test
+    @DisplayName("Duplicate chunks matching same ground truth do not inflate relevance count or precision")
+    void testDuplicateGroundTruthDoesNotInflatePrecision() {
+        // Two retrieved chunks from same file & symbol
+        Document doc1 = createDocument("src/Parser.java", "Parser", "parse");
+        Document doc2 = createDocument("src/Parser.java", "Parser", "parse");
+
+        // Only one ground truth expectation
+        List<RelevantChunkDefinition> groundTruth = List.of(
+                new RelevantChunkDefinition("src/Parser.java", "parse", 3)
+        );
+
+        List<RetrievedChunkDTO> chunks = new ArrayList<>();
+        QueryQualityMetricsDTO metrics = evaluator.evaluateQuery(List.of(doc1, doc2), groundTruth, chunks);
+
+        assertNotNull(metrics);
+        // Only first chunk should be marked relevant (single consumption)
+        assertTrue(chunks.get(0).isRelevant());
+        assertEquals(3, chunks.get(0).getRelevanceGrade());
+        assertFalse(chunks.get(1).isRelevant(), "Second duplicate chunk must not consume ground truth again");
+        assertEquals(0, chunks.get(1).getRelevanceGrade());
+
+        // Recall@3 should be 1.0 (1/1 retrieved)
+        assertEquals(1.0, metrics.getRecallAt3(), 0.0001);
+        // Precision@3 is 1 relevant / 3 cutoff = 1/3
+        assertEquals(1.0 / 3.0, metrics.getPrecisionAt3(), 0.0001);
+    }
+
+    @Test
+    @DisplayName("Method chunk inside class does not match class-level ground truth symbol")
+    void testMethodChunkDoesNotMatchClassSymbol() {
+        // A method named "visit" inside class "LexicalPreservingPrinter"
+        Document methodDoc = createDocument("src/LexicalPreservingPrinter.java", "LexicalPreservingPrinter", "visit");
+        // A class chunk for "LexicalPreservingPrinter"
+        Map<String, Object> classMeta = new HashMap<>();
+        classMeta.put("filePath", "src/LexicalPreservingPrinter.java");
+        classMeta.put("className", "LexicalPreservingPrinter");
+        classMeta.put("elementName", "LexicalPreservingPrinter");
+        classMeta.put("type", "CLASS");
+        Document classDoc = new Document("class content", classMeta);
+
+        RelevantChunkDefinition gtClass = new RelevantChunkDefinition("src/LexicalPreservingPrinter.java", "LexicalPreservingPrinter", 3);
+
+        assertFalse(evaluator.matches(methodDoc, gtClass), "Method chunk inside class must not falsely match class symbol");
+        assertTrue(evaluator.matches(classDoc, gtClass), "Class chunk must match class symbol");
+    }
+
+    @Test
+    @DisplayName("maxDisplayChunks limits populated retrieved chunks while scoring all candidates")
+    void testMaxDisplayChunksLimitsOutput() {
+        Document doc1 = createDocument("src/A.java", "A", "m1");
+        Document doc2 = createDocument("src/B.java", "B", "m2");
+        Document doc3 = createDocument("src/C.java", "C", "m3");
+
+        List<RelevantChunkDefinition> groundTruth = List.of(
+                new RelevantChunkDefinition("src/C.java", "m3", 3)
+        );
+
+        List<RetrievedChunkDTO> chunks = new ArrayList<>();
+        // 3 documents retrieved, but maxDisplayChunks is 2
+        QueryQualityMetricsDTO metrics = evaluator.evaluateQuery(List.of(doc1, doc2, doc3), groundTruth, chunks, 2);
+
+        // Display list must be capped at 2
+        assertEquals(2, chunks.size());
+        // But quality metrics should have evaluated doc3 at rank 3!
+        assertEquals(1.0, metrics.getHitRateAt3(), 0.0001);
+        assertEquals(1.0 / 3.0, metrics.getReciprocalRank(), 0.0001);
     }
 
     private Document createDocument(String filePath, String className, String elementName) {

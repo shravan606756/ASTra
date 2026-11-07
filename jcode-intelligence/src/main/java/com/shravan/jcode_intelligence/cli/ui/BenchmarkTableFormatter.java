@@ -58,9 +58,15 @@ public class BenchmarkTableFormatter {
      * @throws StringIndexOutOfBoundsException if truncation is needed and maxLen is less than 3
      */
     public static String truncatePath(String rawPath, int maxLen) {
+        if (maxLen <= 0) {
+            return "";
+        }
         String clean = cleanRepoPath(rawPath);
         if (clean.length() <= maxLen) {
             return clean;
+        }
+        if (maxLen < 3) {
+            return clean.substring(0, maxLen);
         }
 
         String[] parts = clean.split("/");
@@ -93,12 +99,18 @@ public class BenchmarkTableFormatter {
      * @throws StringIndexOutOfBoundsException if truncation is needed and maxLen is less than 3
      */
     public static String truncateSymbol(String symbol, int maxLen) {
+        if (maxLen <= 0) {
+            return "";
+        }
         if (symbol == null || symbol.isBlank()) {
             return "-";
         }
         symbol = symbol.trim();
         if (symbol.length() <= maxLen) {
             return symbol;
+        }
+        if (maxLen < 3) {
+            return symbol.substring(0, maxLen);
         }
         return symbol.substring(0, maxLen - 3) + "...";
     }
@@ -112,8 +124,8 @@ public class BenchmarkTableFormatter {
         if (termWidth <= 0) {
             termWidth = 100;
         }
-        // Subtract 2 characters margin for terminal window borders/safety
-        int effectiveWidth = Math.max(76, Math.min(termWidth - 2, 120));
+        // Subtract 2 characters margin for terminal window borders/safety, supporting down to 40 columns
+        int effectiveWidth = Math.max(40, Math.min(termWidth - 2, 120));
 
         boolean showRelevance = hasGroundTruth && chunks != null && chunks.stream().anyMatch(c -> c.getRelevant() != null);
         int maxFileWidth;
@@ -122,14 +134,14 @@ public class BenchmarkTableFormatter {
 
         if (showRelevance) {
             // Fixed chars: 19 (borders/spaces) + 4 (Rank) + 7 (Type) + 4 (Rel?) + 5 (Grade) = 39
-            int available = Math.max(30, effectiveWidth - 39);
+            int available = Math.max(10, effectiveWidth - 39);
             maxFileWidth = (int) (available * 0.62);
-            maxSymbolWidth = available - maxFileWidth;
+            maxSymbolWidth = Math.max(3, available - maxFileWidth);
         } else {
             // Fixed chars: 13 (borders/spaces) + 4 (Rank) + 7 (Type) = 24
-            int available = Math.max(30, effectiveWidth - 24);
+            int available = Math.max(10, effectiveWidth - 24);
             maxFileWidth = (int) (available * 0.65);
-            maxSymbolWidth = available - maxFileWidth;
+            maxSymbolWidth = Math.max(3, available - maxFileWidth);
         }
 
         return formatChunksTable(chunks, hasGroundTruth, maxFileWidth, maxSymbolWidth, maxTypeWidth);

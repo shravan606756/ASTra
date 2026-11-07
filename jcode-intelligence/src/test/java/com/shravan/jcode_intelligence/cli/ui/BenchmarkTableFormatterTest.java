@@ -42,6 +42,10 @@ class BenchmarkTableFormatterTest {
         // Short path should remain un-truncated
         String shortPath = "src/main/App.java";
         assertEquals(shortPath, BenchmarkTableFormatter.truncatePath(shortPath, 40));
+
+        // Sub-3 and zero lengths
+        assertEquals("", BenchmarkTableFormatter.truncatePath(shortPath, 0));
+        assertEquals("sr", BenchmarkTableFormatter.truncatePath(shortPath, 2));
     }
 
     @Test
@@ -56,6 +60,10 @@ class BenchmarkTableFormatterTest {
         assertEquals("shortMethod", BenchmarkTableFormatter.truncateSymbol("shortMethod", 20));
         assertEquals("-", BenchmarkTableFormatter.truncateSymbol(null, 20));
         assertEquals("-", BenchmarkTableFormatter.truncateSymbol("   ", 20));
+
+        // Sub-3 and zero lengths
+        assertEquals("", BenchmarkTableFormatter.truncateSymbol(longSymbol, 0));
+        assertEquals("ve", BenchmarkTableFormatter.truncateSymbol(longSymbol, 2));
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.shravan.jcode_intelligence.config.EmbeddingQueueConfig;
 import com.shravan.jcode_intelligence.converter.DocumentConverter;
 import com.shravan.jcode_intelligence.exception.IndexingConflictException;
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import com.shravan.jcode_intelligence.model.EmbeddedRecord;
 import com.shravan.jcode_intelligence.model.IndexingStatistics;
 import com.shravan.jcode_intelligence.parser.EmbeddingBudgetValidator;
 import com.shravan.jcode_intelligence.parser.IndexingStatisticsCalculator;
@@ -23,6 +24,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -136,6 +138,45 @@ class IndexingServiceConcurrencyAndQueueTest {
         } finally {
             executor.submit(() -> concurrencyManager.release(repoId)).get(1, java.util.concurrent.TimeUnit.SECONDS);
             executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("indexProject executes parallel batch embedding and queue staging")
+    void testIndexProjectParallelBatchEmbeddingAndQueueStaging() throws Exception {
+        CodeChunk chunk1 = new CodeChunk();
+        chunk1.setId("c1");
+        chunk1.setType("METHOD");
+        chunk1.setContent("code1");
+        when(mockParser.parse(any(Path.class))).thenReturn(List.of(chunk1));
+
+        Document doc1 = new Document("code1", Map.of("chunkId", "c1"));
+        when(mockConverter.convert(anyList())).thenReturn(List.of(doc1));
+
+        when(mockEmbeddingModel.embed(anyList())).thenReturn(List.of(new float[]{0.1f}));
+
+        java.util.concurrent.ScheduledExecutorService testWriter = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        testWriter.schedule(() -> {
+            try {
+                List<EmbeddedRecord> drained = embeddingQueue.drainBatch(10, 500);
+                for (EmbeddedRecord r : drained) {
+                    embeddingQueue.recordPersisted(r);
+                }
+            } catch (Exception ignored) {
+            }
+        }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, embeddingQueue, mockModelProvider);
+
+        try {
+            int result = indexingService.indexProject(".", "repo-batch-test");
+            assertEquals(1, result);
+        } finally {
+            testWriter.shutdownNow();
         }
     }
 }

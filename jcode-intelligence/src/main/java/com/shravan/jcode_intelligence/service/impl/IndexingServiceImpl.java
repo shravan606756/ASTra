@@ -16,6 +16,7 @@ import com.shravan.jcode_intelligence.service.RepositoryConcurrencyManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
@@ -188,8 +189,9 @@ public class IndexingServiceImpl implements IndexingService {
             if (embeddingQueue != null && embeddingModel != null) {
                 String jobId = "job-" + (repositoryId != null ? repositoryId : "default") + "-" + System.currentTimeMillis();
                 embeddingQueue.registerJob(jobId, repositoryId);
-                log.info("[STEP 6] Staging {} document(s) across {} batch(es) to shared EmbeddingQueue (jobId: {})...",
-                        totalDocs, totalBatches, jobId);
+                log.info(
+                        "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
+                        totalDocs, totalBatches, batchSize, workerCount, jobId);
 
                 ExecutorService executor = Executors.newFixedThreadPool(workerCount);
                 try {
@@ -201,11 +203,22 @@ public class IndexingServiceImpl implements IndexingService {
                         int batchNum = (startIdx / batchSize) + 1;
 
                         futures.add(executor.submit(() -> {
+                            log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
+                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
                             long batchStart = System.currentTimeMillis();
-                            for (Document doc : batch) {
+
+                            // Group chunks in this batch to request embeddings in a single model call
+                            List<String> texts = batch.stream()
+                                    .map(doc -> doc.getFormattedContent(MetadataMode.EMBED))
+                                    .toList();
+                            List<float[]> embeddings = embeddingModel.embed(texts);
+
+                            for (int j = 0; j < batch.size(); j++) {
+                                Document doc = batch.get(j);
                                 String chunkId = (String) doc.getMetadata().get("chunkId");
                                 String recordId = EmbeddedRecord.generateDeterministicId(repositoryId, chunkId, doc.getText());
-                                float[] embedding = embeddingModel.embed(doc);
+                                float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
                                 EmbeddedRecord record = new EmbeddedRecord(
                                         recordId,
                                         jobId,
@@ -225,7 +238,7 @@ public class IndexingServiceImpl implements IndexingService {
                             long batchDuration = System.currentTimeMillis() - batchStart;
                             int doneDocs = completedDocs.addAndGet(batch.size());
                             double pct = ((double) doneDocs / totalDocs) * 100.0;
-                            log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} record(s) in {} ms | Progress: {}/{} ({})",
+                            log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
                                     batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
                                     String.format("%.1f%%", pct));
                         }));

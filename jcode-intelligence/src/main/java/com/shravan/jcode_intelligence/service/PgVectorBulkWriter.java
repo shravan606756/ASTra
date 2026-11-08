@@ -141,7 +141,11 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         }
 
         try {
+            long persistStart = System.currentTimeMillis();
             executeBulkUpsert(batch);
+            long persistDuration = System.currentTimeMillis() - persistStart;
+            log.info("[PGVECTOR BULK PERSISTENCE] Persisted bulk batch of {} vector record(s) to PostgreSQL vector_store in {} ms",
+                    batch.size(), persistDuration);
             for (EmbeddedRecord record : batch) {
                 queue.recordPersisted(record);
             }

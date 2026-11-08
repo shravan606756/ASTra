@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.llm;
 
 import com.shravan.jcode_intelligence.dto.response.ChunkResponse;
+import com.shravan.jcode_intelligence.dto.response.GroupedSourceResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
@@ -11,6 +12,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Unit tests verifying path normalization, coordinate deduplication, synthetic chunk
+ * handling, and file-level grouping in {@link ResponseFormatter}.
+ */
 class ResponseFormatterTest {
 
     private final ResponseFormatter formatter = new ResponseFormatter();
@@ -144,6 +149,44 @@ class ResponseFormatterTest {
     void testHandlesNullAndEmpty() {
         assertTrue(formatter.formatChunks(null).isEmpty());
         assertTrue(formatter.formatChunks(List.of()).isEmpty());
+    }
+
+    @Test
+    @DisplayName("groupSourcesByFile consolidates multiple chunk ranges under enclosing file header while preserving granular chunks")
+    void testGroupSourcesByFile_consolidatesMethodsUnderSameFile() {
+        ChunkResponse c1 = new ChunkResponse("METHOD", "repo-1", "com.example", "OrderService",
+                "createOrder", "createOrder()", "src/OrderService.java", 10, 25, "code1");
+        ChunkResponse c2 = new ChunkResponse("METHOD", "repo-1", "com.example", "OrderService",
+                "cancelOrder", "cancelOrder()", "src/OrderService.java", 30, 45, "code2");
+        ChunkResponse c3 = new ChunkResponse("CLASS", "repo-1", "com.example", "PaymentService",
+                "PaymentService", "PaymentService", "src/PaymentService.java", 1, 50, "code3");
+
+        List<GroupedSourceResponse> grouped = formatter.groupSourcesByFile(List.of(c1, c2, c3));
+
+        assertNotNull(grouped);
+        assertEquals(2, grouped.size(), "Must group into exactly 2 file entries");
+
+        // OrderService group
+        GroupedSourceResponse orderGroup = grouped.get(0);
+        assertEquals("src/OrderService.java", orderGroup.getFilePath());
+        assertEquals("OrderService", orderGroup.getClassName());
+        assertEquals("repo-1", orderGroup.getRepositoryId());
+        assertEquals(2, orderGroup.getChunks().size());
+        assertEquals(List.of("10-25", "30-45"), orderGroup.getLineRanges());
+
+        // PaymentService group
+        GroupedSourceResponse paymentGroup = grouped.get(1);
+        assertEquals("src/PaymentService.java", paymentGroup.getFilePath());
+        assertEquals("PaymentService", paymentGroup.getClassName());
+        assertEquals(1, paymentGroup.getChunks().size());
+        assertEquals(List.of("1-50"), paymentGroup.getLineRanges());
+    }
+
+    @Test
+    @DisplayName("groupSourcesByFile safely handles null and empty lists")
+    void testGroupSourcesByFile_emptyHandling() {
+        assertTrue(formatter.groupSourcesByFile(null).isEmpty());
+        assertTrue(formatter.groupSourcesByFile(List.of()).isEmpty());
     }
 }
 

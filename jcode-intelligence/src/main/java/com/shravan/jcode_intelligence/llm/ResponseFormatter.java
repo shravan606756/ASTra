@@ -1,10 +1,12 @@
 package com.shravan.jcode_intelligence.llm;
 
 import com.shravan.jcode_intelligence.dto.response.ChunkResponse;
+import com.shravan.jcode_intelligence.dto.response.GroupedSourceResponse;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -89,5 +91,51 @@ public class ResponseFormatter {
             return "";
         }
         return rawPath.trim().replace('\\', '/');
+    }
+
+    /**
+     * Groups granular chunk responses by their source file and enclosing class header.
+     * Consolidates multiple method and snippet ranges into a single source file entry
+     * while preserving all underlying granular {@link ChunkResponse} coordinate records.
+     *
+     * @param chunks list of formatted chunk responses
+     * @return consolidated list of grouped source responses
+     */
+    public List<GroupedSourceResponse> groupSourcesByFile(List<ChunkResponse> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, GroupedSourceResponse> groupedMap = new LinkedHashMap<>();
+
+        for (ChunkResponse chunk : chunks) {
+            String repoId = chunk.getRepositoryId() != null ? chunk.getRepositoryId() : "default";
+            String filePath = chunk.getFilePath() != null ? chunk.getFilePath() : "";
+            String groupKey = repoId + ":" + filePath;
+
+            GroupedSourceResponse group = groupedMap.computeIfAbsent(groupKey, k -> {
+                GroupedSourceResponse g = new GroupedSourceResponse();
+                g.setRepositoryId(repoId);
+                g.setFilePath(filePath);
+                g.setClassName(chunk.getClassName());
+                return g;
+            });
+
+            if ((group.getClassName() == null || group.getClassName().isBlank())
+                    && chunk.getClassName() != null && !chunk.getClassName().isBlank()) {
+                group.setClassName(chunk.getClassName());
+            }
+
+            group.getChunks().add(chunk);
+
+            if (chunk.getStartLine() > 0 && chunk.getEndLine() >= chunk.getStartLine()) {
+                String range = chunk.getStartLine() + "-" + chunk.getEndLine();
+                if (!group.getLineRanges().contains(range)) {
+                    group.getLineRanges().add(range);
+                }
+            }
+        }
+
+        return new ArrayList<>(groupedMap.values());
     }
 }

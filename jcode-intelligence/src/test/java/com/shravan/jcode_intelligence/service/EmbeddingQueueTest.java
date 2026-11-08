@@ -199,5 +199,26 @@ class EmbeddingQueueTest {
         // Await should return cleanly without exception
         assertDoesNotThrow(() -> queue.awaitJobCompletion(jobId, Duration.ofSeconds(1)));
     }
+
+    @Test
+    @DisplayName("submitAll atomically enqueues batch and drainBatch consolidates available records")
+    void testSubmitAllAndConsolidatedDraining() throws Exception {
+        String jobId = "job-consolidate";
+        queue.registerJob(jobId, "repo-consolidate");
+
+        List<EmbeddedRecord> batch = new ArrayList<>();
+        for (int i = 1; i <= 30; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-consolidate", "chunk-" + i, "data");
+            batch.add(new EmbeddedRecord(id, jobId, "repo-consolidate", "data", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        queue.submitAll(batch);
+        queue.completeJob(jobId);
+
+        assertEquals(30, queue.size(), "Queue must hold all 30 records submitted via submitAll");
+
+        List<EmbeddedRecord> drained = queue.drainBatch(50, 100);
+        assertEquals(30, drained.size(), "drainBatch must drain all 30 completed records in a single bulk slice");
+    }
 }
 

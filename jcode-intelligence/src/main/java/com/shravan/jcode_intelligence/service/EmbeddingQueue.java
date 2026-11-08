@@ -131,6 +131,63 @@ public class EmbeddingQueue {
     }
 
     /**
+     * Submits a collection of embedded records to the queue atomically, applying backpressure
+     * if the queue does not have enough remaining capacity.
+     *
+     * @param records list of embedded records to submit
+     * @throws InterruptedException if interrupted while waiting for queue space
+     * @throws IllegalStateException if admission is closed or the owning job has failed
+     */
+    public void submitAll(List<EmbeddedRecord> records) throws InterruptedException {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+
+        if (admissionClosed.get()) {
+            for (EmbeddedRecord r : records) {
+                r.acknowledgement().completeExceptionally(
+                        new IllegalStateException("Embedding queue admission is closed"));
+            }
+            throw new IllegalStateException("Cannot submit records; embedding queue admission is closed");
+        }
+
+        String jobId = records.get(0).jobId();
+        String repoId = records.get(0).repositoryId();
+        JobTracker tracker = activeJobs.computeIfAbsent(jobId, id -> new JobTracker(id, repoId));
+
+        if (tracker.isFailed() || failedJobs.contains(jobId)) {
+            for (EmbeddedRecord r : records) {
+                r.acknowledgement().completeExceptionally(
+                        new IllegalStateException("Cannot submit record; job has failed: " + jobId));
+            }
+            throw new IllegalStateException("Job " + jobId + " has already failed; aborting submission");
+        }
+
+        tracker.submittedCount.addAndGet(records.size());
+
+        for (EmbeddedRecord record : records) {
+            try {
+                while (!queue.offer(record, 100, TimeUnit.MILLISECONDS)) {
+                    if (tracker.isFailed() || failedJobs.contains(record.jobId()) || admissionClosed.get()) {
+                        tracker.submittedCount.decrementAndGet();
+                        String msg = admissionClosed.get()
+                                ? "Embedding queue admission closed while awaiting queue capacity"
+                                : "Job " + record.jobId() + " failed while awaiting queue capacity";
+                        record.acknowledgement().completeExceptionally(new IllegalStateException(msg));
+                        checkJobTerminalState(tracker);
+                        throw new IllegalStateException(msg);
+                    }
+                }
+            } catch (InterruptedException e) {
+                tracker.submittedCount.decrementAndGet();
+                record.acknowledgement().completeExceptionally(e);
+                checkJobTerminalState(tracker);
+                throw e;
+            }
+        }
+    }
+
+    /**
      * Signals that the producer has finished submitting all records for the specified job.
      *
      * @param jobId indexing job identifier
@@ -212,12 +269,32 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Drains available records across active jobs, waiting up to {@code timeoutMs} for the
-     * first entry if the queue is empty. Discarded entries are acknowledged exceptionally.
-     * After the first entry, the method does not wait to fill the batch.
+     * Checks whether all currently active jobs have completed record submissions.
+     *
+     * @return true if there are active jobs and all have completed submissions, or if no active jobs exist
+     */
+    public boolean areAllSubmissionsCompleted() {
+        if (activeJobs.isEmpty()) {
+            return true;
+        }
+        for (JobTracker tracker : activeJobs.values()) {
+            if (!tracker.submissionsCompleted.get() && !tracker.isFailed()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Drains available records across active jobs, waiting up to {@code timeoutMs} for records
+     * to accumulate before returning a partial batch.
+     *
+     * <p>If active jobs are still submitting records in parallel and the drained batch has not
+     * reached {@code maxBatchSize}, this method continues accumulating records up to {@code timeoutMs}
+     * or until submissions are signaled complete, maximizing batch sizes and minimizing database calls.
      *
      * @param maxBatchSize maximum number of active records to return; must be positive
-     * @param timeoutMs    maximum wait for the first entry, in milliseconds
+     * @param timeoutMs    maximum wait for records to accumulate, in milliseconds
      * @return active records, possibly empty even if cancelled entries were drained
      * @throws InterruptedException if interrupted while waiting
      */
@@ -235,7 +312,32 @@ public class EmbeddingQueue {
             acknowledgeCancelled(first);
         }
 
-        // Drain up to maxBatchSize - 1 remaining elements greedily
+        drainAvailableInto(batch, maxBatchSize);
+
+        // If batch is still smaller than maxBatchSize and active jobs are still generating embeddings,
+        // wait up to timeoutMs for parallel batches to arrive rather than immediately sending micro-batches
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (batch.size() < maxBatchSize && !areAllSubmissionsCompleted()) {
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) {
+                break;
+            }
+            EmbeddedRecord next = queue.poll(Math.min(remaining, 50), TimeUnit.MILLISECONDS);
+            if (next != null) {
+                if (isRecordActive(next)) {
+                    batch.add(next);
+                } else {
+                    acknowledgeCancelled(next);
+                }
+                drainAvailableInto(batch, maxBatchSize);
+            }
+        }
+
+        drainAvailableInto(batch, maxBatchSize);
+        return batch;
+    }
+
+    private void drainAvailableInto(List<EmbeddedRecord> batch, int maxBatchSize) {
         while (batch.size() < maxBatchSize) {
             EmbeddedRecord next = queue.poll();
             if (next == null) {
@@ -247,8 +349,6 @@ public class EmbeddingQueue {
                 acknowledgeCancelled(next);
             }
         }
-
-        return batch;
     }
 
     /**

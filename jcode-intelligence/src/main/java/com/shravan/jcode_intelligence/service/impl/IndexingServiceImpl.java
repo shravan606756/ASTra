@@ -230,12 +230,13 @@ public class IndexingServiceImpl implements IndexingService {
                                     .toList();
                             List<float[]> embeddings = embeddingModel.embed(texts);
 
+                            List<EmbeddedRecord> records = new ArrayList<>(batch.size());
                             for (int j = 0; j < batch.size(); j++) {
                                 Document doc = batch.get(j);
                                 String chunkId = (String) doc.getMetadata().get("chunkId");
                                 String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
                                 float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
-                                EmbeddedRecord record = new EmbeddedRecord(
+                                records.add(new EmbeddedRecord(
                                         recordId,
                                         jobId,
                                         safeRepoId,
@@ -243,13 +244,13 @@ public class IndexingServiceImpl implements IndexingService {
                                         doc.getMetadata(),
                                         embedding,
                                         new CompletableFuture<>()
-                                );
-                                try {
-                                    embeddingQueue.submit(record);
-                                } catch (InterruptedException e) {
-                                    Thread.currentThread().interrupt();
-                                    throw new RuntimeException("Interrupted while staging record to embedding queue", e);
-                                }
+                                ));
+                            }
+                            try {
+                                embeddingQueue.submitAll(records);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException("Interrupted while staging records to embedding queue", e);
                             }
                             long batchDuration = System.currentTimeMillis() - batchStart;
                             int doneDocs = completedDocs.addAndGet(batch.size());

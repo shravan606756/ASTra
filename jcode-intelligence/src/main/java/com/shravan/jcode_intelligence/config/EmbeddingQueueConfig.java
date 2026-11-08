@@ -18,20 +18,20 @@ public class EmbeddingQueueConfig {
     private int capacity = 2000;
 
     /** Target batch size for bulk writing embedded records to PGVector. */
-    @Value("${astra.indexing.persistence.batch-size:100}")
-    private int batchSize = 100;
+    @Value("${astra.indexing.persistence.batch-size:500}")
+    private int batchSize = 500;
 
     /** Minimum batch size allowed during adaptive batch splitting before failing. */
     @Value("${astra.indexing.persistence.min-batch-size:10}")
     private int minBatchSize = 10;
 
     /** Maximum time in milliseconds to wait before flushing a partial batch under low throughput. */
-    @Value("${astra.indexing.persistence.flush-interval-ms:200}")
-    private long flushIntervalMs = 200;
+    @Value("${astra.indexing.persistence.flush-interval-ms:1000}")
+    private long flushIntervalMs = 1000;
 
     /** Number of concurrent persistence writers draining the embedding queue. */
-    @Value("${astra.indexing.persistence.writer-count:2}")
-    private int writerCount = 2;
+    @Value("${astra.indexing.persistence.writer-count:1}")
+    private int writerCount = 1;
 
     /** Maximum retry attempts for transient persistence errors before reporting failure. */
     @Value("${astra.indexing.persistence.max-retries:3}")

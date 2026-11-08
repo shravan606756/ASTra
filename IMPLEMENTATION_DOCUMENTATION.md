@@ -839,3 +839,75 @@ Key anti-hallucination directives present in all templates:
 | **Pre-embedding budget validation** | Fail-fast prevents wasted embedding API calls on documents that would be truncated or rejected by the model. |
 | **Prompt context budgeting** | Hard limits on document count (20) and character size (16K usable) prevent LLM context overflow and ensure consistent response quality. |
 | **Anti-hallucination prompt guards** | Every template explicitly instructs the LLM to never invent components, use speculative language, or mention internal retrieval metadata. |
+
+---
+
+## 13. Shared Embedding Queue Concurrency & Lifecycle Hardening (Issue #47)
+
+### Architecture & Components
+Issue #47 hardens the shared staging queue between chunk embedding generation and PostgreSQL `vector_store` bulk persistence:
+
+```
+Indexing Pipeline (Producers)
+        │
+        ▼
+RepositoryConcurrencyManager  ──[Serializes same-repo jobs; 409 Conflict]
+        │
+        ▼
+   EmbeddingQueue             ──[Bounded capacity; Backpressure on full]
+        │
+   Heterogeneous Batch Drain  ──[Drains mixed-job batches; 200ms flush timeout]
+        │
+        ▼
+PgVectorBulkWriter            ──[Idempotent ON CONFLICT (id) DO UPDATE; Adaptive splitting]
+```
+
+### Key Guarantees & Lifecycle Boundaries
+
+1. **In-Memory Durability Scope:**
+   The `EmbeddingQueue` is an in-memory bounded staging mechanism. All delivery, backpressure, and acknowledgement guarantees are strictly bounded to the JVM process lifetime:
+   - In the event of a JVM process termination, kill signal, or power outage, staged uncommitted queue records are lost.
+   - Recovery is achieved by re-submitting an indexing job for the affected repository.
+   - Any records committed prior to the crash remain valid and idempotent due to deterministic RFC-4122 type 3 record IDs.
+
+2. **Per-Repository Job Serialization:**
+   `RepositoryConcurrencyManager` grants an exclusive lock per `repositoryId`. If an indexing request arrives for a repository currently in progress, it is rejected immediately with an `IndexingConflictException` (`409 Conflict`), preventing concurrent runs from triggering destructive pre-indexing `DELETE` queries that would wipe out in-flight vector insertions.
+
+3. **Deadlock Elimination via Heterogeneous Draining:**
+   Persistence writers drain records across any active jobs greedily up to `astra.indexing.persistence.batch-size`. A time-bounded flush interval (`flush-interval-ms=200`) ensures partial batches under backpressure are committed without requiring a full batch, preventing multi-job queue deadlocks.
+
+4. **Write Idempotency & Adaptive Splitting:**
+   - Every `EmbeddedRecord` receives a deterministic UUID derived from `repositoryId + ":" + chunkId`.
+   - The bulk persistence SQL executes `ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding`, allowing safe retries on dropped connections.
+   - Oversized payload failures trigger recursive adaptive batch splitting down to `min-batch-size`.
+
+5. **Explicit Job Terminal States:**
+   Unhandled producer exceptions trigger `EmbeddingQueue.failJob(jobId, throwable)`, which immediately transitions the job state to `FAILED`, cancels remaining staged records for that job, and unblocks awaiting consumer threads.
+
+### Memory Bound & Configuration Concerns
+
+#### Memory Bound Relationship
+The maximum heap memory consumed by in-flight records staged between embedding generation and persistence is strictly bounded by:
+
+$$\text{Memory Overhead} \approx C_{\text{queue}} \cdot (S_{\text{content}} + S_{\text{meta}} + D_{\text{embed}} \cdot 4\text{ bytes}) + W_{\text{persist}} \cdot B_{\text{persist}} \cdot S_{\text{record}}$$
+
+Where:
+- $C_{\text{queue}}$ = `astra.indexing.embedding-queue.capacity` (default: 2,000 records)
+- $S_{\text{content}}$ = average chunk character size ($\approx 2$ KB)
+- $S_{\text{meta}}$ = metadata JSON attributes ($\approx 1$ KB)
+- $D_{\text{embed}}$ = embedding dimension (768 floats $\times 4$ bytes $\approx 3.07$ KB)
+- $W_{\text{persist}}$ = persistence writer worker count (default: 2)
+- $B_{\text{persist}}$ = persistence bulk batch size (default: 100)
+
+At default values ($2,000 \times \approx 6.1\text{ KB} + 2 \times 100 \times 6.1\text{ KB}$), total staged memory overhead is **$\approx 13.4$ MB**, guaranteeing memory safety under high producer throughput.
+
+#### Distinct Configuration Concerns
+
+| Property | Layer | Concern |
+|---|---|---|
+| `astra.embedding.batch-size` | Embedding Model (Ollama) | Batch size sent to Ollama HTTP API per embedding inference call. |
+| `astra.indexing.embedding-queue.capacity` | Memory Backpressure Buffer | Bounded queue capacity staging embedded records before DB persistence. |
+| `astra.indexing.persistence.batch-size` | PostgreSQL / PGVector | Bulk JDBC insert batch size draining from queue to `vector_store`. |
+| `astra.indexing.large-repo-threshold-loc` | Pipeline Selection (#31) | Repository classification threshold for large-repo streaming pipeline. |
+
+

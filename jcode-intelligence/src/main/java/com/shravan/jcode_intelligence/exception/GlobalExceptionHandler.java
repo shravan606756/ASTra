@@ -39,6 +39,23 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
+    /**
+     * Handles indexing concurrency conflict exceptions when simultaneous indexing is attempted on the same repository.
+     *
+     * @param ex the indexing conflict exception
+     * @return HTTP 409 Conflict response containing error details
+     */
+    @ExceptionHandler(IndexingConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleIndexingConflict(IndexingConflictException ex) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("timestamp", LocalDateTime.now());
+        body.put("status", HttpStatus.CONFLICT.value());
+        body.put("error", "Conflict");
+        body.put("message", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgumentException(IllegalArgumentException ex) {
         Map<String, Object> body = new HashMap<>();

@@ -10,10 +10,12 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Selects and executes the retrieval strategy for a given {@link QueryIntent}.
@@ -49,11 +51,12 @@ public class RetrievalStrategySelector {
     private final IntentRetrievalConfig config;
     private final ArchitectureContextBuilder architectureContextBuilder;
     private final ObjectReader metadataReader;
+    private final Executor retrievalExecutor;
 
     /**
-     * Constructs a {@code RetrievalStrategySelector} with the given dependencies and an optional
-     * shared {@link ObjectMapper}. When provided, an immutable, thread-safe {@link ObjectReader}
-     * is pre-configured to avoid per-row allocations during metadata deserialization.
+     * Constructs a {@code RetrievalStrategySelector} with the given dependencies, an optional
+     * shared {@link ObjectMapper}, and an optional retrieval {@link Executor}. When provided,
+     * an immutable, thread-safe {@link ObjectReader} is pre-configured to avoid per-row allocations.
      *
      * @param vectorStore                underlying vector store for semantic similarity lookups
      * @param jdbcTemplate               JDBC template for direct metadata SQL queries
@@ -61,6 +64,7 @@ public class RetrievalStrategySelector {
      * @param config                     intent retrieval and similarity threshold configuration
      * @param architectureContextBuilder builder for architectural context
      * @param objectMapper               shared Jackson {@link ObjectMapper} (optional, defaults to a new instance)
+     * @param retrievalExecutor          executor for concurrent sub-retrievals (optional, defaults to bounded pool)
      */
     @Autowired
     public RetrievalStrategySelector(VectorStore vectorStore,
@@ -68,7 +72,8 @@ public class RetrievalStrategySelector {
                                       SymbolExtractor symbolExtractor,
                                       IntentRetrievalConfig config,
                                       ArchitectureContextBuilder architectureContextBuilder,
-                                      @Autowired(required = false) ObjectMapper objectMapper) {
+                                      @Autowired(required = false) ObjectMapper objectMapper,
+                                      @Autowired(required = false) @Qualifier("retrievalExecutor") Executor retrievalExecutor) {
         this.vectorStore = vectorStore;
         this.jdbcTemplate = jdbcTemplate;
         this.symbolExtractor = symbolExtractor;
@@ -76,11 +81,31 @@ public class RetrievalStrategySelector {
         this.architectureContextBuilder = architectureContextBuilder;
         ObjectMapper mapper = (objectMapper != null) ? objectMapper : new ObjectMapper();
         this.metadataReader = mapper.readerFor(Map.class);
+        this.retrievalExecutor = (retrievalExecutor != null) ? retrievalExecutor : createDefaultExecutor();
+    }
+
+    /**
+     * Overload accepting an optional {@link ObjectMapper} without a custom executor.
+     *
+     * @param vectorStore                underlying vector store for semantic similarity lookups
+     * @param jdbcTemplate               JDBC template for direct metadata SQL queries
+     * @param symbolExtractor            extractor for isolating method and class symbols
+     * @param config                     intent retrieval and similarity threshold configuration
+     * @param architectureContextBuilder builder for architectural context
+     * @param objectMapper               shared Jackson {@link ObjectMapper} (optional)
+     */
+    public RetrievalStrategySelector(VectorStore vectorStore,
+                                      JdbcTemplate jdbcTemplate,
+                                      SymbolExtractor symbolExtractor,
+                                      IntentRetrievalConfig config,
+                                      ArchitectureContextBuilder architectureContextBuilder,
+                                      ObjectMapper objectMapper) {
+        this(vectorStore, jdbcTemplate, symbolExtractor, config, architectureContextBuilder, objectMapper, null);
     }
 
     /**
      * Backward-compatible constructor for testing and callers without an injected {@link ObjectMapper}.
-     * Initializes a default Jackson {@link ObjectReader} for thread-safe metadata parsing.
+     * Initializes a default Jackson {@link ObjectReader} and bounded retrieval executor.
      *
      * @param vectorStore                underlying vector store for semantic similarity lookups
      * @param jdbcTemplate               JDBC template for direct metadata SQL queries
@@ -93,7 +118,20 @@ public class RetrievalStrategySelector {
                                       SymbolExtractor symbolExtractor,
                                       IntentRetrievalConfig config,
                                       ArchitectureContextBuilder architectureContextBuilder) {
-        this(vectorStore, jdbcTemplate, symbolExtractor, config, architectureContextBuilder, null);
+        this(vectorStore, jdbcTemplate, symbolExtractor, config, architectureContextBuilder, null, null);
+    }
+
+    private static Executor createDefaultExecutor() {
+        return new ThreadPoolExecutor(
+                2, 8, 60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(100),
+                r -> {
+                    Thread t = new Thread(r, "retrieval-worker");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
     }
 
     /**
@@ -124,53 +162,88 @@ public class RetrievalStrategySelector {
 
     /**
      * METHOD: Prioritize METHOD + METHOD_FRAGMENT chunks.
-     * 1. Exact method symbol lookup
-     * 2. Vector search
+     * 1. Exact method symbol lookup (concurrent with vector search)
+     * 2. Vector search (concurrent with symbol lookup)
      * 3. Enrich with parent class summaries
      */
     private List<Document> retrieveForMethod(String query, int rawTopK, String repositoryId) {
-        List<Document> results = new ArrayList<>();
-
         Optional<String> symbol = symbolExtractor.extract(query);
-        if (symbol.isPresent()) {
-            List<Document> exact = lookupMethodBySymbol(symbol.get(), repositoryId);
-            log.info("METHOD strategy: exact lookup for '{}' returned {} doc(s)", symbol.get(), exact.size());
-            results.addAll(exact);
-        }
 
-        List<Document> vectorDocs = performVectorSearch(query, rawTopK, repositoryId);
-        results.addAll(vectorDocs);
+        CompletableFuture<List<Document>> metadataFuture = CompletableFuture.supplyAsync(
+                () -> symbol.map(s -> {
+                    List<Document> exact = lookupMethodBySymbol(s, repositoryId);
+                    log.info("METHOD strategy: exact lookup for '{}' returned {} doc(s)", s, exact.size());
+                    return exact;
+                }).orElseGet(List::of),
+                retrievalExecutor
+        );
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> performVectorSearch(query, rawTopK, repositoryId),
+                retrievalExecutor
+        );
+
+        List<Document> results = new ArrayList<>();
+        try {
+            results.addAll(metadataFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent metadata lookup failed in METHOD strategy: {}", e.getMessage());
+        }
+        try {
+            results.addAll(vectorFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent vector search failed in METHOD strategy: {}", e.getMessage());
+        }
 
         return enrichWithParentContext(deduplicate(results), repositoryId);
     }
 
     /**
      * CLASS: Prioritize CLASS + INTERFACE chunks.
-     * 1. Exact class name lookup
-     * 2. Parent package summary
-     * 3. Vector search
-     * 4. Enrich with parent context
+     * 1. Exact class name lookup + parent package summary (concurrent with vector search)
+     * 2. Vector search (concurrent with class lookup chain)
+     * 3. Enrich with parent context
      */
     private List<Document> retrieveForClass(String query, int rawTopK, String repositoryId) {
-        List<Document> results = new ArrayList<>();
-
         Optional<String> symbol = symbolExtractor.extract(query);
-        if (symbol.isPresent()) {
-            String className = symbol.get();
-            List<Document> exact = lookupByMetadata(className, repositoryId);
-            results.addAll(exact);
 
-            // Fetch parent package summary
-            if (!exact.isEmpty()) {
-                String pkg = String.valueOf(exact.get(0).getMetadata().getOrDefault("packageName", ""));
-                if (!pkg.isBlank()) {
-                    results.addAll(lookupByPackageName(pkg, repositoryId));
-                }
-            }
+        CompletableFuture<List<Document>> metadataFuture = CompletableFuture.supplyAsync(
+                () -> {
+                    List<Document> classDocs = new ArrayList<>();
+                    if (symbol.isPresent()) {
+                        String className = symbol.get();
+                        List<Document> exact = lookupByMetadata(className, repositoryId);
+                        classDocs.addAll(exact);
+
+                        // Fetch parent package summary sequentially within the metadata chain
+                        if (!exact.isEmpty()) {
+                            String pkg = String.valueOf(exact.get(0).getMetadata().getOrDefault("packageName", ""));
+                            if (!pkg.isBlank()) {
+                                classDocs.addAll(lookupByPackageName(pkg, repositoryId));
+                            }
+                        }
+                    }
+                    return classDocs;
+                },
+                retrievalExecutor
+        );
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> performVectorSearch(query, rawTopK, repositoryId),
+                retrievalExecutor
+        );
+
+        List<Document> results = new ArrayList<>();
+        try {
+            results.addAll(metadataFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent metadata lookup failed in CLASS strategy: {}", e.getMessage());
         }
-
-        List<Document> vectorDocs = performVectorSearch(query, rawTopK, repositoryId);
-        results.addAll(vectorDocs);
+        try {
+            results.addAll(vectorFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent vector search failed in CLASS strategy: {}", e.getMessage());
+        }
 
         return enrichWithParentContext(deduplicate(results), repositoryId);
     }
@@ -223,22 +296,39 @@ public class RetrievalStrategySelector {
     /**
      * WORKFLOW: Broader context — METHODS + CLASSES + PACKAGE summaries.
      * Connects multiple components for end-to-end flow explanation.
+     * Executes metadata lookups and vector search concurrently.
      */
     private List<Document> retrieveForWorkflow(String query, int rawTopK, String repositoryId) {
-        List<Document> results = new ArrayList<>();
-
-        // 1. Package summaries for context
-        results.addAll(lookupByType("PACKAGE", repositoryId));
-
-        // 2. Symbol lookup if present
         Optional<String> symbol = symbolExtractor.extract(query);
-        if (symbol.isPresent()) {
-            results.addAll(lookupByMetadata(symbol.get(), repositoryId));
-        }
 
-        // 3. Broader vector search (workflow needs more diverse results)
-        List<Document> vectorDocs = performVectorSearch(query, rawTopK, repositoryId);
-        results.addAll(vectorDocs);
+        CompletableFuture<List<Document>> metadataFuture = CompletableFuture.supplyAsync(
+                () -> {
+                    List<Document> metaDocs = new ArrayList<>();
+                    // 1. Package summaries for context
+                    metaDocs.addAll(lookupByType("PACKAGE", repositoryId));
+                    // 2. Symbol lookup if present
+                    symbol.ifPresent(s -> metaDocs.addAll(lookupByMetadata(s, repositoryId)));
+                    return metaDocs;
+                },
+                retrievalExecutor
+        );
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> performVectorSearch(query, rawTopK, repositoryId),
+                retrievalExecutor
+        );
+
+        List<Document> results = new ArrayList<>();
+        try {
+            results.addAll(metadataFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent metadata lookup failed in WORKFLOW strategy: {}", e.getMessage());
+        }
+        try {
+            results.addAll(vectorFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent vector search failed in WORKFLOW strategy: {}", e.getMessage());
+        }
 
         return enrichWithParentContext(deduplicate(results), repositoryId);
     }
@@ -246,23 +336,42 @@ public class RetrievalStrategySelector {
     /**
      * RELATIONSHIP: CLASS + METHOD + INTERFACE with wider Top-K.
      * Focus on metadata relationships.
+     * Executes metadata lookups and vector search concurrently.
      */
     private List<Document> retrieveForRelationship(String query, int rawTopK, String repositoryId) {
-        List<Document> results = new ArrayList<>();
-
         Optional<String> symbol = symbolExtractor.extract(query);
-        if (symbol.isPresent()) {
-            List<Document> exact = lookupByMetadata(symbol.get(), repositoryId);
-            results.addAll(exact);
-            log.info("RELATIONSHIP strategy: symbol '{}' returned {} doc(s)", symbol.get(), exact.size());
+
+        CompletableFuture<List<Document>> metadataFuture = CompletableFuture.supplyAsync(
+                () -> {
+                    List<Document> metaDocs = new ArrayList<>();
+                    symbol.ifPresent(s -> {
+                        List<Document> exact = lookupByMetadata(s, repositoryId);
+                        metaDocs.addAll(exact);
+                        log.info("RELATIONSHIP strategy: symbol '{}' returned {} doc(s)", s, exact.size());
+                    });
+                    // Interfaces for relationship context
+                    metaDocs.addAll(lookupByType("INTERFACE", repositoryId));
+                    return metaDocs;
+                },
+                retrievalExecutor
+        );
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> performVectorSearch(query, rawTopK, repositoryId),
+                retrievalExecutor
+        );
+
+        List<Document> results = new ArrayList<>();
+        try {
+            results.addAll(metadataFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent metadata lookup failed in RELATIONSHIP strategy: {}", e.getMessage());
         }
-
-        // Wider vector search for relationship context
-        List<Document> vectorDocs = performVectorSearch(query, rawTopK, repositoryId);
-        results.addAll(vectorDocs);
-
-        // Interfaces for relationship context
-        results.addAll(lookupByType("INTERFACE", repositoryId));
+        try {
+            results.addAll(vectorFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent vector search failed in RELATIONSHIP strategy: {}", e.getMessage());
+        }
 
         return enrichWithParentContext(deduplicate(results), repositoryId);
     }
@@ -327,19 +436,40 @@ public class RetrievalStrategySelector {
 
     /**
      * UNKNOWN: Generic hybrid retrieval (metadata + vector).
+     * Executes metadata lookup and vector search concurrently.
      */
     private List<Document> retrieveForUnknown(String query, int rawTopK, String repositoryId) {
-        List<Document> results = new ArrayList<>();
-
         Optional<String> symbol = symbolExtractor.extract(query);
-        if (symbol.isPresent()) {
-            List<Document> metadataResults = lookupByMetadata(symbol.get(), repositoryId);
-            results.addAll(metadataResults);
-            log.info("UNKNOWN strategy: symbol '{}' metadata lookup returned {} doc(s)", symbol.get(), metadataResults.size());
-        }
 
-        List<Document> vectorDocs = performVectorSearch(query, rawTopK, repositoryId);
-        results.addAll(vectorDocs);
+        CompletableFuture<List<Document>> metadataFuture = CompletableFuture.supplyAsync(
+                () -> {
+                    List<Document> metaDocs = new ArrayList<>();
+                    symbol.ifPresent(s -> {
+                        List<Document> metadataResults = lookupByMetadata(s, repositoryId);
+                        metaDocs.addAll(metadataResults);
+                        log.info("UNKNOWN strategy: symbol '{}' metadata lookup returned {} doc(s)", s, metadataResults.size());
+                    });
+                    return metaDocs;
+                },
+                retrievalExecutor
+        );
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> performVectorSearch(query, rawTopK, repositoryId),
+                retrievalExecutor
+        );
+
+        List<Document> results = new ArrayList<>();
+        try {
+            results.addAll(metadataFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent metadata lookup failed in UNKNOWN strategy: {}", e.getMessage());
+        }
+        try {
+            results.addAll(vectorFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent vector search failed in UNKNOWN strategy: {}", e.getMessage());
+        }
 
         return enrichWithParentContext(deduplicate(results), repositoryId);
     }

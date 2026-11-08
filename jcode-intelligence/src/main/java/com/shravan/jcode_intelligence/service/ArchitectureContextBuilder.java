@@ -33,7 +33,8 @@ import java.util.*;
 public class ArchitectureContextBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(ArchitectureContextBuilder.class);
-    private static final ObjectMapper jsonMapper = new ObjectMapper();
+    private static final com.fasterxml.jackson.databind.ObjectReader jsonReader =
+            new ObjectMapper().readerFor(Map.class);
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -144,15 +145,21 @@ public class ArchitectureContextBuilder {
 
     // ── Structural SQL Queries ────────────────────────────────
 
+    /**
+     * Retrieves all package summary documents for the given repository.
+     *
+     * @param repositoryId target repository ID (optional, nullable)
+     * @return list of package summary documents
+     */
     private List<Document> retrieveAllPackageSummaries(String repositoryId) {
         try {
             String sql;
             Object[] params;
             if (repositoryId != null && !repositoryId.isBlank()) {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' = 'PACKAGE' AND metadata->>'repositoryId' = ?";
+                sql = "SELECT content, metadata FROM vector_store WHERE metadata->>'type' = 'PACKAGE' AND metadata->>'repositoryId' = ?";
                 params = new Object[]{repositoryId};
             } else {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' = 'PACKAGE'";
+                sql = "SELECT content, metadata FROM vector_store WHERE metadata->>'type' = 'PACKAGE'";
                 params = new Object[]{};
             }
             return executeQuery(sql, params);
@@ -162,6 +169,12 @@ public class ArchitectureContextBuilder {
         }
     }
 
+    /**
+     * Retrieves class, enum, and record documents and groups them by architectural role.
+     *
+     * @param repositoryId target repository ID (optional, nullable)
+     * @return map of component roles to corresponding documents
+     */
     private Map<ComponentRole, List<Document>> retrieveComponentsByRole(String repositoryId) {
         Map<ComponentRole, List<Document>> roleMap = new EnumMap<>(ComponentRole.class);
 
@@ -169,10 +182,10 @@ public class ArchitectureContextBuilder {
             String sql;
             Object[] params;
             if (repositoryId != null && !repositoryId.isBlank()) {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' IN ('CLASS', 'ENUM', 'RECORD') AND metadata->>'repositoryId' = ?";
+                sql = "SELECT content, metadata FROM vector_store WHERE metadata->>'type' IN ('CLASS', 'ENUM', 'RECORD') AND metadata->>'repositoryId' = ?";
                 params = new Object[]{repositoryId};
             } else {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' IN ('CLASS', 'ENUM', 'RECORD')";
+                sql = "SELECT content, metadata FROM vector_store WHERE metadata->>'type' IN ('CLASS', 'ENUM', 'RECORD')";
                 params = new Object[]{};
             }
 
@@ -189,15 +202,21 @@ public class ArchitectureContextBuilder {
         return roleMap;
     }
 
+    /**
+     * Retrieves architectural interface documents for the given repository.
+     *
+     * @param repositoryId target repository ID (optional, nullable)
+     * @return list of interface documents
+     */
     private List<Document> retrieveArchitecturalInterfaces(String repositoryId) {
         try {
             String sql;
             Object[] params;
             if (repositoryId != null && !repositoryId.isBlank()) {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' = 'INTERFACE' AND metadata->>'repositoryId' = ?";
+                sql = "SELECT content, metadata FROM vector_store WHERE metadata->>'type' = 'INTERFACE' AND metadata->>'repositoryId' = ?";
                 params = new Object[]{repositoryId};
             } else {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' = 'INTERFACE'";
+                sql = "SELECT content, metadata FROM vector_store WHERE metadata->>'type' = 'INTERFACE'";
                 params = new Object[]{};
             }
             return executeQuery(sql, params);
@@ -207,15 +226,44 @@ public class ArchitectureContextBuilder {
         }
     }
 
+    /**
+     * Retrieves up to 10 orchestration methods for the given repository.
+     * Pushes down candidate element name patterns and annotation filters into SQL with an explicit
+     * candidate limit to prevent unbounded method fetching and memory churn on large codebases.
+     *
+     * @param repositoryId target repository ID (optional, nullable)
+     * @return list of up to 10 orchestration method documents
+     */
     private List<Document> retrieveOrchestrationMethods(String repositoryId) {
         try {
+            String candidateFilter = "(" +
+                    "metadata->>'elementName' ILIKE 'main' " +
+                    "OR metadata->>'elementName' LIKE 'execute%' " +
+                    "OR metadata->>'elementName' LIKE 'schedule%' " +
+                    "OR metadata->>'elementName' LIKE 'create%' " +
+                    "OR metadata->>'elementName' LIKE 'process%' " +
+                    "OR metadata->>'elementName' LIKE 'handle%' " +
+                    "OR metadata->>'elementName' LIKE 'parse%' " +
+                    "OR metadata->>'elementName' LIKE 'index%' " +
+                    "OR metadata->>'elementName' LIKE 'retrieve%' " +
+                    "OR metadata->>'annotations' ILIKE '%scheduled%' " +
+                    "OR metadata->>'annotations' ILIKE '%async%' " +
+                    "OR metadata->>'annotations' ILIKE '%transactional%' " +
+                    "OR metadata->>'annotations' ILIKE '%bean%' " +
+                    ")";
+
             String sql;
             Object[] params;
             if (repositoryId != null && !repositoryId.isBlank()) {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' IN ('METHOD', 'CONSTRUCTOR') AND metadata->>'repositoryId' = ?";
+                sql = "SELECT content, metadata FROM vector_store " +
+                      "WHERE metadata->>'type' IN ('METHOD', 'CONSTRUCTOR') " +
+                      "AND " + candidateFilter + " " +
+                      "AND metadata->>'repositoryId' = ? LIMIT 50";
                 params = new Object[]{repositoryId};
             } else {
-                sql = "SELECT id, content, metadata FROM vector_store WHERE metadata->>'type' IN ('METHOD', 'CONSTRUCTOR')";
+                sql = "SELECT content, metadata FROM vector_store " +
+                      "WHERE metadata->>'type' IN ('METHOD', 'CONSTRUCTOR') " +
+                      "AND " + candidateFilter + " LIMIT 50";
                 params = new Object[]{};
             }
 
@@ -409,6 +457,13 @@ public class ArchitectureContextBuilder {
         return map.values().stream().mapToInt(List::size).sum();
     }
 
+    /**
+     * Executes a SQL query against {@code vector_store} and maps rows to {@link Document} instances.
+     *
+     * @param sql    SQL query string
+     * @param params query parameters
+     * @return list of documents
+     */
     @SuppressWarnings("unchecked")
     private List<Document> executeQuery(String sql, Object[] params) {
         return jdbcTemplate.query(sql, params, (rs, rowNum) -> {
@@ -419,11 +474,19 @@ public class ArchitectureContextBuilder {
         });
     }
 
+    /**
+     * Deserializes a metadata JSON string using the shared, thread-safe {@link com.fasterxml.jackson.databind.ObjectReader}.
+     * Returns an empty map on null, blank, or malformed inputs without throwing exceptions.
+     *
+     * @param json raw metadata JSON string
+     * @return deserialized metadata map
+     */
     @SuppressWarnings("unchecked")
     private Map<String, Object> parseMetadataJson(String json) {
         if (json == null || json.isBlank()) return new HashMap<>();
         try {
-            return jsonMapper.readValue(json, Map.class);
+            Map<String, Object> result = jsonReader.readValue(json);
+            return result != null ? result : new HashMap<>();
         } catch (Exception e) {
             log.warn("Failed to parse metadata JSON: {}", e.getMessage());
             return new HashMap<>();

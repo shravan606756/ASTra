@@ -4,6 +4,7 @@ import com.shravan.jcode_intelligence.config.IntentRetrievalConfig;
 import com.shravan.jcode_intelligence.dto.request.ChatRequest;
 import com.shravan.jcode_intelligence.dto.response.ChatResponse;
 import com.shravan.jcode_intelligence.dto.response.ChunkResponse;
+import com.shravan.jcode_intelligence.dto.response.GroupedSourceResponse;
 import com.shravan.jcode_intelligence.llm.LLMClient;
 import com.shravan.jcode_intelligence.llm.PromptBuilder;
 import com.shravan.jcode_intelligence.llm.PromptContextResult;
@@ -82,9 +83,11 @@ public class ChatServiceImpl implements ChatService {
 
         // Step 5: Format sources using ONLY documents actually supplied within budget
         List<ChunkResponse> sources = responseFormatter.formatChunks(promptResult.suppliedDocuments());
+        List<GroupedSourceResponse> groupedSources = responseFormatter.groupSourcesByFile(sources);
 
         // Step 6: Assemble response with debug info
         ChatResponse response = new ChatResponse(request.getQuery(), answer, sources);
+        response.setGroupedSources(groupedSources);
 
         if (config.isDebugIntentEnabled()) {
             response.setClassifiedIntent(intent.name());

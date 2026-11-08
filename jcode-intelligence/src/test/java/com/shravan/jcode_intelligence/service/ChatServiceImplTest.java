@@ -24,6 +24,10 @@ import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Unit tests verifying budget-aware document passing, debug metadata generation, and
+ * source consolidation in {@link ChatServiceImpl}.
+ */
 class ChatServiceImplTest {
 
     private StubRetrievalService retrievalService;
@@ -83,6 +87,8 @@ class ChatServiceImplTest {
         assertFalse(responseFormatter.receivedDocuments.contains(d4), "Omitted document D4 must not be sent to ResponseFormatter");
 
         assertEquals(2, response.getSources().size());
+        assertNotNull(response.getGroupedSources());
+        assertEquals(2, response.getGroupedSources().size(), "Each distinct file must have a grouped source entry");
     }
 
     @Test

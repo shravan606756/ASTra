@@ -81,6 +81,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
     @PostConstruct
     public void start() {
         if (running.compareAndSet(false, true)) {
+            queue.openAdmission();
             int workers = Math.max(1, config.getWriterCount());
             writerExecutor = Executors.newFixedThreadPool(workers, r -> {
                 Thread t = new Thread(r, "astra-vector-writer");
@@ -118,9 +119,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                     writerExecutor.shutdownNow();
                 }
             }
-            if (queue.size() > 0) {
-                queue.drainAndFailRemaining(new IllegalStateException("PgVectorBulkWriter stopped while records were pending"));
-            }
+            queue.drainAndFailRemaining(new IllegalStateException("PgVectorBulkWriter stopped while records were pending"));
         }
     }
 
@@ -187,10 +186,10 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                 return;
             }
 
-            // 2. If batch is large enough that BOTH child sub-batches will be >= minBatchSize, split in half
-            if (batch.size() >= 2 * config.getMinBatchSize()) {
+            // 2. Only split for size-related failures where batch is large enough that BOTH child sub-batches will be >= minBatchSize
+            if (isSizeRelatedError(ex) && batch.size() >= 2 * config.getMinBatchSize()) {
                 int mid = batch.size() / 2;
-                log.info("Splitting failing batch of {} records into sub-batches of {} and {}",
+                log.info("Splitting size-failed batch of {} records into sub-batches of {} and {}",
                         batch.size(), mid, batch.size() - mid);
 
                 persistWithAdaptiveSplitting(batch.subList(0, mid), 0);
@@ -198,7 +197,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                 return;
             }
 
-            // 3. If at or below 2*minBatchSize and retries remain, retry with exponential backoff
+            // 3. For non-size errors or batches that cannot be split, retry with exponential backoff up to maxRetries
             if (attempt < config.getMaxRetries()) {
                 long backoff = config.getRetryBackoffMs() * (attempt + 1);
                 log.info("Retrying failed batch of {} records (attempt {}/{}) after {} ms backoff",
@@ -212,12 +211,34 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                 }
                 persistWithAdaptiveSplitting(batch, attempt + 1);
             } else {
-                // 4. Exhausted retries and splitting; attempt single-record isolation or fail
-                log.error("Exhausted all retries and adaptive splitting for batch of {} records; isolating records",
+                // 4. Exhausted retries; isolate or fail
+                log.error("Exhausted all retries for batch of {} records; isolating records",
                         batch.size(), ex);
                 failOrFallback(batch, ex);
             }
         }
+    }
+
+    private boolean isSizeRelatedError(Throwable ex) {
+        if (ex == null) {
+            return false;
+        }
+        String msg = ex.getMessage();
+        if (msg != null) {
+            String lower = msg.toLowerCase();
+            if (lower.contains("payload too large") || lower.contains("too large")
+                    || lower.contains("statement too long") || lower.contains("maximum statement size")
+                    || lower.contains("exceeded") || lower.contains("limit") || lower.contains("data truncation")
+                    || lower.contains("string data, right truncation") || lower.contains("value too long")
+                    || lower.contains("batch update size exceeded") || lower.contains("size limit")) {
+                return true;
+            }
+        }
+        Throwable cause = ex.getCause();
+        if (cause != null && cause != ex) {
+            return isSizeRelatedError(cause);
+        }
+        return false;
     }
 
     private void failOrFallback(List<EmbeddedRecord> batch, Throwable ex) {

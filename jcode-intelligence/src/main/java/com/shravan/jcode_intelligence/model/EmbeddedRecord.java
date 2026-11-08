@@ -52,8 +52,8 @@ public record EmbeddedRecord(
     /**
      * Generates an RFC-4122 type 3 deterministic UUID string from repository coordinates and chunk identity.
      * Identical inputs produce the same ID across indexing attempts and network retries.
-     * A nonblank chunk ID takes precedence over content. Repository and chunk IDs are
-     * trimmed; a null or blank repository ID uses {@code default}.
+     * A nonblank chunk ID takes precedence over content. Nonblank repository and chunk IDs are
+     * used unchanged (not trimmed); a null or blank repository ID uses {@code default}.
      *
      * @param repositoryId repository identifier
      * @param chunkId      stable chunk identifier (nullable)

@@ -146,9 +146,10 @@ public class IndexingServiceImpl implements IndexingService {
     @Override
     public int indexProject(String projectPath, String repositoryId) throws IOException {
         long startTime = System.currentTimeMillis();
+        String safeRepoId = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "default";
 
-        if (concurrencyManager != null && repositoryId != null && !repositoryId.isBlank()) {
-            concurrencyManager.acquireOrThrow(repositoryId);
+        if (concurrencyManager != null) {
+            concurrencyManager.acquireOrThrow(safeRepoId);
         }
 
         try {
@@ -166,10 +167,8 @@ public class IndexingServiceImpl implements IndexingService {
             List<CodeChunk> allChunks = new ArrayList<>(elementChunks);
             allChunks.addAll(packageChunks);
 
-            if (repositoryId != null && !repositoryId.isBlank()) {
-                for (CodeChunk chunk : allChunks) {
-                    chunk.setRepositoryId(repositoryId);
-                }
+            for (CodeChunk chunk : allChunks) {
+                chunk.setRepositoryId(safeRepoId);
             }
 
             // [STEP 3] Convert to Spring AI Document objects
@@ -183,10 +182,8 @@ public class IndexingServiceImpl implements IndexingService {
             log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
 
             // [STEP 5] Delete existing vectors for this repository
-            if (repositoryId != null && !repositoryId.isBlank()) {
-                log.info("[STEP 5] Cleaning up existing vector records for repository: {}", repositoryId);
-                deleteExistingRepositoryVectors(repositoryId);
-            }
+            log.info("[STEP 5] Cleaning up existing vector records for repository: {}", safeRepoId);
+            deleteExistingRepositoryVectors(safeRepoId);
 
             // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
             int totalDocs = documents.size();
@@ -202,7 +199,6 @@ public class IndexingServiceImpl implements IndexingService {
             EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
 
             if (embeddingQueue != null && embeddingModel != null) {
-                String safeRepoId = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "default";
                 String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
                 embeddingQueue.registerJob(jobId, safeRepoId);
                 log.info(
@@ -261,20 +257,13 @@ public class IndexingServiceImpl implements IndexingService {
                         }, executor));
                     }
 
-                    try {
-                        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-                    } catch (CompletionException ce) {
-                        for (CompletableFuture<Void> f : futures) {
-                            f.cancel(true);
-                        }
-                        Throwable cause = ce.getCause() != null ? ce.getCause() : ce;
-                        throw cause;
-                    }
+                    awaitAllOrCancelOnFailure(futures);
 
                     embeddingQueue.completeJob(jobId);
                     embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
                 } catch (Throwable t) {
                     embeddingQueue.failJob(jobId, t);
+                    embeddingQueue.cleanupJob(jobId);
                     throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
                 } finally {
                     shutdownAndAwaitTermination(executor);
@@ -310,15 +299,7 @@ public class IndexingServiceImpl implements IndexingService {
                         }, executor));
                     }
 
-                    try {
-                        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-                    } catch (CompletionException ce) {
-                        for (CompletableFuture<Void> f : futures) {
-                            f.cancel(true);
-                        }
-                        Throwable cause = ce.getCause() != null ? ce.getCause() : ce;
-                        throw new RuntimeException("Batch vector store insertion failed during STEP 6", cause);
-                    }
+                    awaitAllOrCancelOnFailure(futures);
                 } finally {
                     shutdownAndAwaitTermination(executor);
                 }
@@ -335,14 +316,12 @@ public class IndexingServiceImpl implements IndexingService {
             IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
             log.info("\n{}", stats);
 
-            if (repositoryId != null && !repositoryId.isBlank()) {
-                repositoryManagementService.saveRepositoryStats(repositoryId, stats);
-            }
+            repositoryManagementService.saveRepositoryStats(safeRepoId, stats);
 
             return documents.size();
         } finally {
-            if (concurrencyManager != null && repositoryId != null && !repositoryId.isBlank()) {
-                concurrencyManager.release(repositoryId);
+            if (concurrencyManager != null) {
+                concurrencyManager.release(safeRepoId);
             }
         }
     }
@@ -406,6 +385,36 @@ public class IndexingServiceImpl implements IndexingService {
         return name.isEmpty() ? "git-repo" : name;
     }
 
+    private void awaitAllOrCancelOnFailure(List<CompletableFuture<Void>> futures) {
+        CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        CompletableFuture<Void> firstFailure = new CompletableFuture<>();
+        for (CompletableFuture<Void> f : futures) {
+            f.whenComplete((res, ex) -> {
+                if (ex != null) {
+                    firstFailure.completeExceptionally(ex);
+                }
+            });
+        }
+        allFutures.whenComplete((res, ex) -> {
+            if (ex == null) {
+                firstFailure.complete(null);
+            }
+        });
+
+        try {
+            firstFailure.join();
+        } catch (CompletionException ce) {
+            for (CompletableFuture<Void> f : futures) {
+                f.cancel(true);
+            }
+            Throwable cause = ce.getCause() != null ? ce.getCause() : ce;
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException(cause);
+        }
+    }
+
     private void shutdownAndAwaitTermination(ExecutorService executor) {
         if (executor == null) {
             return;
@@ -413,20 +422,19 @@ public class IndexingServiceImpl implements IndexingService {
         executor.shutdown();
         boolean interrupted = false;
         try {
-            while (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
                 executor.shutdownNow();
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    log.warn("Executor workers did not terminate within bounded 10s timeout");
+                }
             }
         } catch (InterruptedException e) {
             interrupted = true;
             executor.shutdownNow();
-            while (true) {
-                try {
-                    if (executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        break;
-                    }
-                } catch (InterruptedException ie) {
-                    // keep waiting until workers terminate
-                }
+            try {
+                executor.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException ie) {
+                // bounded wait complete
             }
         } finally {
             if (interrupted) {

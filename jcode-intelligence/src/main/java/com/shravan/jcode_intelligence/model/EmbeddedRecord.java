@@ -61,10 +61,10 @@ public record EmbeddedRecord(
      * @return deterministic UUID string
      */
     public static String generateDeterministicId(String repositoryId, String chunkId, String content) {
-        String repo = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId.trim() : "default";
+        String repo = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "default";
         String seed;
         if (chunkId != null && !chunkId.isBlank()) {
-            seed = repo + ":" + chunkId.trim();
+            seed = repo + ":" + chunkId;
         } else {
             seed = repo + ":" + (content != null ? content : "");
         }

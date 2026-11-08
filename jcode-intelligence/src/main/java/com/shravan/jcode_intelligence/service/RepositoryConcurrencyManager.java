@@ -99,9 +99,6 @@ public class RepositoryConcurrencyManager {
         if (lock != null && lock.isHeldByCurrentThread()) {
             lock.unlock();
             log.info("Released exclusive indexing lock for repository: {}", key);
-            if (!lock.hasQueuedThreads()) {
-                repositoryLocks.remove(key, lock);
-            }
         }
     }
 

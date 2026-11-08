@@ -31,6 +31,8 @@ public class EmbeddingQueue {
     private final int capacity;
     private final ConcurrentHashMap<String, JobTracker> activeJobs = new ConcurrentHashMap<>();
     private final Set<String> failedJobs = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, Throwable> failedJobCauses = new ConcurrentHashMap<>();
+    private final AtomicBoolean admissionClosed = new AtomicBoolean(false);
 
     /**
      * Constructs an {@code EmbeddingQueue} with properties from {@link EmbeddingQueueConfig}.
@@ -44,12 +46,33 @@ public class EmbeddingQueue {
     }
 
     /**
+     * Closes admission of new records into the queue.
+     * Rejects subsequent submissions immediately to support graceful shutdown.
+     */
+    public void closeAdmission() {
+        admissionClosed.set(true);
+        log.info("Closed admission to embedding queue; subsequent submissions will be rejected");
+    }
+
+    /**
+     * Checks if queue admission is closed.
+     *
+     * @return true if admission is closed, false otherwise
+     */
+    public boolean isAdmissionClosed() {
+        return admissionClosed.get();
+    }
+
+    /**
      * Registers a new indexing job in the queue tracker before submitting records.
      *
      * @param jobId        unique job identifier; an existing job is left unchanged
      * @param repositoryId associated repository identifier
      */
     public void registerJob(String jobId, String repositoryId) {
+        if (admissionClosed.get()) {
+            throw new IllegalStateException("Cannot register job; embedding queue admission is closed");
+        }
         activeJobs.computeIfAbsent(jobId, id -> new JobTracker(id, repositoryId));
         log.info("Registered indexing job: {} for repository: {}", jobId, repositoryId);
     }
@@ -61,11 +84,17 @@ public class EmbeddingQueue {
      *
      * @param record self-contained embedded record
      * @throws InterruptedException if interrupted while waiting for queue space
-     * @throws IllegalStateException if the owning job has already been marked failed or cancelled
+     * @throws IllegalStateException if admission is closed or the owning job has failed
      */
     public void submit(EmbeddedRecord record) throws InterruptedException {
         if (record == null) {
             return;
+        }
+
+        if (admissionClosed.get()) {
+            record.acknowledgement().completeExceptionally(
+                    new IllegalStateException("Embedding queue admission is closed"));
+            throw new IllegalStateException("Cannot submit record; embedding queue admission is closed");
         }
 
         JobTracker tracker = activeJobs.get(record.jobId());
@@ -74,14 +103,31 @@ public class EmbeddingQueue {
             tracker = activeJobs.get(record.jobId());
         }
 
-        if (tracker.isFailed()) {
+        if (tracker.isFailed() || failedJobs.contains(record.jobId())) {
             record.acknowledgement().completeExceptionally(
                     new IllegalStateException("Cannot submit record; job has failed: " + record.jobId()));
             throw new IllegalStateException("Job " + record.jobId() + " has already failed; aborting submission");
         }
 
         tracker.submittedCount.incrementAndGet();
-        queue.put(record);
+        try {
+            while (!queue.offer(record, 100, TimeUnit.MILLISECONDS)) {
+                if (tracker.isFailed() || failedJobs.contains(record.jobId()) || admissionClosed.get()) {
+                    tracker.submittedCount.decrementAndGet();
+                    String msg = (admissionClosed.get())
+                            ? "Embedding queue admission closed while awaiting queue capacity"
+                            : "Job " + record.jobId() + " failed while awaiting queue capacity";
+                    record.acknowledgement().completeExceptionally(new IllegalStateException(msg));
+                    checkJobTerminalState(tracker);
+                    throw new IllegalStateException(msg);
+                }
+            }
+        } catch (InterruptedException e) {
+            tracker.submittedCount.decrementAndGet();
+            record.acknowledgement().completeExceptionally(e);
+            checkJobTerminalState(tracker);
+            throw e;
+        }
     }
 
     /**
@@ -109,11 +155,16 @@ public class EmbeddingQueue {
     public void failJob(String jobId, Throwable cause) {
         if (jobId != null) {
             failedJobs.add(jobId);
+            if (cause != null) {
+                failedJobCauses.put(jobId, cause);
+            }
         }
         JobTracker tracker = activeJobs.get(jobId);
         if (tracker != null) {
+            tracker.submissionsCompleted.set(true);
             tracker.markFailed(cause);
             log.error("Job {} marked failed: {}", jobId, cause != null ? cause.getMessage() : "Unknown error");
+            checkJobTerminalState(tracker);
         }
     }
 
@@ -130,6 +181,14 @@ public class EmbeddingQueue {
     public void awaitJobCompletion(String jobId, Duration timeout) throws Exception {
         JobTracker tracker = activeJobs.get(jobId);
         if (tracker == null) {
+            Throwable failure = failedJobCauses.remove(jobId);
+            if (failure != null) {
+                failedJobs.remove(jobId);
+                if (failure instanceof Exception ex) {
+                    throw ex;
+                }
+                throw new RuntimeException(failure);
+            }
             return;
         }
         try {
@@ -146,6 +205,8 @@ public class EmbeddingQueue {
         } finally {
             if (tracker.completionFuture.isDone()) {
                 activeJobs.remove(jobId);
+                failedJobs.remove(jobId);
+                failedJobCauses.remove(jobId);
             }
         }
     }
@@ -220,12 +281,41 @@ public class EmbeddingQueue {
         }
         record.acknowledgement().completeExceptionally(cause);
 
+        if (record.jobId() != null) {
+            failedJobs.add(record.jobId());
+            if (cause != null) {
+                failedJobCauses.put(record.jobId(), cause);
+            }
+        }
+
         JobTracker tracker = activeJobs.get(record.jobId());
         if (tracker != null) {
             tracker.failedCount.incrementAndGet();
             tracker.recordErrors.add(cause != null ? cause.getMessage() : "Unknown write error");
             tracker.markFailed(cause);
+            checkJobTerminalState(tracker);
         }
+    }
+
+    /**
+     * Drains all remaining records from the queue and marks them as failed.
+     * Invoked during writer shutdown to prevent hanging producers.
+     *
+     * @param cause root cause of the writer shutdown or failure
+     */
+    public void drainAndFailRemaining(Throwable cause) {
+        closeAdmission();
+        EmbeddedRecord record;
+        while ((record = queue.poll()) != null) {
+            recordFailed(record, cause);
+        }
+        for (JobTracker tracker : activeJobs.values()) {
+            tracker.markFailed(cause);
+            checkJobTerminalState(tracker);
+        }
+        activeJobs.clear();
+        failedJobs.clear();
+        failedJobCauses.clear();
     }
 
     /**
@@ -266,24 +356,32 @@ public class EmbeddingQueue {
     private void acknowledgeCancelled(EmbeddedRecord record) {
         record.acknowledgement().completeExceptionally(
                 new IllegalStateException("Record discarded: job " + record.jobId() + " was cancelled or failed"));
+        JobTracker tracker = activeJobs.get(record.jobId());
+        if (tracker != null) {
+            tracker.failedCount.incrementAndGet();
+            checkJobTerminalState(tracker);
+        }
     }
 
     private void checkJobTerminalState(JobTracker tracker) {
-        if (tracker.isFailed()) {
-            return;
-        }
         if (tracker.submissionsCompleted.get()) {
             int total = tracker.submittedCount.get();
             int persisted = tracker.persistedCount.get();
             int failed = tracker.failedCount.get();
 
             if (persisted + failed >= total) {
-                if (failed == 0) {
-                    tracker.completionFuture.complete(null);
-                    log.info("Job {} completed successfully (all {} records persisted)", tracker.jobId, persisted);
-                } else {
-                    tracker.markFailed(new RuntimeException(
-                            String.format("Job %s finished with %d failed record(s) out of %d total", tracker.jobId, failed, total)));
+                if (!tracker.isFailed()) {
+                    if (failed == 0) {
+                        tracker.completionFuture.complete(null);
+                        log.info("Job {} completed successfully (all {} records persisted)", tracker.jobId, persisted);
+                    } else {
+                        tracker.markFailed(new RuntimeException(
+                                String.format("Job %s finished with %d failed record(s) out of %d total", tracker.jobId, failed, total)));
+                    }
+                }
+                if (tracker.isFailed() && tracker.completionFuture.isDone()) {
+                    activeJobs.remove(tracker.getJobId());
+                    failedJobs.remove(tracker.getJobId());
                 }
             }
         }

@@ -125,7 +125,7 @@ class EmbeddingQueueTest {
         AtomicInteger submitted11th = new AtomicInteger(0);
 
         try {
-            executor.submit(() -> {
+            Future<?> future11th = executor.submit(() -> {
                 try {
                     String id11 = EmbeddedRecord.generateDeterministicId("repo-bp", "c-11", "c");
                     smallQueue.submit(new EmbeddedRecord(id11, jobId, "repo-bp", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
@@ -133,16 +133,16 @@ class EmbeddingQueueTest {
                 } catch (InterruptedException ignored) {}
             });
 
-            // Producer must be blocked
-            Thread.sleep(100);
+            // Producer must initially be blocked waiting for capacity
+            Thread.sleep(50);
             assertEquals(0, submitted11th.get(), "11th record must be blocked by backpressure");
 
             // Drain 1 record to unblock
             List<EmbeddedRecord> drained = smallQueue.drainBatch(1, 50);
             assertEquals(1, drained.size());
 
-            // Producer should now proceed
-            Thread.sleep(100);
+            // Producer should now proceed deterministically
+            future11th.get(2, TimeUnit.SECONDS);
             assertEquals(1, submitted11th.get(), "11th record must be accepted after queue space is freed");
         } finally {
             executor.shutdownNow();

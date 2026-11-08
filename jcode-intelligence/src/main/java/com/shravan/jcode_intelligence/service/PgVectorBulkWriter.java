@@ -34,19 +34,12 @@ public class PgVectorBulkWriter implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(PgVectorBulkWriter.class);
 
-    private static final String BULK_UPSERT_SQL = """
-            INSERT INTO vector_store (id, content, metadata, embedding)
-            VALUES (?::uuid, ?, ?::json, ?::vector)
-            ON CONFLICT (id) DO UPDATE SET
-                content = EXCLUDED.content,
-                metadata = EXCLUDED.metadata,
-                embedding = EXCLUDED.embedding
-            """;
-
     private final EmbeddingQueue queue;
     private final JdbcTemplate jdbcTemplate;
     private final EmbeddingQueueConfig config;
     private final ObjectMapper objectMapper;
+    private final String targetTableName;
+    private final String upsertSql;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ExecutorService writerExecutor;
@@ -67,6 +60,20 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         this.jdbcTemplate = jdbcTemplate;
         this.config = config != null ? config : new EmbeddingQueueConfig();
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+
+        String schema = (this.config.getSchemaName() != null && this.config.getSchemaName().matches("^[a-zA-Z_][a-zA-Z0-9_]*$"))
+                ? this.config.getSchemaName() : "public";
+        String table = (this.config.getTableName() != null && this.config.getTableName().matches("^[a-zA-Z_][a-zA-Z0-9_]*$"))
+                ? this.config.getTableName() : "vector_store";
+        this.targetTableName = schema + "." + table;
+        this.upsertSql = String.format("""
+                INSERT INTO %s (id, content, metadata, embedding)
+                VALUES (?::uuid, ?, ?::json, ?::vector)
+                ON CONFLICT (id) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    metadata = EXCLUDED.metadata,
+                    embedding = EXCLUDED.embedding
+                """, targetTableName);
     }
 
     /** Starts the configured daemon workers if the writer is not already running. */
@@ -81,8 +88,8 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                 return t;
             });
 
-            log.info("Starting {} PGVector bulk persistence writer worker(s) (batch size: {}, flush timeout: {} ms)",
-                    workers, config.getBatchSize(), config.getFlushIntervalMs());
+            log.info("Starting {} PGVector bulk persistence writer worker(s) for table {} (batch size: {}, flush timeout: {} ms)",
+                    workers, targetTableName, config.getBatchSize(), config.getFlushIntervalMs());
 
             for (int i = 0; i < workers; i++) {
                 writerExecutor.submit(this::writerLoop);
@@ -98,7 +105,8 @@ public class PgVectorBulkWriter implements SmartLifecycle {
     @PreDestroy
     public void stop() {
         if (running.compareAndSet(true, false)) {
-            log.info("Stopping PGVector bulk persistence writers, draining remaining queue items...");
+            log.info("Stopping PGVector bulk persistence writers, closing queue admission and draining remaining items...");
+            queue.closeAdmission();
             if (writerExecutor != null) {
                 writerExecutor.shutdown();
                 try {
@@ -109,6 +117,9 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                     Thread.currentThread().interrupt();
                     writerExecutor.shutdownNow();
                 }
+            }
+            if (queue.size() > 0) {
+                queue.drainAndFailRemaining(new IllegalStateException("PgVectorBulkWriter stopped while records were pending"));
             }
         }
     }
@@ -152,16 +163,32 @@ public class PgVectorBulkWriter implements SmartLifecycle {
             long persistStart = System.currentTimeMillis();
             executeBulkUpsert(batch);
             long persistDuration = System.currentTimeMillis() - persistStart;
-            log.info("[PGVECTOR BULK PERSISTENCE] Persisted bulk batch of {} vector record(s) to PostgreSQL vector_store in {} ms",
-                    batch.size(), persistDuration);
+            log.info("[PGVECTOR BULK PERSISTENCE] Persisted bulk batch of {} vector record(s) to PostgreSQL {} in {} ms",
+                    batch.size(), targetTableName, persistDuration);
             for (EmbeddedRecord record : batch) {
                 queue.recordPersisted(record);
             }
         } catch (Exception ex) {
             log.warn("Bulk insert of {} records failed: {}", batch.size(), ex.getMessage());
 
-            // 1. If batch is larger than minimum batch size, split in half
-            if (batch.size() > config.getMinBatchSize()) {
+            // 1. If it's a transient connection error, retry directly with backoff without splitting
+            if (isTransientConnectionError(ex) && attempt < config.getMaxRetries()) {
+                long backoff = config.getRetryBackoffMs() * (attempt + 1);
+                log.info("Retrying connection error for batch of {} records (attempt {}/{}) after {} ms backoff",
+                        batch.size(), attempt + 1, config.getMaxRetries(), backoff);
+                try {
+                    Thread.sleep(backoff);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    failOrFallback(batch, ex);
+                    return;
+                }
+                persistWithAdaptiveSplitting(batch, attempt + 1);
+                return;
+            }
+
+            // 2. If batch is large enough that BOTH child sub-batches will be >= minBatchSize, split in half
+            if (batch.size() >= 2 * config.getMinBatchSize()) {
                 int mid = batch.size() / 2;
                 log.info("Splitting failing batch of {} records into sub-batches of {} and {}",
                         batch.size(), mid, batch.size() - mid);
@@ -171,7 +198,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                 return;
             }
 
-            // 2. If at or below minBatchSize, retry with exponential backoff up to maxRetries
+            // 3. If at or below 2*minBatchSize and retries remain, retry with exponential backoff
             if (attempt < config.getMaxRetries()) {
                 long backoff = config.getRetryBackoffMs() * (attempt + 1);
                 log.info("Retrying failed batch of {} records (attempt {}/{}) after {} ms backoff",
@@ -180,20 +207,57 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                     Thread.sleep(backoff);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    failBatch(batch, ex);
+                    failOrFallback(batch, ex);
                     return;
                 }
                 persistWithAdaptiveSplitting(batch, attempt + 1);
             } else {
-                // 3. Exhausted retries and splitting; fail records
-                log.error("Exhausted all retries and adaptive splitting for batch of {} records; reporting failure", batch.size(), ex);
-                failBatch(batch, ex);
+                // 4. Exhausted retries and splitting; attempt single-record isolation or fail
+                log.error("Exhausted all retries and adaptive splitting for batch of {} records; isolating records",
+                        batch.size(), ex);
+                failOrFallback(batch, ex);
             }
         }
     }
 
+    private void failOrFallback(List<EmbeddedRecord> batch, Throwable ex) {
+        if (batch.size() > 1) {
+            log.warn("Isolating failing records via single-record persistence fallback for {} records", batch.size());
+            for (EmbeddedRecord record : batch) {
+                try {
+                    executeBulkUpsert(List.of(record));
+                    queue.recordPersisted(record);
+                } catch (Exception singleEx) {
+                    log.error("Failed single-record persistence for record {}: {}", record.id(), singleEx.getMessage());
+                    queue.recordFailed(record, singleEx);
+                }
+            }
+        } else {
+            failBatch(batch, ex);
+        }
+    }
+
+    private boolean isTransientConnectionError(Throwable ex) {
+        if (ex == null) {
+            return false;
+        }
+        String msg = ex.getMessage();
+        if (msg != null) {
+            String lower = msg.toLowerCase();
+            if (lower.contains("connection") || lower.contains("timeout") || lower.contains("refused")
+                    || lower.contains("reset") || lower.contains("closed") || lower.contains("broken pipe")) {
+                return true;
+            }
+        }
+        Throwable cause = ex.getCause();
+        if (cause != null && cause != ex) {
+            return isTransientConnectionError(cause);
+        }
+        return false;
+    }
+
     private void executeBulkUpsert(List<EmbeddedRecord> batch) {
-        jdbcTemplate.batchUpdate(BULK_UPSERT_SQL, new BatchPreparedStatementSetter() {
+        jdbcTemplate.batchUpdate(upsertSql, new BatchPreparedStatementSetter() {
             @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
                 EmbeddedRecord record = batch.get(i);

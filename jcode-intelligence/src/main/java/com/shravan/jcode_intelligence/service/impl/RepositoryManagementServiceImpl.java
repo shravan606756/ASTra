@@ -1,6 +1,8 @@
 package com.shravan.jcode_intelligence.service.impl;
 
+import com.shravan.jcode_intelligence.service.RepositoryConcurrencyManager;
 import com.shravan.jcode_intelligence.service.RepositoryManagementService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -12,9 +14,17 @@ import java.util.Map;
 public class RepositoryManagementServiceImpl implements RepositoryManagementService {
 
     private final JdbcTemplate jdbcTemplate;
+    private final RepositoryConcurrencyManager concurrencyManager;
 
     public RepositoryManagementServiceImpl(JdbcTemplate jdbcTemplate) {
+        this(jdbcTemplate, new RepositoryConcurrencyManager());
+    }
+
+    @Autowired
+    public RepositoryManagementServiceImpl(JdbcTemplate jdbcTemplate,
+                                           @Autowired(required = false) RepositoryConcurrencyManager concurrencyManager) {
         this.jdbcTemplate = jdbcTemplate;
+        this.concurrencyManager = concurrencyManager != null ? concurrencyManager : new RepositoryConcurrencyManager();
     }
 
     @jakarta.annotation.PostConstruct
@@ -50,13 +60,22 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
     @Override
     @org.springframework.transaction.annotation.Transactional
     public boolean removeRepository(String repositoryId) {
-        String sqlVector = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
-        int deletedVectors = jdbcTemplate.update(sqlVector, repositoryId);
-        
-        String sqlStats = "DELETE FROM repository_statistics WHERE repository_id = ?";
-        jdbcTemplate.update(sqlStats, repositoryId);
-        
-        return deletedVectors > 0;
+        if (concurrencyManager != null && repositoryId != null && !repositoryId.isBlank()) {
+            concurrencyManager.acquireOrThrow(repositoryId);
+        }
+        try {
+            String sqlVector = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
+            int deletedVectors = jdbcTemplate.update(sqlVector, repositoryId);
+            
+            String sqlStats = "DELETE FROM repository_statistics WHERE repository_id = ?";
+            jdbcTemplate.update(sqlStats, repositoryId);
+            
+            return deletedVectors > 0;
+        } finally {
+            if (concurrencyManager != null && repositoryId != null && !repositoryId.isBlank()) {
+                concurrencyManager.release(repositoryId);
+            }
+        }
     }
 
     @Override

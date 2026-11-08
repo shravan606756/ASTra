@@ -30,10 +30,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
@@ -200,22 +202,23 @@ public class IndexingServiceImpl implements IndexingService {
             EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
 
             if (embeddingQueue != null && embeddingModel != null) {
-                String jobId = "job-" + (repositoryId != null ? repositoryId : "default") + "-" + System.currentTimeMillis();
-                embeddingQueue.registerJob(jobId, repositoryId);
+                String safeRepoId = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "default";
+                String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
+                embeddingQueue.registerJob(jobId, safeRepoId);
                 log.info(
                         "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
                         totalDocs, totalBatches, batchSize, workerCount, jobId);
 
                 ExecutorService executor = Executors.newFixedThreadPool(workerCount);
                 try {
-                    List<Future<?>> futures = new ArrayList<>(totalBatches);
+                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
                     for (int i = 0; i < totalDocs; i += batchSize) {
                         int startIdx = i;
                         int endIdx = Math.min(i + batchSize, totalDocs);
                         List<Document> batch = documents.subList(startIdx, endIdx);
                         int batchNum = (startIdx / batchSize) + 1;
 
-                        futures.add(executor.submit(() -> {
+                        futures.add(CompletableFuture.runAsync(() -> {
                             log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
                                     batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
 
@@ -230,12 +233,12 @@ public class IndexingServiceImpl implements IndexingService {
                             for (int j = 0; j < batch.size(); j++) {
                                 Document doc = batch.get(j);
                                 String chunkId = (String) doc.getMetadata().get("chunkId");
-                                String recordId = EmbeddedRecord.generateDeterministicId(repositoryId, chunkId, doc.getText());
+                                String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
                                 float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
                                 EmbeddedRecord record = new EmbeddedRecord(
                                         recordId,
                                         jobId,
-                                        repositoryId != null ? repositoryId : "default",
+                                        safeRepoId,
                                         doc.getText(),
                                         doc.getMetadata(),
                                         embedding,
@@ -254,11 +257,17 @@ public class IndexingServiceImpl implements IndexingService {
                             log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
                                     batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
                                     String.format("%.1f%%", pct));
-                        }));
+                        }, executor));
                     }
 
-                    for (Future<?> future : futures) {
-                        future.get();
+                    try {
+                        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                    } catch (CompletionException ce) {
+                        for (CompletableFuture<Void> f : futures) {
+                            f.cancel(true);
+                        }
+                        Throwable cause = ce.getCause() != null ? ce.getCause() : ce;
+                        throw cause;
                     }
 
                     embeddingQueue.completeJob(jobId);
@@ -267,7 +276,7 @@ public class IndexingServiceImpl implements IndexingService {
                     embeddingQueue.failJob(jobId, t);
                     throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
                 } finally {
-                    executor.shutdown();
+                    shutdownAndAwaitTermination(executor);
                 }
             } else {
                 log.info(
@@ -276,7 +285,7 @@ public class IndexingServiceImpl implements IndexingService {
 
                 ExecutorService executor = Executors.newFixedThreadPool(workerCount);
                 try {
-                    List<Future<?>> futures = new ArrayList<>(totalBatches);
+                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
 
                     for (int i = 0; i < totalDocs; i += batchSize) {
                         int startIdx = i;
@@ -284,7 +293,7 @@ public class IndexingServiceImpl implements IndexingService {
                         List<Document> batch = documents.subList(startIdx, endIdx);
                         int batchNum = (startIdx / batchSize) + 1;
 
-                        futures.add(executor.submit(() -> {
+                        futures.add(CompletableFuture.runAsync(() -> {
                             log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
                                     batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
 
@@ -297,20 +306,20 @@ public class IndexingServiceImpl implements IndexingService {
                             log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
                                     batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
                                     String.format("%.1f%%", pct));
-                        }));
+                        }, executor));
                     }
 
-                    for (Future<?> future : futures) {
-                        future.get();
+                    try {
+                        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                    } catch (CompletionException ce) {
+                        for (CompletableFuture<Void> f : futures) {
+                            f.cancel(true);
+                        }
+                        Throwable cause = ce.getCause() != null ? ce.getCause() : ce;
+                        throw new RuntimeException("Batch vector store insertion failed during STEP 6", cause);
                     }
-                } catch (ExecutionException e) {
-                    Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    throw new RuntimeException("Batch vector store insertion failed during STEP 6", cause);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Batch vector store insertion interrupted during STEP 6", e);
                 } finally {
-                    executor.shutdown();
+                    shutdownAndAwaitTermination(executor);
                 }
             }
 
@@ -394,5 +403,34 @@ public class IndexingServiceImpl implements IndexingService {
             name = name.substring(0, name.length() - 4);
         }
         return name.isEmpty() ? "git-repo" : name;
+    }
+
+    private void shutdownAndAwaitTermination(ExecutorService executor) {
+        if (executor == null) {
+            return;
+        }
+        executor.shutdown();
+        boolean interrupted = false;
+        try {
+            while (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            interrupted = true;
+            executor.shutdownNow();
+            while (true) {
+                try {
+                    if (executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        break;
+                    }
+                } catch (InterruptedException ie) {
+                    // keep waiting until workers terminate
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 }

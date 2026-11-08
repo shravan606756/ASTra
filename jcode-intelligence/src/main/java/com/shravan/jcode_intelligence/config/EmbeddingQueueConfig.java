@@ -1,5 +1,6 @@
 package com.shravan.jcode_intelligence.config;
 
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
@@ -40,8 +41,51 @@ public class EmbeddingQueueConfig {
     @Value("${astra.indexing.persistence.retry-backoff-ms:100}")
     private long retryBackoffMs = 100;
 
+    /** Target table name for PGVector persistence. */
+    @Value("${spring.ai.vectorstore.pgvector.table-name:vector_store}")
+    private String tableName = "vector_store";
+
+    /** Target schema name for PGVector persistence. */
+    @Value("${spring.ai.vectorstore.pgvector.schema-name:public}")
+    private String schemaName = "public";
+
     /** Default constructor. */
     public EmbeddingQueueConfig() {
+    }
+
+    /**
+     * Validates configuration parameters at application startup.
+     *
+     * @throws IllegalArgumentException if any sizing or interval configuration is non-positive or invalid
+     */
+    @PostConstruct
+    public void validate() {
+        if (capacity <= 0) {
+            throw new IllegalArgumentException("astra.indexing.embedding-queue.capacity must be greater than 0");
+        }
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("astra.indexing.persistence.batch-size must be greater than 0");
+        }
+        if (minBatchSize <= 0) {
+            throw new IllegalArgumentException("astra.indexing.persistence.min-batch-size must be greater than 0");
+        }
+        if (minBatchSize > batchSize) {
+            throw new IllegalArgumentException(String.format(
+                    "astra.indexing.persistence.min-batch-size (%d) must not exceed batch-size (%d)",
+                    minBatchSize, batchSize));
+        }
+        if (flushIntervalMs <= 0) {
+            throw new IllegalArgumentException("astra.indexing.persistence.flush-interval-ms must be greater than 0");
+        }
+        if (writerCount <= 0) {
+            throw new IllegalArgumentException("astra.indexing.persistence.writer-count must be greater than 0");
+        }
+        if (tableName == null || !tableName.matches("^[a-zA-Z_][a-zA-Z0-9_]*$")) {
+            throw new IllegalArgumentException("Invalid table-name: " + tableName);
+        }
+        if (schemaName == null || !schemaName.matches("^[a-zA-Z_][a-zA-Z0-9_]*$")) {
+            throw new IllegalArgumentException("Invalid schema-name: " + schemaName);
+        }
     }
 
     /**
@@ -192,6 +236,42 @@ public class EmbeddingQueueConfig {
      */
     public void setRetryBackoffMs(long retryBackoffMs) {
         this.retryBackoffMs = retryBackoffMs;
+    }
+
+    /**
+     * Returns the target PGVector table name.
+     *
+     * @return table name
+     */
+    public String getTableName() {
+        return tableName;
+    }
+
+    /**
+     * Sets the target PGVector table name.
+     *
+     * @param tableName table name
+     */
+    public void setTableName(String tableName) {
+        this.tableName = tableName;
+    }
+
+    /**
+     * Returns the target PGVector schema name.
+     *
+     * @return schema name
+     */
+    public String getSchemaName() {
+        return schemaName;
+    }
+
+    /**
+     * Sets the target PGVector schema name.
+     *
+     * @param schemaName schema name
+     */
+    public void setSchemaName(String schemaName) {
+        this.schemaName = schemaName;
     }
 }
 

@@ -135,14 +135,17 @@ class RetrievalStrategySelectorTest {
         assertEquals(1, testJdbcTemplate.executedQueries.size(), "Exactly 1 database query must be executed for batch enrichment");
 
         String executedSql = testJdbcTemplate.executedQueries.get(0);
-        assertTrue(executedSql.contains("metadata->>'chunkId' IN (?,?)"), "SQL must use batched IN clause: " + executedSql);
+        assertTrue(executedSql.contains("metadata->>'chunkId' = ANY (?)"), "SQL must use array ANY comparison: " + executedSql);
         assertTrue(executedSql.contains("metadata->>'repositoryId' = ?"), "SQL must enforce repository isolation: " + executedSql);
 
         Object[] args = testJdbcTemplate.executedArgs.get(0);
-        assertEquals(3, args.length);
-        assertEquals("P1", args[0]);
-        assertEquals("P2", args[1]);
-        assertEquals("test-repo", args[2]);
+        assertEquals(2, args.length);
+        assertTrue(args[0] instanceof String[]);
+        String[] idArray = (String[]) args[0];
+        assertEquals(2, idArray.length);
+        assertEquals("P1", idArray[0]);
+        assertEquals("P2", idArray[1]);
+        assertEquals("test-repo", args[1]);
 
         // Parents are prepended before the 3 member documents
         assertEquals(5, result.size());
@@ -169,15 +172,16 @@ class RetrievalStrategySelectorTest {
 
         assertEquals(1, testJdbcTemplate.executedQueries.size());
         String sql = testJdbcTemplate.executedQueries.get(0);
-        assertTrue(sql.contains("metadata->>'chunkId' IN (?)"));
+        assertTrue(sql.contains("metadata->>'chunkId' = ANY (?)"));
         assertFalse(sql.contains("metadata->>'repositoryId' = ?"), "Unscoped query must omit repository filter");
         assertEquals(1, testJdbcTemplate.executedArgs.get(0).length);
-        assertEquals("P1", testJdbcTemplate.executedArgs.get(0)[0]);
+        assertTrue(testJdbcTemplate.executedArgs.get(0)[0] instanceof String[]);
+        assertEquals("P1", ((String[]) testJdbcTemplate.executedArgs.get(0)[0])[0]);
     }
 
     @Test
-    @DisplayName("enrichWithParentContext deduplicates parent already present in documents")
-    void testEnrichWithParentContext_parentAlreadyInDocuments() throws Exception {
+    @DisplayName("enrichWithParentContext executes 0 queries when parent is already present in documents")
+    void testEnrichWithParentContext_parentAlreadyInDocuments_executesZeroQueries() throws Exception {
         Map<String, Object> p1Meta = new HashMap<>();
         p1Meta.put("type", "CLASS");
         p1Meta.put("chunkId", "P1");
@@ -188,6 +192,7 @@ class RetrievalStrategySelectorTest {
 
         Map<String, Object> m1 = new HashMap<>();
         m1.put("type", "METHOD");
+        m1.put("chunkId", "M1");
         m1.put("parentChunkId", "P1");
         m1.put("repositoryId", "repo1");
         m1.put("filePath", "src/Foo.java");
@@ -197,16 +202,17 @@ class RetrievalStrategySelectorTest {
         Document parentDoc = new Document("class Foo", p1Meta);
         Document memberDoc = new Document("method foo", m1);
 
-        testJdbcTemplate.parentResponses.put("P1", new Document("class Foo duplicate", p1Meta));
-
         Method enrichMethod = RetrievalStrategySelector.class.getDeclaredMethod("enrichWithParentContext", List.class, String.class);
         enrichMethod.setAccessible(true);
 
         @SuppressWarnings("unchecked")
         List<Document> result = (List<Document>) enrichMethod.invoke(selector, List.of(parentDoc, memberDoc), "repo1");
 
-        // Parent should not be duplicated
+        // Parent should not be fetched from DB and executedQueries must be empty (0 queries)
+        assertEquals(0, testJdbcTemplate.executedQueries.size(), "Zero queries must be executed when parent is already in documents");
         assertEquals(2, result.size());
+        assertEquals("P1", result.get(0).getMetadata().get("chunkId"));
+        assertEquals("M1", result.get(1).getMetadata().get("chunkId"));
     }
 
     @Test
@@ -277,10 +283,10 @@ class RetrievalStrategySelectorTest {
             executedArgs.add(args != null ? args.clone() : new Object[0]);
 
             List<T> results = new ArrayList<>();
-            if (sql.contains("metadata->>'chunkId' IN")) {
-                if (args != null) {
-                    for (Object arg : args) {
-                        String id = String.valueOf(arg);
+            if (sql.contains("metadata->>'chunkId' = ANY (?)")) {
+                if (args != null && args.length > 0 && args[0] instanceof String[]) {
+                    String[] ids = (String[]) args[0];
+                    for (String id : ids) {
                         Document doc = parentResponses.get(id);
                         if (doc != null) {
                             results.add((T) doc);

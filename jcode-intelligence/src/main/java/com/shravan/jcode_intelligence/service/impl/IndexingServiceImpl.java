@@ -3,24 +3,32 @@ package com.shravan.jcode_intelligence.service.impl;
 import com.shravan.jcode_intelligence.config.ChunkingConfig;
 import com.shravan.jcode_intelligence.converter.DocumentConverter;
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import com.shravan.jcode_intelligence.model.EmbeddedRecord;
 import com.shravan.jcode_intelligence.model.IndexingStatistics;
 import com.shravan.jcode_intelligence.parser.EmbeddingBudgetValidator;
 import com.shravan.jcode_intelligence.parser.JavaProjectParser;
 import com.shravan.jcode_intelligence.parser.PackageSummaryGenerator;
 import com.shravan.jcode_intelligence.parser.IndexingStatisticsCalculator;
+import com.shravan.jcode_intelligence.service.EmbeddingQueue;
 import com.shravan.jcode_intelligence.service.GitService;
 import com.shravan.jcode_intelligence.service.IndexingService;
+import com.shravan.jcode_intelligence.service.RepositoryConcurrencyManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -42,7 +50,28 @@ public class IndexingServiceImpl implements IndexingService {
     private final EmbeddingBudgetValidator budgetValidator;
     private final ChunkingConfig chunkingConfig;
     private final com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService;
+    private final RepositoryConcurrencyManager concurrencyManager;
+    private final EmbeddingQueue embeddingQueue;
+    private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
 
+    /**
+     * Constructs an {@code IndexingServiceImpl} with queue-based persistence and repository concurrency isolation.
+     *
+     * @param parser                      Java project AST parser
+     * @param converter                   code chunk to document converter
+     * @param vectorStore                 vector store for embedding storage
+     * @param gitService                  Git repository service
+     * @param jdbcTemplate                Spring JDBC template
+     * @param packageSummaryGenerator     package summary generator
+     * @param statisticsCalculator        indexing metrics calculator
+     * @param budgetValidator             pre-embedding token budget validator
+     * @param chunkingConfig              chunking and sizing configuration
+     * @param repositoryManagementService repository metadata management service
+     * @param concurrencyManager          repository isolation and concurrency manager
+     * @param embeddingQueue              shared bounded embedding queue
+     * @param embeddingModelProvider      provider for direct Spring AI embedding generation
+     */
+    @Autowired
     public IndexingServiceImpl(JavaProjectParser parser,
             DocumentConverter converter,
             VectorStore vectorStore,
@@ -52,7 +81,10 @@ public class IndexingServiceImpl implements IndexingService {
             IndexingStatisticsCalculator statisticsCalculator,
             EmbeddingBudgetValidator budgetValidator,
             ChunkingConfig chunkingConfig,
-            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
+            RepositoryConcurrencyManager concurrencyManager,
+            EmbeddingQueue embeddingQueue,
+            ObjectProvider<EmbeddingModel> embeddingModelProvider) {
 
         this.parser = parser;
         this.converter = converter;
@@ -64,6 +96,27 @@ public class IndexingServiceImpl implements IndexingService {
         this.budgetValidator = budgetValidator;
         this.chunkingConfig = chunkingConfig;
         this.repositoryManagementService = repositoryManagementService;
+        this.concurrencyManager = concurrencyManager != null ? concurrencyManager : new RepositoryConcurrencyManager();
+        this.embeddingQueue = embeddingQueue;
+        this.embeddingModelProvider = embeddingModelProvider;
+    }
+
+    /**
+     * Legacy constructor preserved for backwards compatibility with existing test configurations.
+     */
+    public IndexingServiceImpl(JavaProjectParser parser,
+            DocumentConverter converter,
+            VectorStore vectorStore,
+            GitService gitService,
+            JdbcTemplate jdbcTemplate,
+            PackageSummaryGenerator packageSummaryGenerator,
+            IndexingStatisticsCalculator statisticsCalculator,
+            EmbeddingBudgetValidator budgetValidator,
+            ChunkingConfig chunkingConfig,
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
+        this(parser, converter, vectorStore, gitService, jdbcTemplate,
+                packageSummaryGenerator, statisticsCalculator, budgetValidator,
+                chunkingConfig, repositoryManagementService, new RepositoryConcurrencyManager(), null, null);
     }
 
     @Override
@@ -78,112 +131,184 @@ public class IndexingServiceImpl implements IndexingService {
     public int indexProject(String projectPath, String repositoryId) throws IOException {
         long startTime = System.currentTimeMillis();
 
-        // [STEP 1] Parse repository source files into element chunks
-        log.info("[STEP 1] Parsing repository source files at path: {}", projectPath);
-        List<CodeChunk> elementChunks = parser.parse(Path.of(projectPath));
-        log.info("[STEP 1 COMPLETE] Generated {} element chunk(s)", elementChunks.size());
-
-        // [STEP 2] Generate package summaries across the entire repository
-        log.info("[STEP 2] Generating repository-wide package summaries...");
-        List<CodeChunk> packageChunks = packageSummaryGenerator.generatePackageSummaries(elementChunks);
-        log.info("[STEP 2 COMPLETE] Generated {} package summary chunk(s)", packageChunks.size());
-
-        // Combine element chunks and repo-wide package summary chunks
-        List<CodeChunk> allChunks = new ArrayList<>(elementChunks);
-        allChunks.addAll(packageChunks);
-
-        if (repositoryId != null && !repositoryId.isBlank()) {
-            for (CodeChunk chunk : allChunks) {
-                chunk.setRepositoryId(repositoryId);
-            }
+        if (concurrencyManager != null && repositoryId != null && !repositoryId.isBlank()) {
+            concurrencyManager.acquireOrThrow(repositoryId);
         }
-
-        // [STEP 3] Convert to Spring AI Document objects
-        log.info("[STEP 3] Converting {} CodeChunks to Spring AI Documents...", allChunks.size());
-        List<Document> documents = converter.convert(allChunks);
-        log.info("[STEP 3 COMPLETE] Converted {} Document(s)", documents.size());
-
-        // [STEP 4] Pre-embedding budget validation and observability audit
-        log.info("[STEP 4] Validating document sizes against embedding budget...");
-        budgetValidator.validateAndAudit(documents, allChunks);
-        log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
-
-        // [STEP 5] Delete existing vectors for this repository
-        if (repositoryId != null && !repositoryId.isBlank()) {
-            log.info("[STEP 5] Cleaning up existing vector records for repository: {}", repositoryId);
-            deleteExistingRepositoryVectors(repositoryId);
-        }
-
-        // [STEP 6] Adaptive parallel batch vector store insertion
-        int totalDocs = documents.size();
-        int batchSize = Math.max(1, chunkingConfig.getBatchSize());
-        int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
-
-        int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
-        int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
-
-        log.info(
-                "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
-                totalDocs, totalBatches, batchSize, workerCount);
-
-        long embeddingStartTime = System.currentTimeMillis();
-        AtomicInteger completedDocs = new AtomicInteger(0);
-        ExecutorService executor = Executors.newFixedThreadPool(workerCount);
 
         try {
-            List<Future<?>> futures = new ArrayList<>(totalBatches);
+            // [STEP 1] Parse repository source files into element chunks
+            log.info("[STEP 1] Parsing repository source files at path: {}", projectPath);
+            List<CodeChunk> elementChunks = parser.parse(Path.of(projectPath));
+            log.info("[STEP 1 COMPLETE] Generated {} element chunk(s)", elementChunks.size());
 
-            for (int i = 0; i < totalDocs; i += batchSize) {
-                int startIdx = i;
-                int endIdx = Math.min(i + batchSize, totalDocs);
-                List<Document> batch = documents.subList(startIdx, endIdx);
-                int batchNum = (startIdx / batchSize) + 1;
+            // [STEP 2] Generate package summaries across the entire repository
+            log.info("[STEP 2] Generating repository-wide package summaries...");
+            List<CodeChunk> packageChunks = packageSummaryGenerator.generatePackageSummaries(elementChunks);
+            log.info("[STEP 2 COMPLETE] Generated {} package summary chunk(s)", packageChunks.size());
 
-                futures.add(executor.submit(() -> {
-                    log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
-                            batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+            // Combine element chunks and repo-wide package summary chunks
+            List<CodeChunk> allChunks = new ArrayList<>(elementChunks);
+            allChunks.addAll(packageChunks);
 
-                    long batchStart = System.currentTimeMillis();
-                    vectorStore.add(batch);
-                    long batchDuration = System.currentTimeMillis() - batchStart;
-
-                    int doneDocs = completedDocs.addAndGet(batch.size());
-                    double pct = ((double) doneDocs / totalDocs) * 100.0;
-                    log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
-                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                            String.format("%.1f%%", pct));
-                }));
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                for (CodeChunk chunk : allChunks) {
+                    chunk.setRepositoryId(repositoryId);
+                }
             }
 
-            for (Future<?> future : futures) {
-                future.get();
+            // [STEP 3] Convert to Spring AI Document objects
+            log.info("[STEP 3] Converting {} CodeChunks to Spring AI Documents...", allChunks.size());
+            List<Document> documents = converter.convert(allChunks);
+            log.info("[STEP 3 COMPLETE] Converted {} Document(s)", documents.size());
+
+            // [STEP 4] Pre-embedding budget validation and observability audit
+            log.info("[STEP 4] Validating document sizes against embedding budget...");
+            budgetValidator.validateAndAudit(documents, allChunks);
+            log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
+
+            // [STEP 5] Delete existing vectors for this repository
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                log.info("[STEP 5] Cleaning up existing vector records for repository: {}", repositoryId);
+                deleteExistingRepositoryVectors(repositoryId);
             }
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            throw new RuntimeException("Batch vector store insertion failed during STEP 6", cause);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Batch vector store insertion interrupted during STEP 6", e);
+
+            // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
+            int totalDocs = documents.size();
+            int batchSize = Math.max(1, chunkingConfig.getBatchSize());
+            int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
+
+            int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
+            int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
+
+            long embeddingStartTime = System.currentTimeMillis();
+            AtomicInteger completedDocs = new AtomicInteger(0);
+
+            EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
+
+            if (embeddingQueue != null && embeddingModel != null) {
+                String jobId = "job-" + (repositoryId != null ? repositoryId : "default") + "-" + System.currentTimeMillis();
+                embeddingQueue.registerJob(jobId, repositoryId);
+                log.info("[STEP 6] Staging {} document(s) across {} batch(es) to shared EmbeddingQueue (jobId: {})...",
+                        totalDocs, totalBatches, jobId);
+
+                ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+                try {
+                    List<Future<?>> futures = new ArrayList<>(totalBatches);
+                    for (int i = 0; i < totalDocs; i += batchSize) {
+                        int startIdx = i;
+                        int endIdx = Math.min(i + batchSize, totalDocs);
+                        List<Document> batch = documents.subList(startIdx, endIdx);
+                        int batchNum = (startIdx / batchSize) + 1;
+
+                        futures.add(executor.submit(() -> {
+                            long batchStart = System.currentTimeMillis();
+                            for (Document doc : batch) {
+                                String chunkId = (String) doc.getMetadata().get("chunkId");
+                                String recordId = EmbeddedRecord.generateDeterministicId(repositoryId, chunkId, doc.getText());
+                                float[] embedding = embeddingModel.embed(doc);
+                                EmbeddedRecord record = new EmbeddedRecord(
+                                        recordId,
+                                        jobId,
+                                        repositoryId != null ? repositoryId : "default",
+                                        doc.getText(),
+                                        doc.getMetadata(),
+                                        embedding,
+                                        new CompletableFuture<>()
+                                );
+                                try {
+                                    embeddingQueue.submit(record);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new RuntimeException("Interrupted while staging record to embedding queue", e);
+                                }
+                            }
+                            long batchDuration = System.currentTimeMillis() - batchStart;
+                            int doneDocs = completedDocs.addAndGet(batch.size());
+                            double pct = ((double) doneDocs / totalDocs) * 100.0;
+                            log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} record(s) in {} ms | Progress: {}/{} ({})",
+                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                    String.format("%.1f%%", pct));
+                        }));
+                    }
+
+                    for (Future<?> future : futures) {
+                        future.get();
+                    }
+
+                    embeddingQueue.completeJob(jobId);
+                    embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
+                } catch (Throwable t) {
+                    embeddingQueue.failJob(jobId, t);
+                    throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
+                } finally {
+                    executor.shutdown();
+                }
+            } else {
+                log.info(
+                        "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
+                        totalDocs, totalBatches, batchSize, workerCount);
+
+                ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+                try {
+                    List<Future<?>> futures = new ArrayList<>(totalBatches);
+
+                    for (int i = 0; i < totalDocs; i += batchSize) {
+                        int startIdx = i;
+                        int endIdx = Math.min(i + batchSize, totalDocs);
+                        List<Document> batch = documents.subList(startIdx, endIdx);
+                        int batchNum = (startIdx / batchSize) + 1;
+
+                        futures.add(executor.submit(() -> {
+                            log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
+                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
+                            long batchStart = System.currentTimeMillis();
+                            vectorStore.add(batch);
+                            long batchDuration = System.currentTimeMillis() - batchStart;
+
+                            int doneDocs = completedDocs.addAndGet(batch.size());
+                            double pct = ((double) doneDocs / totalDocs) * 100.0;
+                            log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
+                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                    String.format("%.1f%%", pct));
+                        }));
+                    }
+
+                    for (Future<?> future : futures) {
+                        future.get();
+                    }
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    throw new RuntimeException("Batch vector store insertion failed during STEP 6", cause);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Batch vector store insertion interrupted during STEP 6", e);
+                } finally {
+                    executor.shutdown();
+                }
+            }
+
+            long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
+            log.info(
+                    "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
+                    totalDocs, totalBatches, embeddingDuration, workerCount);
+
+            long duration = System.currentTimeMillis() - startTime;
+
+            // [STEP 7] Compute and log structured indexing statistics
+            IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
+            log.info("\n{}", stats);
+
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                repositoryManagementService.saveRepositoryStats(repositoryId, stats);
+            }
+
+            return documents.size();
         } finally {
-            executor.shutdown();
+            if (concurrencyManager != null && repositoryId != null && !repositoryId.isBlank()) {
+                concurrencyManager.release(repositoryId);
+            }
         }
-
-        long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
-        log.info(
-                "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
-                totalDocs, totalBatches, embeddingDuration, workerCount);
-
-        long duration = System.currentTimeMillis() - startTime;
-
-        // [STEP 7] Compute and log structured indexing statistics
-        IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
-        log.info("\n{}", stats);
-
-        if (repositoryId != null && !repositoryId.isBlank()) {
-            repositoryManagementService.saveRepositoryStats(repositoryId, stats);
-        }
-
-        return documents.size();
     }
 
     private void deleteExistingRepositoryVectors(String repositoryId) {

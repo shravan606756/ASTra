@@ -60,13 +60,19 @@ public class PromptBuilder {
 
     /**
      * Builds a prompt context result containing the assembled prompt string,
-     * the exact list of documents supplied within budget limits, and all omitted documents.
+     * the budgeted documents, and all omitted documents. Architecture intent further
+     * filters and deduplicates the budgeted documents for source attribution and queries
+     * repository statistics; other intents format all budgeted documents.
+     * The character budget is an estimate, not a limit on the final prompt length.
      *
-     * @param query            the user query
-     * @param contextDocuments the retrieved candidate documents
-     * @param repositoryId     the target repository
+     * @param query            the user query; null is rendered as an empty string
+     * @param contextDocuments candidate documents in priority order; null means no context;
+     *                         entries must be non-null
+     * @param repositoryId     target repository; null or blank uses the first budgeted
+     *                         document's repository metadata, then defaults to "default"
      * @param intent           the classified query intent
      * @return the prompt context result aligning prompt text with supplied context
+     * @throws NullPointerException if intent is null or a candidate document is null
      */
     public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments,
                                                   String repositoryId, QueryIntent intent) {
@@ -114,12 +120,19 @@ public class PromptBuilder {
 
     /**
      * Builds a prompt context result using a specific {@link ChatMode}.
+     * Architecture and project summary modes filter and deduplicate budgeted documents
+     * for source attribution and query repository statistics. Other modes format all
+     * budgeted documents, even when automatic routing selects an architecture template.
+     * The character budget is an estimate, not a limit on the final prompt length.
      *
-     * @param query            the user query
-     * @param contextDocuments the retrieved candidate documents
-     * @param repositoryId     the target repository
-     * @param mode             the chat mode
+     * @param query            the user query; null is rendered as an empty string
+     * @param contextDocuments candidate documents in priority order; null means no context;
+     *                         entries must be non-null
+     * @param repositoryId     target repository; null or blank uses the first budgeted
+     *                         document's repository metadata, then defaults to "default"
+     * @param mode             the chat mode; null or AUTO selects a template from query text
      * @return the prompt context result aligning prompt text with supplied context
+     * @throws NullPointerException if a candidate document is null
      */
     public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments,
                                                   String repositoryId, ChatMode mode) {
@@ -171,7 +184,7 @@ public class PromptBuilder {
     }
 
     /**
-     * Convenience overload building prompt context with default mode and repository.
+     * Builds prompt context with {@link ChatMode#AUTO} and an inferred repository ID.
      *
      * @param query            user query
      * @param contextDocuments candidate documents
@@ -182,7 +195,7 @@ public class PromptBuilder {
     }
 
     /**
-     * Convenience overload building prompt context with default mode.
+     * Builds prompt context with {@link ChatMode#AUTO}, selecting a template from query text.
      *
      * @param query            user query
      * @param contextDocuments candidate documents
@@ -413,10 +426,15 @@ public class PromptBuilder {
     private record BudgetResult(List<Document> budgetedDocuments, List<Document> omittedDocuments) {}
 
     /**
-     * Applies character and count budget limits to candidate documents.
+     * Admits a prefix of candidate documents in input order under the configured count
+     * limit and estimated character budget, clamped to zero after reserving response space.
+     * A document that exactly fills the character budget is admitted; the first document
+     * that exceeds either limit and every subsequent document are omitted, even if a later
+     * document would fit. The estimate includes text and fixed framing overhead, not the
+     * complete rendered prompt.
      *
-     * @param documents candidate documents
-     * @return partitioned budget result
+     * @param documents candidate documents; null or empty yields two empty lists
+     * @return admitted prefix and omitted remainder, each preserving input order
      */
     private BudgetResult applyContextBudget(List<Document> documents) {
         if (documents == null || documents.isEmpty()) {

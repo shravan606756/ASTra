@@ -19,10 +19,15 @@ public class ResponseFormatter {
 
     /**
      * Converts a collection of documents into deduplicated, path-normalized {@link ChunkResponse} records.
-     * Preserves granular line coordinates for distinct elements while eliminating exact duplicate coordinates.
+     * Keeps the first document for each key formed from repository ID, normalized path,
+     * start and end lines, and element name, preserving encounter order. A nonblank
+     * chunk ID replaces the coordinate portion only when the path and element name
+     * are empty and both line numbers are zero. Missing or nonnumeric lines become zero.
      *
      * @param documents list of supplied context documents (nullable)
-     * @return deduplicated list of formatted chunk responses
+     * @return deduplicated list of formatted chunk responses; empty for null or empty input
+     * @throws NullPointerException if a document is null
+     * @throws ClassCastException if a document's chunkId metadata is non-null and not a String
      */
     public List<ChunkResponse> formatChunks(List<Document> documents) {
         List<ChunkResponse> responses = new ArrayList<>();
@@ -74,7 +79,7 @@ public class ResponseFormatter {
     }
 
     /**
-     * Normalizes OS-dependent file path separators to consistent forward slashes ('/').
+     * Trims leading and trailing whitespace and replaces backslashes with forward slashes ('/').
      *
      * @param rawPath raw file path string (nullable)
      * @return normalized forward-slash path, or empty string if input was null/blank

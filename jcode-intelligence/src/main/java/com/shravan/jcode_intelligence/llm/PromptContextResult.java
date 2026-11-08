@@ -18,7 +18,10 @@ public record PromptContextResult(
         List<Document> omittedDocuments
 ) {
     /**
-     * Compact constructor establishing immutability and null-safety across document collections.
+     * Replaces null prompt text and null document lists with empty values and makes
+     * unmodifiable copies of non-null lists. Document objects themselves are not copied.
+     *
+     * @throws NullPointerException if either document list contains a null element
      */
     public PromptContextResult {
         promptText = (promptText != null) ? promptText : "";

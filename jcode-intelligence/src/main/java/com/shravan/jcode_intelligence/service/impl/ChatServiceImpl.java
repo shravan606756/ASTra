@@ -56,6 +56,18 @@ public class ChatServiceImpl implements ChatService {
         this.config = config;
     }
 
+    /**
+     * Retrieves context for the request, submits a budgeted prompt to the LLM, and returns
+     * its answer with deduplicated sources drawn only from the supplied context documents.
+     * When intent debugging is enabled, includes retrieval latency in milliseconds and
+     * retrieved, supplied, and omitted document counts before source deduplication.
+     * Retrieval, prompt assembly, and model call failures propagate to the caller;
+     * an LLM response without a result or output becomes the client's fallback answer.
+     *
+     * @param request query, retrieval limit, repository ID, and chat mode
+     * @return answer and attributed sources, with optional intent diagnostics
+     * @throws NullPointerException if request is null
+     */
     @Override
     public ChatResponse answer(ChatRequest request) {
         long retrievalStart = System.currentTimeMillis();

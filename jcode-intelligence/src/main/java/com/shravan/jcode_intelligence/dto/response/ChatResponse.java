@@ -23,6 +23,15 @@ public class ChatResponse {
     /** Total retrieval latency in milliseconds. Populated when astra.debug.intent=true. */
     private Long retrievalLatencyMs;
 
+    /** Total number of candidate chunks retrieved before prompt budgeting. Populated when astra.debug.intent=true. */
+    private Integer retrievedChunkCount;
+
+    /** Total number of chunks included within the LLM prompt context budget. Populated when astra.debug.intent=true. */
+    private Integer suppliedChunkCount;
+
+    /** Total number of candidate chunks omitted due to context budget limits or intent filtering. Populated when astra.debug.intent=true. */
+    private Integer omittedChunkCount;
+
     public ChatResponse() {
     }
 
@@ -86,5 +95,59 @@ public class ChatResponse {
 
     public void setRetrievalLatencyMs(Long retrievalLatencyMs) {
         this.retrievalLatencyMs = retrievalLatencyMs;
+    }
+
+    /**
+     * Returns the total count of candidate chunks retrieved before prompt budgeting.
+     *
+     * @return retrieved chunk count, or null when debug mode is disabled
+     */
+    public Integer getRetrievedChunkCount() {
+        return retrievedChunkCount;
+    }
+
+    /**
+     * Sets the total count of candidate chunks retrieved before prompt budgeting.
+     *
+     * @param retrievedChunkCount total retrieved candidate count
+     */
+    public void setRetrievedChunkCount(Integer retrievedChunkCount) {
+        this.retrievedChunkCount = retrievedChunkCount;
+    }
+
+    /**
+     * Returns the count of chunks actually supplied within the LLM prompt context budget.
+     *
+     * @return supplied chunk count, or null when debug mode is disabled
+     */
+    public Integer getSuppliedChunkCount() {
+        return suppliedChunkCount;
+    }
+
+    /**
+     * Sets the count of chunks actually supplied within the LLM prompt context budget.
+     *
+     * @param suppliedChunkCount total supplied chunk count
+     */
+    public void setSuppliedChunkCount(Integer suppliedChunkCount) {
+        this.suppliedChunkCount = suppliedChunkCount;
+    }
+
+    /**
+     * Returns the count of candidate chunks omitted due to budget limits or intent filtering.
+     *
+     * @return omitted chunk count, or null when debug mode is disabled
+     */
+    public Integer getOmittedChunkCount() {
+        return omittedChunkCount;
+    }
+
+    /**
+     * Sets the count of candidate chunks omitted due to budget limits or intent filtering.
+     *
+     * @param omittedChunkCount total omitted chunk count
+     */
+    public void setOmittedChunkCount(Integer omittedChunkCount) {
+        this.omittedChunkCount = omittedChunkCount;
     }
 }

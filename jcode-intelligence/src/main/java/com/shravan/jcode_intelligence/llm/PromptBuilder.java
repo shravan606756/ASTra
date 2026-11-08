@@ -9,8 +9,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Builds LLM prompts by combining intent-specific templates with
@@ -53,78 +56,201 @@ public class PromptBuilder {
         this.architectureAnalyzer = architectureAnalyzer;
     }
 
-    // ── Intent-Aware Entry Point ──────────────────────────────
+    // ── Intent-Aware Entry Points ─────────────────────────────
 
     /**
-     * Builds a prompt using the classified {@link QueryIntent} for template selection
-     * and structured context formatting.
+     * Builds a prompt context result containing the assembled prompt string,
+     * the exact list of documents supplied within budget limits, and all omitted documents.
      *
      * @param query            the user query
-     * @param contextDocuments the retrieved documents
+     * @param contextDocuments the retrieved candidate documents
      * @param repositoryId     the target repository
      * @param intent           the classified query intent
-     * @return the assembled prompt string
+     * @return the prompt context result aligning prompt text with supplied context
      */
-    public String buildPrompt(String query, List<Document> contextDocuments,
-                               String repositoryId, QueryIntent intent) {
+    public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments,
+                                                  String repositoryId, QueryIntent intent) {
         String templateName = router.route(intent);
         String rawTemplate = templateLoader.getTemplate(templateName);
 
-        // Apply context budget universally for ALL intents
-        List<Document> budgetedDocuments = applyContextBudget(contextDocuments);
-        String effectiveRepoId = resolveRepositoryId(repositoryId, budgetedDocuments);
+        BudgetResult budgetResult = applyContextBudget(contextDocuments);
+        String effectiveRepoId = resolveRepositoryId(repositoryId, budgetResult.budgetedDocuments());
 
         String contextText;
+        List<Document> suppliedDocuments;
+        List<Document> omittedDocuments;
+
         if (intent == QueryIntent.ARCHITECTURE) {
             com.shravan.jcode_intelligence.model.ArchitectureContext archContext =
-                    architectureContextBuilder.buildBudgetedContext(effectiveRepoId, budgetedDocuments);
+                    architectureContextBuilder.buildBudgetedContext(effectiveRepoId, budgetResult.budgetedDocuments());
             contextText = architectureAnalyzer.analyzeAndFormat(archContext);
+            suppliedDocuments = (archContext != null) ? archContext.toFlatDocumentList() : List.of();
+
+            // Track documents actually excluded during architecture formatting (e.g., FIELD, METHOD_FRAGMENT)
+            Set<Document> suppliedSet = Collections.newSetFromMap(new IdentityHashMap<>());
+            suppliedSet.addAll(suppliedDocuments);
+
+            omittedDocuments = new ArrayList<>();
+            if (contextDocuments != null) {
+                for (Document doc : contextDocuments) {
+                    if (!suppliedSet.contains(doc)) {
+                        omittedDocuments.add(doc);
+                    }
+                }
+            }
         } else {
-            contextText = formatStructuredContext(budgetedDocuments);
+            suppliedDocuments = budgetResult.budgetedDocuments();
+            omittedDocuments = budgetResult.omittedDocuments();
+            contextText = formatStructuredContext(suppliedDocuments);
         }
 
-        return rawTemplate
+        String promptText = rawTemplate
                 .replace("{{question}}", query != null ? query : "")
                 .replace("{{context}}", contextText)
                 .replace("{{repository}}", effectiveRepoId);
+
+        return new PromptContextResult(promptText, suppliedDocuments, omittedDocuments);
     }
 
-    // ── Legacy Entry Points (backward compatibility) ──────────
-
-    public String buildPrompt(String query, List<Document> contextDocuments) {
-        return buildPrompt(query, contextDocuments, null);
-    }
-
-    public String buildPrompt(String query, List<Document> contextDocuments, String repositoryId) {
-        return buildPrompt(query, contextDocuments, repositoryId, ChatMode.AUTO);
-    }
-
-    public String buildPrompt(String query, List<Document> contextDocuments, String repositoryId, ChatMode mode) {
+    /**
+     * Builds a prompt context result using a specific {@link ChatMode}.
+     *
+     * @param query            the user query
+     * @param contextDocuments the retrieved candidate documents
+     * @param repositoryId     the target repository
+     * @param mode             the chat mode
+     * @return the prompt context result aligning prompt text with supplied context
+     */
+    public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments,
+                                                  String repositoryId, ChatMode mode) {
         String templateName;
         if (mode == null || mode == ChatMode.AUTO) {
             templateName = router.route(query);
         } else {
             templateName = getTemplateForMode(mode);
         }
-        
+
         String rawTemplate = templateLoader.getTemplate(templateName);
 
-        List<Document> budgetedDocuments = applyContextBudget(contextDocuments);
-        String effectiveRepoId = resolveRepositoryId(repositoryId, budgetedDocuments);
-        
+        BudgetResult budgetResult = applyContextBudget(contextDocuments);
+        String effectiveRepoId = resolveRepositoryId(repositoryId, budgetResult.budgetedDocuments());
+
         String contextText;
+        List<Document> suppliedDocuments;
+        List<Document> omittedDocuments;
+
         if (mode == ChatMode.ARCHITECTURE || mode == ChatMode.PROJECT_SUMMARY) {
             com.shravan.jcode_intelligence.model.ArchitectureContext archContext =
-                    architectureContextBuilder.buildBudgetedContext(effectiveRepoId, budgetedDocuments);
+                    architectureContextBuilder.buildBudgetedContext(effectiveRepoId, budgetResult.budgetedDocuments());
             contextText = architectureAnalyzer.analyzeAndFormat(archContext);
+            suppliedDocuments = (archContext != null) ? archContext.toFlatDocumentList() : List.of();
+
+            Set<Document> suppliedSet = Collections.newSetFromMap(new IdentityHashMap<>());
+            suppliedSet.addAll(suppliedDocuments);
+
+            omittedDocuments = new ArrayList<>();
+            if (contextDocuments != null) {
+                for (Document doc : contextDocuments) {
+                    if (!suppliedSet.contains(doc)) {
+                        omittedDocuments.add(doc);
+                    }
+                }
+            }
         } else {
-            contextText = formatStructuredContext(budgetedDocuments);
+            suppliedDocuments = budgetResult.budgetedDocuments();
+            omittedDocuments = budgetResult.omittedDocuments();
+            contextText = formatStructuredContext(suppliedDocuments);
         }
 
-        return rawTemplate
+        String promptText = rawTemplate
                 .replace("{{question}}", query != null ? query : "")
                 .replace("{{context}}", contextText)
                 .replace("{{repository}}", effectiveRepoId);
+
+        return new PromptContextResult(promptText, suppliedDocuments, omittedDocuments);
+    }
+
+    /**
+     * Convenience overload building prompt context with default mode and repository.
+     *
+     * @param query            user query
+     * @param contextDocuments candidate documents
+     * @return prompt context result
+     */
+    public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments) {
+        return buildPromptContext(query, contextDocuments, null);
+    }
+
+    /**
+     * Convenience overload building prompt context with default mode.
+     *
+     * @param query            user query
+     * @param contextDocuments candidate documents
+     * @param repositoryId     target repository ID
+     * @return prompt context result
+     */
+    public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments, String repositoryId) {
+        return buildPromptContext(query, contextDocuments, repositoryId, ChatMode.AUTO);
+    }
+
+    // ── Legacy Entry Points (backward compatibility) ──────────
+
+    /**
+     * Builds a prompt string using the classified {@link QueryIntent}.
+     *
+     * @param query            the user query
+     * @param contextDocuments the retrieved documents
+     * @param repositoryId     the target repository
+     * @param intent           the classified query intent
+     * @return the assembled prompt string
+     * @deprecated use {@link #buildPromptContext(String, List, String, QueryIntent)} to obtain supplied context
+     */
+    @Deprecated
+    public String buildPrompt(String query, List<Document> contextDocuments,
+                               String repositoryId, QueryIntent intent) {
+        return buildPromptContext(query, contextDocuments, repositoryId, intent).promptText();
+    }
+
+    /**
+     * Legacy entry point without repository ID.
+     *
+     * @param query            the user query
+     * @param contextDocuments candidate documents
+     * @return prompt text
+     * @deprecated use {@link #buildPromptContext(String, List)}
+     */
+    @Deprecated
+    public String buildPrompt(String query, List<Document> contextDocuments) {
+        return buildPromptContext(query, contextDocuments).promptText();
+    }
+
+    /**
+     * Legacy entry point with repository ID.
+     *
+     * @param query            the user query
+     * @param contextDocuments candidate documents
+     * @param repositoryId     target repository ID
+     * @return prompt text
+     * @deprecated use {@link #buildPromptContext(String, List, String)}
+     */
+    @Deprecated
+    public String buildPrompt(String query, List<Document> contextDocuments, String repositoryId) {
+        return buildPromptContext(query, contextDocuments, repositoryId).promptText();
+    }
+
+    /**
+     * Legacy entry point with chat mode.
+     *
+     * @param query            the user query
+     * @param contextDocuments candidate documents
+     * @param repositoryId     target repository ID
+     * @param mode             chat mode
+     * @return prompt text
+     * @deprecated use {@link #buildPromptContext(String, List, String, ChatMode)}
+     */
+    @Deprecated
+    public String buildPrompt(String query, List<Document> contextDocuments, String repositoryId, ChatMode mode) {
+        return buildPromptContext(query, contextDocuments, repositoryId, mode).promptText();
     }
 
     // ── Structured Context Formatting ─────────────────────────
@@ -190,6 +316,12 @@ public class PromptBuilder {
         return sb.toString().trim();
     }
 
+    /**
+     * Appends a formatted Markdown document block with metadata headers and source code.
+     *
+     * @param sb  target string builder
+     * @param doc document to append
+     */
     @SuppressWarnings("unchecked")
     private void appendDocumentBlock(StringBuilder sb, Document doc) {
         Map<String, Object> meta = doc.getMetadata();
@@ -233,6 +365,12 @@ public class PromptBuilder {
 
     // ── Helpers ───────────────────────────────────────────────
 
+    /**
+     * Resolves the template resource filename corresponding to the provided chat mode.
+     *
+     * @param mode chat mode
+     * @return template filename
+     */
     private String getTemplateForMode(ChatMode mode) {
         return switch (mode) {
             case QUESTION_ANSWER -> "answer-question.st";
@@ -248,6 +386,13 @@ public class PromptBuilder {
         };
     }
 
+    /**
+     * Resolves the effective repository ID from explicit parameter or document metadata.
+     *
+     * @param repositoryId     explicit repository ID (nullable)
+     * @param contextDocuments list of context documents (nullable)
+     * @return effective repository ID
+     */
     private String resolveRepositoryId(String repositoryId, List<Document> contextDocuments) {
         String effectiveRepoId = repositoryId;
         if ((effectiveRepoId == null || effectiveRepoId.isBlank()) && contextDocuments != null && !contextDocuments.isEmpty()) {
@@ -259,9 +404,23 @@ public class PromptBuilder {
         return effectiveRepoId;
     }
 
-    private List<Document> applyContextBudget(List<Document> documents) {
+    /**
+     * Internal container capturing the partitioned budgeted and omitted document subsets.
+     *
+     * @param budgetedDocuments documents admitted within budget limits
+     * @param omittedDocuments  documents dropped due to budget constraints
+     */
+    private record BudgetResult(List<Document> budgetedDocuments, List<Document> omittedDocuments) {}
+
+    /**
+     * Applies character and count budget limits to candidate documents.
+     *
+     * @param documents candidate documents
+     * @return partitioned budget result
+     */
+    private BudgetResult applyContextBudget(List<Document> documents) {
         if (documents == null || documents.isEmpty()) {
-            return List.of();
+            return new BudgetResult(List.of(), List.of());
         }
 
         int availableBudget = Math.max(0, maxContextSize - reservedResponseSize);
@@ -269,19 +428,30 @@ public class PromptBuilder {
         int includedCount = 0;
 
         List<Document> budgetedDocuments = new ArrayList<>();
+        List<Document> omittedDocuments = new ArrayList<>();
+        boolean budgetExhausted = false;
 
         for (Document doc : documents) {
+            if (budgetExhausted) {
+                omittedDocuments.add(doc);
+                continue;
+            }
+
             if (includedCount >= maxContextDocuments) {
                 log.info("Context budget reached (max documents: {}). Remaining {} documents omitted.", 
                          maxContextDocuments, documents.size() - includedCount);
-                break;
+                budgetExhausted = true;
+                omittedDocuments.add(doc);
+                continue;
             }
 
             int docSize = calculateSize(doc);
             if (currentSize + docSize > availableBudget) {
                 log.info("Context budget reached (size limit: {}/{}). Remaining {} documents omitted.", 
                          currentSize + docSize, availableBudget, documents.size() - includedCount);
-                break;
+                budgetExhausted = true;
+                omittedDocuments.add(doc);
+                continue;
             }
 
             budgetedDocuments.add(doc);
@@ -293,11 +463,17 @@ public class PromptBuilder {
                  documents.size(), includedCount, currentSize, availableBudget);
 
         log.info("Budget summary - Retrieved: {}, Included: {}, Excluded: {}, Budget usage: {}/{}",
-                 documents.size(), includedCount, documents.size() - includedCount, currentSize, availableBudget);
+                 documents.size(), includedCount, omittedDocuments.size(), currentSize, availableBudget);
 
-        return budgetedDocuments;
+        return new BudgetResult(budgetedDocuments, omittedDocuments);
     }
 
+    /**
+     * Estimates document character length including block markdown framing overhead.
+     *
+     * @param doc document to measure
+     * @return estimated character count
+     */
     private int calculateSize(Document doc) {
         if (doc == null || doc.getText() == null) {
             return 0;

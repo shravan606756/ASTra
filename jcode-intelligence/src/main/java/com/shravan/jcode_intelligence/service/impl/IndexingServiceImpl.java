@@ -128,6 +128,19 @@ public class IndexingServiceImpl implements IndexingService {
         return indexProject(projectPath, defaultRepoId);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>For a nonblank repository ID, attempts to delete existing vectors before
+     * indexing and saves the resulting statistics. Deletion errors are logged and do not
+     * stop indexing. When both a queue and an embedding model are available, waits up to
+     * 15 minutes for queued records to finish; otherwise uses the vector store directly.
+     *
+     * @throws com.shravan.jcode_intelligence.exception.IndexingConflictException if the
+     *         repository's indexing lock is already held, including by the current thread
+     * @throws RuntimeException if batch embedding, queue staging or completion, or direct
+     *         vector store insertion fails
+     */
     @Override
     public int indexProject(String projectPath, String repositoryId) throws IOException {
         long startTime = System.currentTimeMillis();

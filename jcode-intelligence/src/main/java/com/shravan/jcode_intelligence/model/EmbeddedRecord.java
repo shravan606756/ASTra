@@ -29,7 +29,11 @@ public record EmbeddedRecord(
 ) {
 
     /**
-     * Compact constructor validating mandatory record identity fields.
+     * Validates the identity fields. A null metadata map becomes empty; otherwise the
+     * map is exposed through an unmodifiable view, not copied. A null acknowledgement
+     * is replaced with a new future.
+     *
+     * @throws IllegalArgumentException if the id, job id, or repository id is null or blank
      */
     public EmbeddedRecord {
         if (id == null || id.isBlank()) {
@@ -47,11 +51,13 @@ public record EmbeddedRecord(
 
     /**
      * Generates an RFC-4122 type 3 deterministic UUID string from repository coordinates and chunk identity.
-     * Guarantees identical IDs across indexing attempts and network retries for the same record.
+     * Identical inputs produce the same ID across indexing attempts and network retries.
+     * A nonblank chunk ID takes precedence over content. Repository and chunk IDs are
+     * trimmed; a null or blank repository ID uses {@code default}.
      *
      * @param repositoryId repository identifier
      * @param chunkId      stable chunk identifier (nullable)
-     * @param content      fallback content string if chunkId is absent
+     * @param content      fallback when chunkId is null or blank; null becomes an empty string
      * @return deterministic UUID string
      */
     public static String generateDeterministicId(String repositoryId, String chunkId, String content) {

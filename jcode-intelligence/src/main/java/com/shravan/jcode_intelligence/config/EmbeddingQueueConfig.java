@@ -49,8 +49,8 @@ public class EmbeddingQueueConfig {
      *
      * @param capacity        queue capacity
      * @param batchSize       persistence batch size
-     * @param minBatchSize    minimum split batch size
-     * @param flushIntervalMs partial batch flush interval
+     * @param minBatchSize    threshold above which a failed batch is split
+     * @param flushIntervalMs maximum wait for an initial queue entry, in milliseconds
      * @param writerCount     writer concurrency
      * @param maxRetries      maximum retry attempts
      * @param retryBackoffMs  retry backoff milliseconds
@@ -104,7 +104,7 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Returns the minimum batch size permitted during adaptive batch splitting.
+     * Returns the size threshold above which a failed batch is split.
      *
      * @return minimum batch size
      */
@@ -113,7 +113,8 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Sets the minimum batch size permitted during adaptive batch splitting.
+     * Sets the size threshold above which a failed batch is split. A split can produce
+     * batches smaller than this threshold.
      *
      * @param minBatchSize minimum batch size
      */
@@ -122,7 +123,7 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Returns the partial batch flush interval in milliseconds.
+     * Returns the maximum wait for an initial queue entry in milliseconds.
      *
      * @return flush interval in milliseconds
      */
@@ -131,7 +132,7 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Sets the partial batch flush interval in milliseconds.
+     * Sets the maximum wait for an initial queue entry in milliseconds.
      *
      * @param flushIntervalMs flush interval in milliseconds
      */
@@ -158,7 +159,7 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Returns the maximum number of retry attempts for transient errors.
+     * Returns the maximum number of retries for a failed batch at or below the split threshold.
      *
      * @return max retries
      */
@@ -167,7 +168,7 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Sets the maximum number of retry attempts for transient errors.
+     * Sets the maximum number of retries for a failed batch at or below the split threshold.
      *
      * @param maxRetries max retries
      */

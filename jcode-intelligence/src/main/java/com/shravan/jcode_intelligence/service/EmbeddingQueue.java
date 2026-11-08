@@ -35,7 +35,8 @@ public class EmbeddingQueue {
     /**
      * Constructs an {@code EmbeddingQueue} with properties from {@link EmbeddingQueueConfig}.
      *
-     * @param config embedding queue configuration
+     * @param config queue configuration; null uses a capacity of 2000, and configured
+     *               capacities below 10 are raised to 10
      */
     public EmbeddingQueue(EmbeddingQueueConfig config) {
         this.capacity = config != null ? Math.max(10, config.getCapacity()) : 2000;
@@ -45,7 +46,7 @@ public class EmbeddingQueue {
     /**
      * Registers a new indexing job in the queue tracker before submitting records.
      *
-     * @param jobId        unique job identifier
+     * @param jobId        unique job identifier; an existing job is left unchanged
      * @param repositoryId associated repository identifier
      */
     public void registerJob(String jobId, String repositoryId) {
@@ -55,6 +56,8 @@ public class EmbeddingQueue {
 
     /**
      * Submits an embedded record to the queue, blocking if capacity is full to apply backpressure.
+     *
+     * <p>A missing job is registered automatically. A null record is ignored.
      *
      * @param record self-contained embedded record
      * @throws InterruptedException if interrupted while waiting for queue space
@@ -96,8 +99,9 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Aborts an indexing job immediately upon producer error or unhandled failure,
-     * releasing any waiting callers and cancelling held queue entries.
+     * Marks an indexing job as failed and releases callers waiting for its completion.
+     * Queued entries are discarded and acknowledged exceptionally when drained; entries
+     * already drained are not cancelled by this method.
      *
      * @param jobId indexing job identifier
      * @param cause root cause of the failure
@@ -114,11 +118,14 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Awaits completion of all records submitted by a job, or throws an exception if the job fails.
+     * Awaits completion of all records submitted by a job after submissions are complete.
+     * Returns immediately if the job is not tracked. A timeout marks the job as failed;
+     * a completed job is removed from tracking before this method returns or throws.
      *
      * @param jobId   indexing job identifier
      * @param timeout maximum duration to wait
-     * @throws Exception if the job fails, times out, or is interrupted
+     * @throws Exception if the job fails, times out, or the wait is interrupted; a job's
+     *                   exception cause is rethrown, while a non-exception cause is wrapped
      */
     public void awaitJobCompletion(String jobId, Duration timeout) throws Exception {
         JobTracker tracker = activeJobs.get(jobId);
@@ -144,12 +151,13 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Drains a batch of records across any active jobs (heterogeneous batch), waiting up to
-     * {@code timeoutMs} if the queue is empty.
+     * Drains available records across active jobs, waiting up to {@code timeoutMs} for the
+     * first entry if the queue is empty. Discarded entries are acknowledged exceptionally.
+     * After the first entry, the method does not wait to fill the batch.
      *
-     * @param maxBatchSize maximum number of records to drain in a single batch
-     * @param timeoutMs    maximum time to wait for initial record before returning empty batch
-     * @return drained list of embedded records
+     * @param maxBatchSize maximum number of active records to return; must be positive
+     * @param timeoutMs    maximum wait for the first entry, in milliseconds
+     * @return active records, possibly empty even if cancelled entries were drained
      * @throws InterruptedException if interrupted while waiting
      */
     public List<EmbeddedRecord> drainBatch(int maxBatchSize, long timeoutMs) throws InterruptedException {

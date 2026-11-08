@@ -29,8 +29,8 @@ public class RepositoryConcurrencyManager {
     /**
      * Attempts to acquire an exclusive lock for the specified repository immediately.
      *
-     * @param repositoryId repository identifier
-     * @return true if the lock was acquired, false if another job is already indexing this repository
+     * @param repositoryId repository identifier; trimmed, with null or blank mapped to {@code default}
+     * @return true if acquired, false if the lock is already held, including by the current thread
      */
     public boolean tryAcquire(String repositoryId) {
         String key = normalizeRepoId(repositoryId);
@@ -53,7 +53,7 @@ public class RepositoryConcurrencyManager {
      * an {@link IndexingConflictException} if already locked.
      *
      * @param repositoryId repository identifier
-     * @throws IndexingConflictException if another indexing job is actively indexing this repository
+     * @throws IndexingConflictException if the lock is already held, including by the current thread
      */
     public void acquireOrThrow(String repositoryId) {
         if (!tryAcquire(repositoryId)) {
@@ -68,7 +68,7 @@ public class RepositoryConcurrencyManager {
      * @param repositoryId repository identifier
      * @param timeout      timeout duration
      * @param unit         time unit
-     * @return true if lock was acquired within the timeout, false otherwise
+     * @return true if acquired, false on timeout or if the current thread already holds the lock
      * @throws InterruptedException if interrupted while waiting
      */
     public boolean tryAcquire(String repositoryId, long timeout, TimeUnit unit) throws InterruptedException {
@@ -88,7 +88,8 @@ public class RepositoryConcurrencyManager {
     }
 
     /**
-     * Releases the exclusive indexing lock for the specified repository.
+     * Releases the exclusive indexing lock for the specified repository if held by the
+     * current thread. A missing lock or a lock held by another thread is left unchanged.
      *
      * @param repositoryId repository identifier
      */

@@ -69,6 +69,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
     }
 
+    /** Starts the configured daemon workers if the writer is not already running. */
     @Override
     @PostConstruct
     public void start() {
@@ -89,6 +90,10 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         }
     }
 
+    /**
+     * Requests the workers to stop, allowing up to three seconds for them to drain the queue before
+     * requesting interruption. An interrupted caller retains its interrupt status.
+     */
     @Override
     @PreDestroy
     public void stop() {
@@ -130,10 +135,13 @@ public class PgVectorBulkWriter implements SmartLifecycle {
     }
 
     /**
-     * Persists a batch of embedded records into PGVector with adaptive splitting on failure.
+     * Persists a batch and acknowledges its records. On failure, batches larger than the
+     * configured split threshold are halved; batches at or below it are retried with linearly
+     * increasing delays. Exhausted retries or an interrupted delay report the write
+     * failure to the queue. A null or empty batch is ignored.
      *
      * @param batch   list of records to persist
-     * @param attempt current retry count for transient errors
+     * @param attempt current retry count; normally zero for a new batch
      */
     public void persistWithAdaptiveSplitting(List<EmbeddedRecord> batch, int attempt) {
         if (batch == null || batch.isEmpty()) {
@@ -216,7 +224,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
      * Formats a floating-point array into PostgreSQL's {@code vector} literal syntax: {@code [0.1,0.2,...]}.
      *
      * @param vector array of float values
-     * @return vector string representation
+     * @return vector string representation, or {@code []} for a null or empty array
      */
     public static String formatVector(float[] vector) {
         if (vector == null || vector.length == 0) {

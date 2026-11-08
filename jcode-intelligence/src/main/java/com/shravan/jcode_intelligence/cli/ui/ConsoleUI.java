@@ -255,6 +255,13 @@ public class ConsoleUI {
         System.out.print(ColorPalette.TEXT + table.render() + ColorPalette.RESET + "\n\n");
     }
 
+    /**
+     * Renders a chat response to the terminal, including question, formatted answer,
+     * and consolidated file sources or granular fallback sources labeled with supplied
+     * and retrieved chunk counts.
+     *
+     * @param response the chat response containing query, answer, and source attribution
+     */
     public void printChatResponse(com.shravan.jcode_intelligence.dto.response.ChatResponse response) {
         stopProgressAnimation();
         printSection("Question");
@@ -263,8 +270,43 @@ public class ConsoleUI {
         printSection("Answer");
         printInfo(answerFormatter.format(response.getAnswer()));
 
-        if (response.getSources() != null && !response.getSources().isEmpty()) {
-            printSection("Sources");
+        if (response.getGroupedSources() != null && !response.getGroupedSources().isEmpty()) {
+            if (response.getSuppliedChunkCount() != null && response.getRetrievedChunkCount() != null) {
+                printSection(String.format("Sources (%d chunks supplied / %d chunks retrieved)",
+                        response.getSuppliedChunkCount(), response.getRetrievedChunkCount()));
+            } else {
+                printSection("Sources");
+            }
+
+            for (com.shravan.jcode_intelligence.dto.response.GroupedSourceResponse group : response.getGroupedSources()) {
+                String path = group.getFilePath();
+                String filename = path;
+                if (filename != null && !filename.isBlank()) {
+                    filename = filename.replace("\\", "/");
+                    int lastSlash = filename.lastIndexOf('/');
+                    if (lastSlash >= 0) {
+                        filename = filename.substring(lastSlash + 1);
+                    }
+                } else if (group.getClassName() != null && !group.getClassName().isBlank()) {
+                    filename = group.getClassName();
+                } else {
+                    filename = "Package Summary";
+                }
+
+                if (group.getLineRanges() != null && !group.getLineRanges().isEmpty()) {
+                    printInfo(String.format("  • %s (lines %s)", filename, String.join(", ", group.getLineRanges())));
+                } else {
+                    printInfo("  • " + filename);
+                }
+            }
+        } else if (response.getSources() != null && !response.getSources().isEmpty()) {
+            if (response.getSuppliedChunkCount() != null && response.getRetrievedChunkCount() != null) {
+                printSection(String.format("Sources (%d chunks supplied / %d chunks retrieved)",
+                        response.getSuppliedChunkCount(), response.getRetrievedChunkCount()));
+            } else {
+                printSection("Sources");
+            }
+
             for (com.shravan.jcode_intelligence.dto.response.ChunkResponse source : response.getSources()) {
                 String loc = source.getFilePath();
                 if (loc != null) {
@@ -277,7 +319,7 @@ public class ConsoleUI {
                 if (loc != null && source.getStartLine() > 0) {
                     loc += ":" + source.getStartLine();
                 }
-                printInfo("  • " + (loc != null ? loc : "Unknown source"));
+                printInfo("  • " + (loc != null && !loc.isBlank() ? loc : "Package Summary"));
             }
         }
 

@@ -269,12 +269,88 @@ class RetrievalStrategySelectorTest {
         assertFalse(sql.contains("SELECT id, content, metadata"));
     }
 
+    @Test
+    @DisplayName("Concurrent retrieval for METHOD intent preserves metadata-first result ordering")
+    void testConcurrentRetrievalForMethodPreservesOrder() {
+        Map<String, Object> metaExact = new HashMap<>();
+        metaExact.put("type", "METHOD");
+        metaExact.put("chunkId", "M_EXACT");
+        metaExact.put("filePath", "src/Task.java");
+        metaExact.put("startLine", 10);
+        metaExact.put("endLine", 30);
+        Document exactDoc = new Document("executeTask source", metaExact);
+
+        Map<String, Object> metaVector = new HashMap<>();
+        metaVector.put("type", "METHOD");
+        metaVector.put("chunkId", "M_VECTOR");
+        metaVector.put("filePath", "src/Other.java");
+        metaVector.put("startLine", 50);
+        metaVector.put("endLine", 70);
+        Document vectorDoc = new Document("other vector source", metaVector);
+
+        testJdbcTemplate.defaultMethodResponse = List.of(exactDoc);
+        testVectorStore.defaultSearchResults = List.of(vectorDoc);
+
+        List<Document> docs = selector.retrieve("executeTask()", QueryIntent.METHOD, "test-repo");
+
+        assertNotNull(docs);
+        assertEquals(2, docs.size());
+        assertEquals("M_EXACT", docs.get(0).getMetadata().get("chunkId"), "Exact metadata match must appear before vector match");
+        assertEquals("M_VECTOR", docs.get(1).getMetadata().get("chunkId"));
+    }
+
+    @Test
+    @DisplayName("Concurrent retrieval for CLASS intent preserves class, package, and vector ordering")
+    void testConcurrentRetrievalForClassPreservesOrder() {
+        Map<String, Object> metaClass = new HashMap<>();
+        metaClass.put("type", "CLASS");
+        metaClass.put("chunkId", "C_EXACT");
+        metaClass.put("className", "ParserService");
+        metaClass.put("packageName", "com.example");
+        metaClass.put("filePath", "src/ParserService.java");
+        metaClass.put("startLine", 1);
+        metaClass.put("endLine", 100);
+        Document classDoc = new Document("class ParserService", metaClass);
+
+        Map<String, Object> metaPackage = new HashMap<>();
+        metaPackage.put("type", "PACKAGE");
+        metaPackage.put("chunkId", "P_EXACT");
+        metaPackage.put("packageName", "com.example");
+        metaPackage.put("filePath", "src/package-info.java");
+        metaPackage.put("startLine", 1);
+        metaPackage.put("endLine", 20);
+        Document packageDoc = new Document("package com.example", metaPackage);
+
+        Map<String, Object> metaVector = new HashMap<>();
+        metaVector.put("type", "CLASS");
+        metaVector.put("chunkId", "C_VECTOR");
+        metaVector.put("filePath", "src/OtherService.java");
+        metaVector.put("startLine", 1);
+        metaVector.put("endLine", 80);
+        Document vectorDoc = new Document("other vector service", metaVector);
+
+        testJdbcTemplate.defaultClassResponse = List.of(classDoc);
+        testJdbcTemplate.defaultPackageResponse = List.of(packageDoc);
+        testVectorStore.defaultSearchResults = List.of(vectorDoc);
+
+        List<Document> docs = selector.retrieve("ParserService", QueryIntent.CLASS, "test-repo");
+
+        assertNotNull(docs);
+        assertEquals(3, docs.size());
+        assertEquals("C_EXACT", docs.get(0).getMetadata().get("chunkId"), "Exact class match must appear first");
+        assertEquals("P_EXACT", docs.get(1).getMetadata().get("chunkId"), "Package match must appear second");
+        assertEquals("C_VECTOR", docs.get(2).getMetadata().get("chunkId"), "Vector match must appear third");
+    }
+
     // ── Test doubles ──────────────────────────────────────────
 
     private static class TestJdbcTemplate extends JdbcTemplate {
         final List<String> executedQueries = new ArrayList<>();
         final List<Object[]> executedArgs = new ArrayList<>();
         final Map<String, Document> parentResponses = new HashMap<>();
+        List<Document> defaultMethodResponse = List.of();
+        List<Document> defaultClassResponse = List.of();
+        List<Document> defaultPackageResponse = List.of();
 
         @Override
         @SuppressWarnings("unchecked")
@@ -293,17 +369,25 @@ class RetrievalStrategySelectorTest {
                         }
                     }
                 }
+            } else if (sql.contains("metadata->>'packageName' = ?")) {
+                results.addAll((List<T>) defaultPackageResponse);
+            } else if (sql.contains("metadata->>'className' = ?")) {
+                results.addAll((List<T>) defaultClassResponse);
+            } else if (sql.contains("metadata->>'methodName' = ?") || sql.contains("metadata->>'elementName' LIKE ?")) {
+                results.addAll((List<T>) defaultMethodResponse);
             }
             return results;
         }
     }
 
     private static class TestVectorStore implements VectorStore {
+        List<Document> defaultSearchResults = List.of();
+
         @Override public void add(List<Document> documents) {}
         @Override public void delete(List<String> idList) {}
         @Override public void delete(org.springframework.ai.vectorstore.filter.Filter.Expression filterExpression) {}
-        @Override public List<Document> similaritySearch(String query) { return List.of(); }
-        @Override public List<Document> similaritySearch(SearchRequest request) { return List.of(); }
+        @Override public List<Document> similaritySearch(String query) { return defaultSearchResults; }
+        @Override public List<Document> similaritySearch(SearchRequest request) { return defaultSearchResults; }
     }
 }
 

@@ -8,6 +8,8 @@ public class ChatResponse {
     private String query;
     private String answer;
     private List<ChunkResponse> sources;
+    /** Consolidated source entries grouped by file path and enclosing class header. */
+    private List<GroupedSourceResponse> groupedSources;
 
     // ── Intent-Aware Debug Fields ─────────────────────────────
 
@@ -149,5 +151,23 @@ public class ChatResponse {
      */
     public void setOmittedChunkCount(Integer omittedChunkCount) {
         this.omittedChunkCount = omittedChunkCount;
+    }
+
+    /**
+     * Returns consolidated source entries grouped by file path and enclosing class.
+     *
+     * @return grouped source responses, or null if grouping was not performed
+     */
+    public List<GroupedSourceResponse> getGroupedSources() {
+        return groupedSources;
+    }
+
+    /**
+     * Sets consolidated source entries grouped by file path and enclosing class.
+     *
+     * @param groupedSources list of grouped source responses
+     */
+    public void setGroupedSources(List<GroupedSourceResponse> groupedSources) {
+        this.groupedSources = groupedSources;
     }
 }

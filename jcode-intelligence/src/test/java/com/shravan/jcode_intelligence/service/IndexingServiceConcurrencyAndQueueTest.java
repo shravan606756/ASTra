@@ -179,5 +179,45 @@ class IndexingServiceConcurrencyAndQueueTest {
             testWriter.shutdownNow();
         }
     }
+
+    @Test
+    @DisplayName("Task failure during submission halts submission, closes admission, and releases repository lock")
+    void testTaskFailureDuringSubmissionHaltsSubmissionAndReleasesPermits() throws Exception {
+        CodeChunk chunk1 = new CodeChunk();
+        chunk1.setId("c1");
+        chunk1.setType("METHOD");
+        chunk1.setContent("code1");
+
+        CodeChunk chunk2 = new CodeChunk();
+        chunk2.setId("c2");
+        chunk2.setType("METHOD");
+        chunk2.setContent("code2");
+
+        when(mockParser.parse(any(Path.class))).thenReturn(List.of(chunk1, chunk2));
+
+        Document doc1 = new Document("code1", Map.of("chunkId", "c1"));
+        Document doc2 = new Document("code2", Map.of("chunkId", "c2"));
+        when(mockConverter.convert(anyList())).thenReturn(List.of(doc1, doc2));
+
+        // EmbeddingModel throws an exception on the first embed call
+        when(mockEmbeddingModel.embed(anyList())).thenThrow(new RuntimeException("Simulated embedding failure"));
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, embeddingQueue, mockModelProvider);
+
+        String repoId = "repo-task-fail-test";
+        RuntimeException ex = assertThrows(RuntimeException.class, () ->
+                indexingService.indexProject(".", repoId));
+
+        assertTrue(ex.getMessage().contains("Embedding generation and queue staging failed")
+                || ex.getMessage().contains("Simulated embedding failure"));
+
+        // Verify admission is closed and repository lock is fully released
+        assertTrue(embeddingQueue.isAdmissionClosed(), "Admission must be closed on task failure");
+        assertFalse(concurrencyManager.isLocked(repoId), "Repository lock must be released after task failure");
+    }
 }
 

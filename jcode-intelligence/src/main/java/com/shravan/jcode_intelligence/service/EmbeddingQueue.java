@@ -14,6 +14,8 @@ import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Thread-safe, bounded staging queue decoupling chunk embedding generation from database persistence.
@@ -33,6 +35,9 @@ public class EmbeddingQueue {
     private final Set<String> failedJobs = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, Throwable> failedJobCauses = new ConcurrentHashMap<>();
     private final AtomicBoolean admissionClosed = new AtomicBoolean(false);
+    private final ReentrantLock queueLock = new ReentrantLock();
+    private final Condition notFull = queueLock.newCondition();
+    private final Condition notEmptyOrCompleted = queueLock.newCondition();
 
     /**
      * Constructs an {@code EmbeddingQueue} with properties from {@link EmbeddingQueueConfig}.
@@ -52,6 +57,13 @@ public class EmbeddingQueue {
     public void closeAdmission() {
         admissionClosed.set(true);
         log.info("Closed admission to embedding queue; subsequent submissions will be rejected");
+        queueLock.lock();
+        try {
+            notFull.signalAll();
+            notEmptyOrCompleted.signalAll();
+        } finally {
+            queueLock.unlock();
+        }
     }
 
     /**
@@ -61,6 +73,13 @@ public class EmbeddingQueue {
     public void openAdmission() {
         admissionClosed.set(false);
         log.info("Opened admission to embedding queue; new submissions will be accepted");
+        queueLock.lock();
+        try {
+            notFull.signalAll();
+            notEmptyOrCompleted.signalAll();
+        } finally {
+            queueLock.unlock();
+        }
     }
 
     /**
@@ -186,7 +205,8 @@ public class EmbeddingQueue {
         tracker.submittedCount.addAndGet(count);
 
         try {
-            synchronized (queue) {
+            queueLock.lockInterruptibly();
+            try {
                 while (queue.remainingCapacity() < count) {
                     if (tracker.isFailed() || failedJobs.contains(jobId) || admissionClosed.get()) {
                         tracker.submittedCount.addAndGet(-count);
@@ -200,9 +220,12 @@ public class EmbeddingQueue {
                         checkJobTerminalState(tracker);
                         throw ex;
                     }
-                    queue.wait(50);
+                    notFull.await(50, TimeUnit.MILLISECONDS);
                 }
                 queue.addAll(records);
+                notEmptyOrCompleted.signalAll();
+            } finally {
+                queueLock.unlock();
             }
         } catch (InterruptedException e) {
             tracker.submittedCount.addAndGet(-count);
@@ -225,6 +248,12 @@ public class EmbeddingQueue {
             tracker.submissionsCompleted.set(true);
             log.info("Job {} signaled submission complete (total submitted: {})", jobId, tracker.submittedCount.get());
             checkJobTerminalState(tracker);
+            queueLock.lock();
+            try {
+                notEmptyOrCompleted.signalAll();
+            } finally {
+                queueLock.unlock();
+            }
         }
     }
 
@@ -249,6 +278,13 @@ public class EmbeddingQueue {
             tracker.markFailed(cause);
             log.error("Job {} marked failed: {}", jobId, cause != null ? cause.getMessage() : "Unknown error");
             checkJobTerminalState(tracker);
+        }
+        queueLock.lock();
+        try {
+            notFull.signalAll();
+            notEmptyOrCompleted.signalAll();
+        } finally {
+            queueLock.unlock();
         }
     }
 
@@ -361,8 +397,11 @@ public class EmbeddingQueue {
         }
 
         drainAvailableInto(batch, maxBatchSize);
-        synchronized (queue) {
-            queue.notifyAll();
+        queueLock.lock();
+        try {
+            notFull.signalAll();
+        } finally {
+            queueLock.unlock();
         }
         return batch;
     }

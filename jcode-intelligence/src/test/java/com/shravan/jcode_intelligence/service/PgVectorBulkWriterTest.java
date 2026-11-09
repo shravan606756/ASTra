@@ -357,5 +357,51 @@ class PgVectorBulkWriterTest {
             assertFalse(r.acknowledgement().isCompletedExceptionally(), "Acknowledgement must not be exceptional");
         }
     }
+
+    /**
+     * Verifies that when embedding tasks finish and completeJob is signaled, a subsequent persistence
+     * failure in PgVectorBulkWriter fails awaitJobCompletion and marks all record futures exceptionally.
+     */
+    @Test
+    @DisplayName("Persistence failure occurring after embedding tasks finish fails awaitJobCompletion")
+    void testPersistenceFailureAfterEmbeddingTasksFinish() throws Exception {
+        String jobId = "job-post-embedding-failure";
+        String repoId = "repo-post-embedding";
+        queue.registerJob(jobId, repoId);
+
+        // Simulate embedding tasks completing and submitting 5 records
+        List<EmbeddedRecord> batch = new ArrayList<>(5);
+        for (int i = 1; i <= 5; i++) {
+            String chunkId = "chunk-post-" + i;
+            String id = EmbeddedRecord.generateDeterministicId(repoId, chunkId, "data-" + i);
+            batch.add(new EmbeddedRecord(
+                    id, jobId, repoId, "data-" + i, Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+        queue.submitAll(batch);
+
+        // Embedding tasks are 100% finished, so producer signals completeJob
+        queue.completeJob(jobId);
+
+        // Configure mockJdbcTemplate to fail all batch updates with database error
+        doThrow(new RuntimeException("PostgreSQL connection lost during write"))
+                .when(mockJdbcTemplate).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        // Writer attempts to drain and persist the batch
+        List<EmbeddedRecord> drained = queue.drainBatch(20, 50);
+        assertEquals(5, drained.size(), "Drained batch must contain all 5 staged records");
+        writer.persistWithAdaptiveSplitting(drained, 0);
+
+        // Awaiting job completion must throw Exception reflecting the persistence failure
+        Exception ex = assertThrows(Exception.class, () ->
+                queue.awaitJobCompletion(jobId, Duration.ofSeconds(2)));
+        assertTrue(ex.getMessage().contains("PostgreSQL connection lost")
+                || (ex.getCause() != null && ex.getCause().getMessage().contains("PostgreSQL connection lost")));
+
+        // Verify all 5 record futures were completed exceptionally
+        for (EmbeddedRecord r : batch) {
+            assertTrue(r.acknowledgement().isDone(), "Record acknowledgement must be done");
+            assertTrue(r.acknowledgement().isCompletedExceptionally(), "Record acknowledgement must be exceptional");
+        }
+    }
 }
 

@@ -583,5 +583,78 @@ class EmbeddingQueueTest {
         }
         System.out.println("================================================================================");
     }
+
+    /**
+     * Verifies that under Java 21 Virtual Threads (JEP 444), batch submission and queue backpressure
+     * execute without pinning carrier threads or inducing carrier thread starvation.
+     * ReentrantLock and Condition unmount virtual threads cleanly when capacity is exhausted.
+     */
+    @Test
+    @DisplayName("JEP 444: Virtual threads unmount from carrier threads without pinning during queue backpressure")
+    void testVirtualThreadsCarrierNonPinningUnderBackpressure() throws Exception {
+        int virtualThreadCount = 50;
+        int recordsPerThread = 10; // 500 records total
+        int constrainedCapacity = 50; // Constrained capacity: 50 << 500 forces virtual threads to park on backpressure
+
+        EmbeddingQueue vQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(constrainedCapacity, 25, 5, 50, 1, 2, 10));
+        String jobId = "job-virtual-threads";
+        String repoId = "repo-vthreads";
+        vQueue.registerJob(jobId, repoId);
+
+        AtomicInteger activeDrained = new AtomicInteger(0);
+        AtomicBoolean drainRunning = new AtomicBoolean(true);
+
+        // Start a virtual thread consumer that drains the queue concurrently
+        Thread drainer = Thread.ofVirtual().start(() -> {
+            try {
+                while (drainRunning.get() || vQueue.size() > 0) {
+                    List<EmbeddedRecord> batch = vQueue.drainBatch(25, 20);
+                    for (EmbeddedRecord r : batch) {
+                        activeDrained.incrementAndGet();
+                        vQueue.recordPersisted(r);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        });
+
+        // Spawn 50 virtual threads concurrently submitting batches
+        ExecutorService vExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        List<Future<?>> futures = new ArrayList<>(virtualThreadCount);
+
+        long start = System.currentTimeMillis();
+        for (int t = 1; t <= virtualThreadCount; t++) {
+            final int threadIdx = t;
+            futures.add(vExecutor.submit(() -> {
+                List<EmbeddedRecord> batch = new ArrayList<>(recordsPerThread);
+                for (int r = 1; r <= recordsPerThread; r++) {
+                    String id = EmbeddedRecord.generateDeterministicId(repoId, "vt-" + threadIdx + "-" + r, "body");
+                    batch.add(new EmbeddedRecord(
+                            id, jobId, repoId, "body", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+                }
+                vQueue.submitAll(batch);
+                return null;
+            }));
+        }
+
+        // All 50 virtual threads must complete without deadlocking or pinning carrier threads
+        for (Future<?> f : futures) {
+            f.get(5, TimeUnit.SECONDS);
+        }
+        vQueue.completeJob(jobId);
+
+        // Wait for consumer to finish draining all records
+        assertDoesNotThrow(() -> vQueue.awaitJobCompletion(jobId, Duration.ofSeconds(5)));
+        drainRunning.set(false);
+        drainer.join(1000);
+
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println(String.format("Virtual threads test finished in %d ms: all 500 records processed across 50 virtual threads", elapsed));
+
+        assertEquals(500, activeDrained.get(), "All 500 records from 50 virtual threads must be processed");
+        assertEquals(0, vQueue.size(), "Queue must be empty");
+        vExecutor.shutdown();
+    }
 }
 

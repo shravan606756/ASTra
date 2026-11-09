@@ -28,15 +28,12 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class IndexingServiceImpl implements IndexingService {
@@ -206,62 +203,126 @@ public class IndexingServiceImpl implements IndexingService {
                         totalDocs, totalBatches, batchSize, workerCount, jobId);
 
                 ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+                Semaphore preSubmissionPermits = new Semaphore(workerCount * 2);
+                List<FutureTask<Void>> taskHandles = Collections.synchronizedList(new ArrayList<>(totalBatches));
+                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
                 try {
-                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
                     for (int i = 0; i < totalDocs; i += batchSize) {
+                        if (firstFailure.get() != null) {
+                            break;
+                        }
+
+                        // Throttle submission via pre-submission permits; wake up immediately if a prior task fails
+                        while (!preSubmissionPermits.tryAcquire(50, TimeUnit.MILLISECONDS)) {
+                            if (firstFailure.get() != null) {
+                                break;
+                            }
+                        }
+                        if (firstFailure.get() != null) {
+                            break;
+                        }
+
                         int startIdx = i;
                         int endIdx = Math.min(i + batchSize, totalDocs);
                         List<Document> batch = documents.subList(startIdx, endIdx);
                         int batchNum = (startIdx / batchSize) + 1;
 
-                        futures.add(CompletableFuture.runAsync(() -> {
-                            log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
-                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
-
-                            long batchStart = System.currentTimeMillis();
-
-                            // Group chunks in this batch to request embeddings in a single model call
-                            List<String> texts = batch.stream()
-                                    .map(doc -> doc.getFormattedContent(MetadataMode.EMBED))
-                                    .toList();
-                            List<float[]> embeddings = embeddingModel.embed(texts);
-
-                            List<EmbeddedRecord> records = new ArrayList<>(batch.size());
-                            for (int j = 0; j < batch.size(); j++) {
-                                Document doc = batch.get(j);
-                                String chunkId = (String) doc.getMetadata().get("chunkId");
-                                String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
-                                float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
-                                records.add(new EmbeddedRecord(
-                                        recordId,
-                                        jobId,
-                                        safeRepoId,
-                                        doc.getText(),
-                                        doc.getMetadata(),
-                                        embedding,
-                                        new CompletableFuture<>()
-                                ));
+                        AtomicBoolean permitReleased = new AtomicBoolean(false);
+                        Runnable releasePermitOnce = () -> {
+                            if (permitReleased.compareAndSet(false, true)) {
+                                preSubmissionPermits.release();
                             }
+                        };
+
+                        FutureTask<Void> task = new FutureTask<>(() -> {
                             try {
+                                if (Thread.currentThread().isInterrupted() || firstFailure.get() != null) {
+                                    return null;
+                                }
+                                log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
+                                        batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
+                                long batchStart = System.currentTimeMillis();
+
+                                // Group chunks in this batch to request embeddings in a single model call
+                                List<String> texts = batch.stream()
+                                        .map(doc -> doc.getFormattedContent(MetadataMode.EMBED))
+                                        .toList();
+                                List<float[]> embeddings = embeddingModel.embed(texts);
+
+                                List<EmbeddedRecord> records = new ArrayList<>(batch.size());
+                                for (int j = 0; j < batch.size(); j++) {
+                                    Document doc = batch.get(j);
+                                    String chunkId = (String) doc.getMetadata().get("chunkId");
+                                    String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
+                                    float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
+                                    records.add(new EmbeddedRecord(
+                                            recordId,
+                                            jobId,
+                                            safeRepoId,
+                                            doc.getText(),
+                                            doc.getMetadata(),
+                                            embedding,
+                                            new CompletableFuture<>()
+                                    ));
+                                }
                                 embeddingQueue.submitAll(records);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                throw new RuntimeException("Interrupted while staging records to embedding queue", e);
+                                long batchDuration = System.currentTimeMillis() - batchStart;
+                                int doneDocs = completedDocs.addAndGet(batch.size());
+                                double pct = ((double) doneDocs / totalDocs) * 100.0;
+                                log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
+                                        batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                        String.format("%.1f%%", pct));
+                                return null;
+                            } catch (Throwable t) {
+                                if (firstFailure.compareAndSet(null, t)) {
+                                    log.error("[BATCH {}/{}] Failed with error: {}", batchNum, totalBatches, t.getMessage(), t);
+                                    embeddingQueue.closeAdmission();
+                                    embeddingQueue.failJob(jobId, t);
+                                    synchronized (taskHandles) {
+                                        for (FutureTask<Void> handle : taskHandles) {
+                                            handle.cancel(true);
+                                        }
+                                    }
+                                }
+                                throw (t instanceof Exception e) ? e : new RuntimeException(t);
                             }
-                            long batchDuration = System.currentTimeMillis() - batchStart;
-                            int doneDocs = completedDocs.addAndGet(batch.size());
-                            double pct = ((double) doneDocs / totalDocs) * 100.0;
-                            log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
-                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                    String.format("%.1f%%", pct));
-                        }, executor));
+                        }) {
+                            @Override
+                            protected void done() {
+                                releasePermitOnce.run();
+                            }
+                        };
+
+                        try {
+                            executor.execute(task);
+                            taskHandles.add(task);
+                        } catch (RejectedExecutionException ree) {
+                            releasePermitOnce.run();
+                            if (firstFailure.compareAndSet(null, ree)) {
+                                embeddingQueue.closeAdmission();
+                                embeddingQueue.failJob(jobId, ree);
+                                synchronized (taskHandles) {
+                                    for (FutureTask<Void> handle : taskHandles) {
+                                        handle.cancel(true);
+                                    }
+                                }
+                            }
+                            throw ree;
+                        }
                     }
 
-                    awaitAllOrCancelOnFailure(futures);
+                    awaitTasksOrCancelOnFailure(taskHandles, firstFailure);
 
                     embeddingQueue.completeJob(jobId);
                     embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
                 } catch (Throwable t) {
+                    synchronized (taskHandles) {
+                        for (FutureTask<Void> handle : taskHandles) {
+                            handle.cancel(true);
+                        }
+                    }
+                    shutdownAndAwaitTermination(executor);
                     embeddingQueue.failJob(jobId, t);
                     embeddingQueue.cleanupJob(jobId);
                     throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
@@ -274,32 +335,61 @@ public class IndexingServiceImpl implements IndexingService {
                         totalDocs, totalBatches, batchSize, workerCount);
 
                 ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+                List<FutureTask<Void>> taskHandles = Collections.synchronizedList(new ArrayList<>(totalBatches));
+                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
                 try {
-                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
-
                     for (int i = 0; i < totalDocs; i += batchSize) {
+                        if (firstFailure.get() != null) {
+                            break;
+                        }
                         int startIdx = i;
                         int endIdx = Math.min(i + batchSize, totalDocs);
                         List<Document> batch = documents.subList(startIdx, endIdx);
                         int batchNum = (startIdx / batchSize) + 1;
 
-                        futures.add(CompletableFuture.runAsync(() -> {
-                            log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
-                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+                        FutureTask<Void> task = new FutureTask<>(() -> {
+                            try {
+                                if (Thread.currentThread().isInterrupted() || firstFailure.get() != null) {
+                                    return null;
+                                }
+                                log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
+                                        batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
 
-                            long batchStart = System.currentTimeMillis();
-                            vectorStore.add(batch);
-                            long batchDuration = System.currentTimeMillis() - batchStart;
+                                long batchStart = System.currentTimeMillis();
+                                vectorStore.add(batch);
+                                long batchDuration = System.currentTimeMillis() - batchStart;
 
-                            int doneDocs = completedDocs.addAndGet(batch.size());
-                            double pct = ((double) doneDocs / totalDocs) * 100.0;
-                            log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
-                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                    String.format("%.1f%%", pct));
-                        }, executor));
+                                int doneDocs = completedDocs.addAndGet(batch.size());
+                                double pct = ((double) doneDocs / totalDocs) * 100.0;
+                                log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
+                                        batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                        String.format("%.1f%%", pct));
+                                return null;
+                            } catch (Throwable t) {
+                                if (firstFailure.compareAndSet(null, t)) {
+                                    synchronized (taskHandles) {
+                                        for (FutureTask<Void> handle : taskHandles) {
+                                            handle.cancel(true);
+                                        }
+                                    }
+                                }
+                                throw (t instanceof Exception e) ? e : new RuntimeException(t);
+                            }
+                        });
+
+                        executor.execute(task);
+                        taskHandles.add(task);
                     }
 
-                    awaitAllOrCancelOnFailure(futures);
+                    awaitTasksOrCancelOnFailure(taskHandles, firstFailure);
+                } catch (Throwable t) {
+                    synchronized (taskHandles) {
+                        for (FutureTask<Void> handle : taskHandles) {
+                            handle.cancel(true);
+                        }
+                    }
+                    shutdownAndAwaitTermination(executor);
+                    throw new RuntimeException("Batch vector store insertion failed during STEP 6", t);
                 } finally {
                     shutdownAndAwaitTermination(executor);
                 }
@@ -385,33 +475,44 @@ public class IndexingServiceImpl implements IndexingService {
         return name.isEmpty() ? "git-repo" : name;
     }
 
-    private void awaitAllOrCancelOnFailure(List<CompletableFuture<Void>> futures) {
-        CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-        CompletableFuture<Void> firstFailure = new CompletableFuture<>();
-        for (CompletableFuture<Void> f : futures) {
-            f.whenComplete((res, ex) -> {
-                if (ex != null) {
-                    firstFailure.completeExceptionally(ex);
-                }
-            });
+    /**
+     * Awaits completion of all scheduled task handles, cancelling remaining tasks immediately
+     * upon detecting an exceptional completion.
+     *
+     * @param taskHandles  list of cancellable task handles
+     * @param firstFailure shared reference tracking the first encountered failure
+     */
+    private void awaitTasksOrCancelOnFailure(List<FutureTask<Void>> taskHandles, AtomicReference<Throwable> firstFailure) {
+        for (FutureTask<Void> task : taskHandles) {
+            if (firstFailure.get() != null) {
+                break;
+            }
+            try {
+                task.get();
+            } catch (CancellationException e) {
+                // Task was cancelled, continue
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                firstFailure.compareAndSet(null, cause);
+                break;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                firstFailure.compareAndSet(null, e);
+                break;
+            }
         }
-        allFutures.whenComplete((res, ex) -> {
-            if (ex == null) {
-                firstFailure.complete(null);
-            }
-        });
 
-        try {
-            firstFailure.join();
-        } catch (CompletionException ce) {
-            for (CompletableFuture<Void> f : futures) {
-                f.cancel(true);
+        Throwable failure = firstFailure.get();
+        if (failure != null) {
+            synchronized (taskHandles) {
+                for (FutureTask<Void> task : taskHandles) {
+                    task.cancel(true);
+                }
             }
-            Throwable cause = ce.getCause() != null ? ce.getCause() : ce;
-            if (cause instanceof RuntimeException re) {
+            if (failure instanceof RuntimeException re) {
                 throw re;
             }
-            throw new RuntimeException(cause);
+            throw new RuntimeException(failure);
         }
     }
 

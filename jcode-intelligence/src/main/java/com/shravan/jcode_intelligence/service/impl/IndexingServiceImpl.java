@@ -16,7 +16,6 @@ import com.shravan.jcode_intelligence.service.RepositoryConcurrencyManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
@@ -222,7 +221,7 @@ public class IndexingServiceImpl implements IndexingService {
 
                             // Group chunks in this batch to request embeddings in a single model call
                             List<String> texts = batch.stream()
-                                    .map(doc -> doc.getFormattedContent(MetadataMode.EMBED))
+                                    .map(Document::getText)
                                     .toList();
                             List<float[]> embeddings = embeddingModel.embed(texts);
 

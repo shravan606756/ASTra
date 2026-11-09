@@ -26,8 +26,8 @@ public class EmbeddingQueueConfig {
     private int minBatchSize = 10;
 
     /** Maximum time in milliseconds to wait before flushing a partial batch under low throughput. */
-    @Value("${astra.indexing.persistence.flush-interval-ms:1000}")
-    private long flushIntervalMs = 1000;
+    @Value("${astra.indexing.persistence.flush-interval-ms:3000}")
+    private long flushIntervalMs = 3000;
 
     /** Number of concurrent persistence writers draining the embedding queue. */
     @Value("${astra.indexing.persistence.writer-count:1}")

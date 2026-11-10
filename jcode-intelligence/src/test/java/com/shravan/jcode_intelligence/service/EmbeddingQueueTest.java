@@ -583,5 +583,323 @@ class EmbeddingQueueTest {
         }
         System.out.println("================================================================================");
     }
+
+    @Test
+    @DisplayName("submitAll guarantees atomic visibility during concurrent single-record submit")
+    void testSubmitAllAtomicVisibilityDuringConcurrentSubmit() throws Exception {
+        EmbeddingQueue testQueue = new EmbeddingQueue(new EmbeddingQueueConfig(200, 50, 10, 100, 1, 3, 50));
+        String jobId = "job-atomic-visibility";
+        testQueue.registerJob(jobId, "repo-av");
+
+        int submitAllCount = 20;
+        int singleSubmitCount = 10;
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+
+        Future<?> f1 = pool.submit(() -> {
+            try {
+                barrier.await(5, TimeUnit.SECONDS);
+                List<EmbeddedRecord> batch = new ArrayList<>();
+                for (int i = 1; i <= submitAllCount; i++) {
+                    String id = EmbeddedRecord.generateDeterministicId("repo-av", "batch-" + i, "c");
+                    batch.add(new EmbeddedRecord(id, jobId, "repo-av", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+                }
+                testQueue.submitAll(batch);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        Future<?> f2 = pool.submit(() -> {
+            try {
+                barrier.await(5, TimeUnit.SECONDS);
+                for (int i = 1; i <= singleSubmitCount; i++) {
+                    String id = EmbeddedRecord.generateDeterministicId("repo-av", "single-" + i, "c");
+                    testQueue.submit(new EmbeddedRecord(id, jobId, "repo-av", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        f1.get(5, TimeUnit.SECONDS);
+        f2.get(5, TimeUnit.SECONDS);
+
+        testQueue.completeJob(jobId);
+        assertEquals(submitAllCount + singleSubmitCount, testQueue.size());
+
+        List<EmbeddedRecord> drained = testQueue.drainBatch(50, 100);
+        assertEquals(30, drained.size(), "All 30 records must be drained");
+        pool.shutdownNow();
+    }
+
+    @Test
+    @DisplayName("Oversized submitAll batch exceeding queue capacity fails immediately with count rolled back")
+    void testOversizedBatchFailure() {
+        EmbeddingQueue smallQueue = new EmbeddingQueue(new EmbeddingQueueConfig(10, 5, 2, 100, 1, 3, 50));
+        String jobId = "job-oversized";
+        smallQueue.registerJob(jobId, "repo-oversized");
+
+        List<EmbeddedRecord> oversized = new ArrayList<>();
+        for (int i = 1; i <= 15; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-oversized", "over-" + i, "data");
+            oversized.add(new EmbeddedRecord(id, jobId, "repo-oversized", "data", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> smallQueue.submitAll(oversized));
+        assertTrue(ex.getMessage().contains("exceeds queue capacity"));
+        assertEquals(0, smallQueue.size(), "Queue size must remain 0 after oversized rejection");
+
+        for (EmbeddedRecord r : oversized) {
+            assertTrue(r.acknowledgement().isDone());
+            assertTrue(r.acknowledgement().isCompletedExceptionally());
+        }
+    }
+
+    @Test
+    @DisplayName("Interrupted drainBatch restores already-removed records to the buffer head")
+    void testInterruptedDrainPreservesRecords() throws Exception {
+        EmbeddingQueue testQueue = new EmbeddingQueue(new EmbeddingQueueConfig(100, 50, 10, 5000, 1, 3, 50));
+        String jobId = "job-interrupt";
+        testQueue.registerJob(jobId, "repo-interrupt");
+
+        for (int i = 1; i <= 20; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-interrupt", "chunk-" + i, "data");
+            testQueue.submit(new EmbeddedRecord(id, jobId, "repo-interrupt", "data", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+        assertEquals(20, testQueue.size());
+
+        CountDownLatch threadStarted = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicBoolean caughtInterrupted = new AtomicBoolean(false);
+
+        Future<?> drainFuture = executor.submit(() -> {
+            try {
+                threadStarted.countDown();
+                testQueue.drainBatch(50, 5000);
+            } catch (InterruptedException e) {
+                caughtInterrupted.set(true);
+            }
+        });
+
+        threadStarted.await(5, TimeUnit.SECONDS);
+        Thread.sleep(100);
+        executor.shutdownNow();
+
+        drainFuture.get(5, TimeUnit.SECONDS);
+        assertTrue(caughtInterrupted.get(), "Thread must catch InterruptedException");
+
+        assertEquals(20, testQueue.size(), "All 20 records must be restored to buffer head on interruption");
+        testQueue.completeJob(jobId);
+        List<EmbeddedRecord> drainedAgain = testQueue.drainBatch(50, 100);
+        assertEquals(20, drainedAgain.size(), "All 20 records must be drained successfully");
+    }
+
+    @Test
+    @DisplayName("closeAdmission immediately unblocks waiting writer and producer")
+    void testCloseAdmissionWakesWriterAndProducer() throws Exception {
+        EmbeddingQueue testQueue = new EmbeddingQueue(new EmbeddingQueueConfig(10, 5, 2, 5000, 1, 3, 50));
+        String jobId = "job-close-wake";
+        testQueue.registerJob(jobId, "repo-close-wake");
+
+        // Fill queue to capacity (10)
+        for (int i = 1; i <= 10; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-close-wake", "c-" + i, "c");
+            testQueue.submit(new EmbeddedRecord(id, jobId, "repo-close-wake", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        CountDownLatch producerWaiting = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        AtomicBoolean producerFailed = new AtomicBoolean(false);
+
+        Future<?> producerFuture = pool.submit(() -> {
+            try {
+                producerWaiting.countDown();
+                String id11 = EmbeddedRecord.generateDeterministicId("repo-close-wake", "c-11", "c");
+                testQueue.submit(new EmbeddedRecord(id11, jobId, "repo-close-wake", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+            } catch (IllegalStateException e) {
+                producerFailed.set(true);
+            } catch (Exception ignored) {}
+        });
+
+        producerWaiting.await(5, TimeUnit.SECONDS);
+        Thread.sleep(50);
+
+        testQueue.closeAdmission();
+        producerFuture.get(2, TimeUnit.SECONDS);
+        assertTrue(producerFailed.get(), "Producer must be unblocked and fail when admission closes");
+
+        // Empty queue with closed admission should return promptly
+        EmbeddingQueue emptyQueue = new EmbeddingQueue(new EmbeddingQueueConfig(10, 5, 2, 5000, 1, 3, 50));
+        emptyQueue.closeAdmission();
+        List<EmbeddedRecord> emptyDrained = emptyQueue.drainBatch(5, 5000);
+        assertTrue(emptyDrained.isEmpty(), "Writer must return promptly on closed admission");
+
+        pool.shutdownNow();
+    }
+
+    @Test
+    @DisplayName("Dynamic wave accumulation: 4 concurrent workers of 100 docs flush at target (400 records)")
+    void testFourByOneHundredTargetFlush() throws Exception {
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(1000, 500, 10, 3000, 1, 3, 50, true, 400, 1000, 3500, 10000));
+        String jobId = "job-4x100";
+        String repoId = "repo-4x100";
+        dynamicQueue.registerJob(jobId, repoId, 4, 100, 400);
+
+        int target = dynamicQueue.computeDynamicTarget(500);
+        assertEquals(400, target, "Computed target must be 400 for 4 workers * 100 batch size");
+
+        ExecutorService workers = Executors.newFixedThreadPool(4);
+        List<Future<?>> futures = new ArrayList<>();
+        for (int w = 1; w <= 4; w++) {
+            final int workerId = w;
+            futures.add(workers.submit(() -> {
+                List<EmbeddedRecord> batch = new ArrayList<>(100);
+                for (int r = 1; r <= 100; r++) {
+                    String id = EmbeddedRecord.generateDeterministicId(repoId, "w" + workerId + "-r" + r, "txt");
+                    batch.add(new EmbeddedRecord(id, jobId, repoId, "txt", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+                }
+                try {
+                    dynamicQueue.submitAll(batch);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            }));
+        }
+
+        for (Future<?> f : futures) {
+            f.get(5, TimeUnit.SECONDS);
+        }
+
+        assertEquals(400, dynamicQueue.size());
+
+        List<EmbeddedRecord> drained = dynamicQueue.drainDynamicBatch(target, 500);
+        assertEquals(400, drained.size(), "Must drain all 400 records at target");
+        assertEquals(EmbeddingQueue.FlushReason.TARGET_REACHED, dynamicQueue.getLastFlushReason(),
+                "Flush reason must be TARGET_REACHED");
+
+        workers.shutdownNow();
+    }
+
+    @Test
+    @DisplayName("Dynamic wave accumulation: 82-record terminal tail flushes immediately on job completion")
+    void testEightyTwoRecordTerminalTail() throws Exception {
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(1000, 500, 10, 3000, 1, 3, 50, true, 400, 1000, 3500, 10000));
+        String jobId = "job-tail-82";
+        String repoId = "repo-tail-82";
+        dynamicQueue.registerJob(jobId, repoId, 4, 100, 82);
+
+        List<EmbeddedRecord> batch = new ArrayList<>(82);
+        for (int r = 1; r <= 82; r++) {
+            String id = EmbeddedRecord.generateDeterministicId(repoId, "tail-" + r, "tail");
+            batch.add(new EmbeddedRecord(id, jobId, repoId, "tail", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+        dynamicQueue.submitAll(batch);
+        dynamicQueue.completeJob(jobId);
+
+        long start = System.currentTimeMillis();
+        List<EmbeddedRecord> drained = dynamicQueue.drainDynamicBatch(400, 500);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertEquals(82, drained.size(), "Must drain all 82 tail records");
+        assertEquals(EmbeddingQueue.FlushReason.TERMINAL_FLUSH, dynamicQueue.getLastFlushReason(),
+                "Flush reason must be TERMINAL_FLUSH");
+        assertTrue(elapsed < 1000, "Terminal flush must execute immediately without waiting for timers");
+    }
+
+    @Test
+    @DisplayName("Dynamic wave accumulation: quiet-window partial flush when arrivals pause and resets on completion")
+    void testQuietWindowFlushAndReset() throws Exception {
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(1000, 500, 10, 3000, 1, 3, 50, true, 400, 50, 150, 5000));
+        String jobId = "job-quiet";
+        String repoId = "repo-quiet";
+        dynamicQueue.registerJob(jobId, repoId, 4, 100, 1000);
+
+        List<EmbeddedRecord> batch = new ArrayList<>(25);
+        for (int r = 1; r <= 25; r++) {
+            String id = EmbeddedRecord.generateDeterministicId(repoId, "q-" + r, "q");
+            batch.add(new EmbeddedRecord(id, jobId, repoId, "q", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+        dynamicQueue.submitAll(batch);
+
+        // Drain with quietMinMs = 50ms (target 400 not reached, but quiet window elapses)
+        List<EmbeddedRecord> drained = dynamicQueue.drainDynamicBatch(400, 500, 50, 150, 5000);
+        assertEquals(25, drained.size(), "Must flush 25 records on quiet window expiration");
+        assertEquals(EmbeddingQueue.FlushReason.QUIET_WINDOW_ELAPSED, dynamicQueue.getLastFlushReason());
+
+        // Complete job and verify EWMA state resets
+        dynamicQueue.completeJob(jobId);
+        dynamicQueue.drainDynamicBatch(400, 500, 50, 150, 5000);
+        assertEquals(0.0, dynamicQueue.getEwmaInterArrivalNanos(), "EWMA must reset to 0 after all jobs complete");
+    }
+
+    @Test
+    @DisplayName("Dynamic target clamps when concurrent jobs exceed maxBatchSize or capacity")
+    void testClampedConcurrentJobTarget() {
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(500, 500, 10, 3000, 1, 3, 50, true, 400, 1000, 3500, 10000));
+
+        // Two jobs with 4*100 = 400 each (sum = 800 > capacity 500)
+        dynamicQueue.registerJob("job-c1", "repo-c1", 4, 100, 1000);
+        dynamicQueue.registerJob("job-c2", "repo-c2", 4, 100, 1000);
+
+        int target = dynamicQueue.computeDynamicTarget(400, 500);
+        assertEquals(500, target, "Aggregated target of 800 must be clamped to min(maxBatchSize 500, capacity 500)");
+    }
+
+    @Test
+    @DisplayName("Dynamic target falls back to adaptive-target-size when jobs are unhinted")
+    void testFourHundredRecordFallback() {
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(1000, 500, 10, 3000, 1, 3, 50, true, 400, 1000, 3500, 10000));
+
+        // Unhinted legacy registration
+        dynamicQueue.registerJob("job-unhinted", "repo-unhinted");
+
+        int target = dynamicQueue.computeDynamicTarget(400, 500);
+        assertEquals(400, target, "Unhinted jobs must fall back to adaptive-target-size (400)");
+    }
+
+    @Test
+    @DisplayName("Continuous arrivals reaching max-wait-ms force flush with MAX_WAIT_EXCEEDED")
+    void testContinuousSubmissionsReachingMaxWait() throws Exception {
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(
+                new EmbeddingQueueConfig(1000, 500, 10, 3000, 1, 3, 50, true, 400, 100, 300, 150));
+        String jobId = "job-maxwait";
+        String repoId = "repo-maxwait";
+        dynamicQueue.registerJob(jobId, repoId, 4, 100, 1000);
+
+        ExecutorService producer = Executors.newSingleThreadExecutor();
+        AtomicBoolean keepSubmitting = new AtomicBoolean(true);
+
+        producer.submit(() -> {
+            int idx = 0;
+            while (keepSubmitting.get()) {
+                idx++;
+                String id = EmbeddedRecord.generateDeterministicId(repoId, "mw-" + idx, "mw");
+                EmbeddedRecord record = new EmbeddedRecord(id, jobId, repoId, "mw", Map.of(), new float[]{0.1f}, new CompletableFuture<>());
+                try {
+                    dynamicQueue.submit(record);
+                    Thread.sleep(25); // arrivals every 25ms < quietMinMs 100ms
+                } catch (Exception ignored) {
+                    break;
+                }
+            }
+        });
+
+        // Drain requesting target 400 with maxWaitMs = 150ms
+        List<EmbeddedRecord> drained = dynamicQueue.drainDynamicBatch(400, 500, 100, 300, 150);
+        keepSubmitting.set(false);
+        producer.shutdownNow();
+
+        assertFalse(drained.isEmpty(), "Must flush accumulated records when max-wait-ms expires");
+        assertEquals(EmbeddingQueue.FlushReason.MAX_WAIT_EXCEEDED, dynamicQueue.getLastFlushReason(),
+                "Flush reason must be MAX_WAIT_EXCEEDED");
+    }
 }
+
 

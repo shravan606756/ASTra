@@ -80,7 +80,10 @@ public class EmbeddingQueueConfig {
     /**
      * Validates configuration parameters at application startup.
      *
-     * @throws IllegalArgumentException if any sizing or interval configuration is non-positive or invalid
+     * <p>Dynamic batching settings are validated even when dynamic batching is disabled.
+     *
+     * @throws IllegalArgumentException if a validated size, interval, writer count, or SQL identifier
+     *                                  is invalid, or the quiet window bounds are out of order
      */
     @PostConstruct
     public void validate() {
@@ -134,7 +137,7 @@ public class EmbeddingQueueConfig {
      *
      * @param capacity        queue capacity
      * @param batchSize       persistence batch size
-     * @param minBatchSize    threshold above which a failed batch is split
+     * @param minBatchSize    minimum size of each partition when splitting a failed batch
      * @param flushIntervalMs maximum wait for an initial queue entry, in milliseconds
      * @param writerCount     writer concurrency
      * @param maxRetries      maximum retry attempts
@@ -154,11 +157,11 @@ public class EmbeddingQueueConfig {
     }
 
     /**
-     * Parameterized constructor for programmatic testing with dynamic batching enabled and custom dynamic parameters.
+     * Parameterized constructor for programmatic testing with custom dynamic batching parameters.
      *
      * @param capacity               queue capacity
      * @param batchSize              persistence batch size
-     * @param minBatchSize           threshold above which a failed batch is split
+     * @param minBatchSize           minimum size of each partition when splitting a failed batch
      * @param flushIntervalMs        maximum wait for an initial queue entry, in milliseconds
      * @param writerCount            writer concurrency
      * @param maxRetries             maximum retry attempts

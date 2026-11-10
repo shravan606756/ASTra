@@ -124,6 +124,7 @@ public class EmbeddingQueue {
      *
      * @param jobId        unique job identifier; an existing job is left unchanged
      * @param repositoryId associated repository identifier
+     * @throws IllegalStateException if admission is closed
      */
     public void registerJob(String jobId, String repositoryId) {
         registerJob(jobId, repositoryId, null);
@@ -137,6 +138,7 @@ public class EmbeddingQueue {
      * @param effectiveWorkers   effective number of parallel worker threads producing embeddings
      * @param producerBatchSize  chunk batch size produced per worker embedding call
      * @param totalDocuments     total number of documents to be processed by this job
+     * @throws IllegalStateException if admission is closed
      */
     public void registerJob(String jobId, String repositoryId, int effectiveWorkers, int producerBatchSize, int totalDocuments) {
         registerJob(jobId, repositoryId, new JobHint(effectiveWorkers, producerBatchSize, totalDocuments));
@@ -160,9 +162,12 @@ public class EmbeddingQueue {
     /**
      * Computes the aggregated target batch size across active submitting jobs under the queue lock.
      *
-     * @param fallbackAdaptiveTargetSize fallback target batch size when hints are unavailable
+     * <p>Unhinted jobs do not contribute when at least one submitting job has a hint.
+     *
+     * @param fallbackAdaptiveTargetSize target used when no submitting job has a hint
      * @param maxBatchSize               maximum persistence batch size boundary
-     * @return clamped target batch size in range {@code [1, min(maxBatchSize, capacity)]}
+     * @return target clamped to at least 1 and at most {@code min(maxBatchSize, capacity)}
+     *         when that upper bound is positive; otherwise 1
      */
     public int computeDynamicTarget(int fallbackAdaptiveTargetSize, int maxBatchSize) {
         lock.lock();
@@ -322,10 +327,11 @@ public class EmbeddingQueue {
      * if the queue does not have enough remaining capacity. All records must belong to the same job.
      * The entire batch becomes visible to writers only when full capacity is admitted.
      *
-     * @param records list of embedded records to submit
+     * @param records list of embedded records to submit; null or empty is ignored
      * @throws InterruptedException if interrupted while waiting for queue space
      * @throws IllegalArgumentException if records in the batch belong to different jobs
-     * @throws IllegalStateException if admission is closed or the owning job has failed
+     * @throws IllegalStateException if admission is closed, the owning job has failed, or the
+     *                               batch exceeds queue capacity; rejected records are acknowledged exceptionally
      */
     public void submitAll(List<EmbeddedRecord> records) throws InterruptedException {
         if (records == null || records.isEmpty()) {
@@ -564,15 +570,16 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Drains available records across active jobs, waiting up to {@code timeoutMs} for records
-     * to accumulate before returning a partial batch.
+     * Drains available records across active jobs. If the queue is empty, waits up to
+     * {@code timeoutMs} for the first record; after draining, may wait another {@code timeoutMs}
+     * for a full batch while submissions remain in progress. Cancelled records are acknowledged
+     * exceptionally and omitted from the result.
      *
-     * <p>Preserves legacy drain semantics with signal-driven {@code awaitNanos} waiting rather than busy polling.
-     *
-     * @param maxBatchSize maximum number of active records to return; must be positive
-     * @param timeoutMs    maximum wait for records to accumulate, in milliseconds
+     * @param maxBatchSize maximum number of active records to return; must be nonnegative
+     * @param timeoutMs    wait per phase in milliseconds; nonpositive values do not wait
      * @return active records, possibly empty even if cancelled entries were drained
-     * @throws InterruptedException if interrupted while waiting
+     * @throws InterruptedException if interrupted while waiting; already drained active records
+     *                              are restored to the queue
      */
     public List<EmbeddedRecord> drainBatch(int maxBatchSize, long timeoutMs) throws InterruptedException {
         List<EmbeddedRecord> batch = new ArrayList<>(maxBatchSize);
@@ -636,12 +643,11 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Drains records dynamically based on active producer wave sizes, quiet window settlement,
-     * and job completion status using default dynamic configuration parameters.
+     * Drains records using the supplied target and configured quiet window and maximum wait.
      *
      * @param targetBatchSize target dynamic batch size
      * @param maxBatchSize    maximum batch size constraint
-     * @return drained embedded records
+     * @return active records, possibly empty, including when all removed records were cancelled
      * @throws InterruptedException if interrupted while awaiting records
      */
     public List<EmbeddedRecord> drainDynamicBatch(int targetBatchSize, int maxBatchSize) throws InterruptedException {
@@ -650,23 +656,24 @@ public class EmbeddingQueue {
     }
 
     /**
-     * Drains records dynamically based on active producer wave sizes, quiet window settlement,
-     * and job completion status.
+     * Drains records using the supplied target, quiet window, and job completion status.
      *
      * <p>Evaluates flush predicates under the lock and retains records in the buffer until:
      * <ul>
      *     <li>Target batch size is reached</li>
      *     <li>All submissions are completed or admission closed (terminal flush)</li>
      *     <li>Quiet window {@code clamp(min, max, 1.5 * EMA)} has elapsed without new arrivals</li>
-     *     <li>Oldest pending record age exceeds {@code maxWaitMs}</li>
+     *     <li>Time since the buffer last became nonempty reaches {@code maxWaitMs}</li>
      * </ul>
+     * If the buffer is empty and submissions remain active, waits for records or a terminal signal.
+     * Cancelled records are acknowledged exceptionally and omitted from the result.
      *
      * @param targetBatchSize target dynamic batch size
      * @param maxBatchSize    maximum batch size constraint
      * @param quietMinMs      minimum quiet window in milliseconds
      * @param quietMaxMs      maximum quiet window in milliseconds
-     * @param maxWaitMs       maximum waiting time in milliseconds before mandatory flush
-     * @return drained embedded records
+     * @param maxWaitMs       maximum time in milliseconds since the buffer became nonempty before flushing
+     * @return active records, possibly empty, including when all removed records were cancelled
      * @throws InterruptedException if interrupted while awaiting records
      */
     public List<EmbeddedRecord> drainDynamicBatch(int targetBatchSize, int maxBatchSize,

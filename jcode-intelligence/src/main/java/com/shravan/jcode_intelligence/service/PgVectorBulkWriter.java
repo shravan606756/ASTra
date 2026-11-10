@@ -172,11 +172,17 @@ public class PgVectorBulkWriter implements SmartLifecycle {
     /**
      * Persists a batch with progressive k-way partitioning and exponential backoff retry.
      *
+     * <p>Successful writes acknowledge their records. Connection failures are retried as a whole
+     * batch while retries remain. Other failures are retried when splitting is unavailable.
+     * When retries are exhausted and no split is made, a multi-record batch is attempted one record at a time;
+     * failed records are acknowledged exceptionally. Interruption during backoff restores the
+     * interrupt status and starts the same fallback.
+     *
      * <p>On size-related failure, calculates {@code effectiveK = min(k, floor(size / minBatchSize))}.
      * If at least two parts are possible, splits into contiguous near-equal parts whose sizes differ
      * by at most one, persisting them sequentially with {@code k + 1} and a reset attempt counter.
      *
-     * @param batch   list of records to persist
+     * @param batch   records to persist; null or empty is ignored
      * @param attempt current retry count
      * @param k       progressive partition divisor starting at 2
      */
@@ -259,6 +265,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         }
     }
 
+    /** Identifies size failures from SQL state classes 53/54 or matching messages in the exception chain. */
     private boolean isSizeRelatedError(Throwable ex) {
         if (ex == null) {
             return false;
@@ -321,6 +328,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         }
     }
 
+    /** Identifies connection failures from SQL state class 08 or matching messages in the exception chain. */
     private boolean isTransientConnectionError(Throwable ex) {
         if (ex == null) {
             return false;

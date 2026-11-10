@@ -726,14 +726,14 @@ public class EmbeddingQueue {
                     recordsAvailable.awaitNanos(waitNanos);
                 } else {
                     // Buffer is empty
-                    if (allCompleted || admissionClosed.get()) {
+                    if (admissionClosed.get()) {
                         lastFlushReason = FlushReason.TERMINAL_FLUSH;
                         return batch;
                     }
                     long idleBoundNanos = TimeUnit.MILLISECONDS.toNanos(quietMinMs);
                     recordsAvailable.awaitNanos(idleBoundNanos);
-                    if (buffer.isEmpty() && (areAllSubmissionsCompleted() || admissionClosed.get())) {
-                        lastFlushReason = FlushReason.TERMINAL_FLUSH;
+                    if (buffer.isEmpty()) {
+                        lastFlushReason = admissionClosed.get() ? FlushReason.TERMINAL_FLUSH : FlushReason.EMPTY_IDLE;
                         return batch;
                     }
                 }

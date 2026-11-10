@@ -1,6 +1,8 @@
 package com.shravan.jcode_intelligence.config;
 
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
@@ -8,10 +10,12 @@ import org.springframework.context.annotation.Configuration;
  * Configuration for the bounded shared embedding queue and bulk PGVector persistence writer.
  *
  * <p>Calibrates queue capacity, bulk write batch sizing, adaptive batch splitting boundaries,
- * flush timeouts, and persistence worker concurrency to prevent database overload and deadlocks.
+ * flush timeouts, dynamic batching quiet windows, and persistence worker concurrency to prevent database overload and deadlocks.
  */
 @Configuration
 public class EmbeddingQueueConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(EmbeddingQueueConfig.class);
 
     /** Maximum capacity of the bounded embedding queue measured in records. */
     @Value("${astra.indexing.embedding-queue.capacity:2000}")
@@ -48,6 +52,26 @@ public class EmbeddingQueueConfig {
     /** Target schema name for PGVector persistence. */
     @Value("${spring.ai.vectorstore.pgvector.schema-name:public}")
     private String schemaName = "public";
+
+    /** Whether dynamic wave batch accumulation is enabled. */
+    @Value("${astra.indexing.persistence.dynamic-batching.enabled:true}")
+    private boolean dynamicBatchingEnabled = true;
+
+    /** Fallback target batch size when job hints are unavailable. */
+    @Value("${astra.indexing.persistence.dynamic-batching.adaptive-target-size:400}")
+    private int adaptiveTargetSize = 400;
+
+    /** Minimum quiet window in milliseconds before partial wave flush. */
+    @Value("${astra.indexing.persistence.dynamic-batching.quiet-window-min-ms:3500}")
+    private long quietWindowMinMs = 3500;
+
+    /** Maximum quiet window in milliseconds before partial wave flush. */
+    @Value("${astra.indexing.persistence.dynamic-batching.quiet-window-max-ms:5000}")
+    private long quietWindowMaxMs = 5000;
+
+    /** Maximum waiting time in milliseconds for the oldest buffered record before mandatory flush. */
+    @Value("${astra.indexing.persistence.dynamic-batching.max-wait-ms:10000}")
+    private long maxWaitMs = 10000;
 
     /** Default constructor. */
     public EmbeddingQueueConfig() {
@@ -86,10 +110,27 @@ public class EmbeddingQueueConfig {
         if (schemaName == null || !schemaName.matches("^[a-zA-Z_][a-zA-Z0-9_]*$")) {
             throw new IllegalArgumentException("Invalid schema-name: " + schemaName);
         }
+
+        // Dynamic batching validation
+        if (adaptiveTargetSize <= 0) {
+            throw new IllegalArgumentException("astra.indexing.persistence.dynamic-batching.adaptive-target-size must be greater than 0");
+        }
+        if (quietWindowMinMs <= 0) {
+            throw new IllegalArgumentException("astra.indexing.persistence.dynamic-batching.quiet-window-min-ms must be greater than 0");
+        }
+        if (quietWindowMinMs > quietWindowMaxMs || quietWindowMaxMs > maxWaitMs) {
+            throw new IllegalArgumentException(String.format(
+                    "Expected quiet-window-min-ms (%d) <= quiet-window-max-ms (%d) <= max-wait-ms (%d)",
+                    quietWindowMinMs, quietWindowMaxMs, maxWaitMs));
+        }
+        if (adaptiveTargetSize > batchSize || adaptiveTargetSize > capacity) {
+            log.warn("astra.indexing.persistence.dynamic-batching.adaptive-target-size ({}) exceeds batch-size ({}) or capacity ({}) and will be clamped during runtime",
+                    adaptiveTargetSize, batchSize, capacity);
+        }
     }
 
     /**
-     * Parameterized constructor for programmatic testing.
+     * Parameterized constructor for programmatic testing with dynamic batching disabled.
      *
      * @param capacity        queue capacity
      * @param batchSize       persistence batch size
@@ -109,6 +150,36 @@ public class EmbeddingQueueConfig {
         this.writerCount = writerCount;
         this.maxRetries = maxRetries;
         this.retryBackoffMs = retryBackoffMs;
+        this.dynamicBatchingEnabled = false;
+    }
+
+    /**
+     * Parameterized constructor for programmatic testing with dynamic batching enabled and custom dynamic parameters.
+     *
+     * @param capacity               queue capacity
+     * @param batchSize              persistence batch size
+     * @param minBatchSize           threshold above which a failed batch is split
+     * @param flushIntervalMs        maximum wait for an initial queue entry, in milliseconds
+     * @param writerCount            writer concurrency
+     * @param maxRetries             maximum retry attempts
+     * @param retryBackoffMs         retry backoff milliseconds
+     * @param dynamicBatchingEnabled whether dynamic wave batch accumulation is enabled
+     * @param adaptiveTargetSize     fallback target batch size when hints are unavailable
+     * @param quietWindowMinMs       minimum quiet window in milliseconds
+     * @param quietWindowMaxMs       maximum quiet window in milliseconds
+     * @param maxWaitMs              maximum waiting time in milliseconds before mandatory flush
+     */
+    public EmbeddingQueueConfig(int capacity, int batchSize, int minBatchSize,
+                                long flushIntervalMs, int writerCount,
+                                int maxRetries, long retryBackoffMs,
+                                boolean dynamicBatchingEnabled, int adaptiveTargetSize,
+                                long quietWindowMinMs, long quietWindowMaxMs, long maxWaitMs) {
+        this(capacity, batchSize, minBatchSize, flushIntervalMs, writerCount, maxRetries, retryBackoffMs);
+        this.dynamicBatchingEnabled = dynamicBatchingEnabled;
+        this.adaptiveTargetSize = adaptiveTargetSize;
+        this.quietWindowMinMs = quietWindowMinMs;
+        this.quietWindowMaxMs = quietWindowMaxMs;
+        this.maxWaitMs = maxWaitMs;
     }
 
     /**
@@ -273,5 +344,94 @@ public class EmbeddingQueueConfig {
     public void setSchemaName(String schemaName) {
         this.schemaName = schemaName;
     }
-}
 
+    /**
+     * Returns whether dynamic wave batch accumulation is enabled.
+     *
+     * @return true if dynamic batching is enabled
+     */
+    public boolean isDynamicBatchingEnabled() {
+        return dynamicBatchingEnabled;
+    }
+
+    /**
+     * Sets whether dynamic wave batch accumulation is enabled.
+     *
+     * @param dynamicBatchingEnabled dynamic batching enable flag
+     */
+    public void setDynamicBatchingEnabled(boolean dynamicBatchingEnabled) {
+        this.dynamicBatchingEnabled = dynamicBatchingEnabled;
+    }
+
+    /**
+     * Returns the fallback target batch size for dynamic wave accumulation.
+     *
+     * @return adaptive target size
+     */
+    public int getAdaptiveTargetSize() {
+        return adaptiveTargetSize;
+    }
+
+    /**
+     * Sets the fallback target batch size for dynamic wave accumulation.
+     *
+     * @param adaptiveTargetSize adaptive target size
+     */
+    public void setAdaptiveTargetSize(int adaptiveTargetSize) {
+        this.adaptiveTargetSize = adaptiveTargetSize;
+    }
+
+    /**
+     * Returns the minimum quiet window in milliseconds.
+     *
+     * @return minimum quiet window ms
+     */
+    public long getQuietWindowMinMs() {
+        return quietWindowMinMs;
+    }
+
+    /**
+     * Sets the minimum quiet window in milliseconds.
+     *
+     * @param quietWindowMinMs minimum quiet window ms
+     */
+    public void setQuietWindowMinMs(long quietWindowMinMs) {
+        this.quietWindowMinMs = quietWindowMinMs;
+    }
+
+    /**
+     * Returns the maximum quiet window in milliseconds.
+     *
+     * @return maximum quiet window ms
+     */
+    public long getQuietWindowMaxMs() {
+        return quietWindowMaxMs;
+    }
+
+    /**
+     * Sets the maximum quiet window in milliseconds.
+     *
+     * @param quietWindowMaxMs maximum quiet window ms
+     */
+    public void setQuietWindowMaxMs(long quietWindowMaxMs) {
+        this.quietWindowMaxMs = quietWindowMaxMs;
+    }
+
+    /**
+     * Returns the maximum wait in milliseconds for the oldest buffered record before mandatory flush.
+     *
+     * @return max wait ms
+     */
+    public long getMaxWaitMs() {
+        return maxWaitMs;
+    }
+
+    /**
+     * Sets the maximum wait in milliseconds for the oldest buffered record before mandatory flush.
+     *
+     * @param maxWaitMs max wait ms
+     */
+    public void setMaxWaitMs(long maxWaitMs) {
+        this.maxWaitMs = maxWaitMs;
+    }
+}

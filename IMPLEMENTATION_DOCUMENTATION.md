@@ -845,7 +845,7 @@ Key anti-hallucination directives present in all templates:
 ## 13. Shared Embedding Queue Concurrency & Lifecycle Hardening (Issue #47)
 
 ### Architecture & Components
-Issue #47 hardens the shared staging queue between chunk embedding generation and PostgreSQL `vector_store` bulk persistence:
+Issue #47 and Issue #49 harden the shared staging queue between chunk embedding generation and PostgreSQL `vector_store` bulk persistence:
 
 ```
 Indexing Pipeline (Producers)
@@ -854,12 +854,12 @@ Indexing Pipeline (Producers)
 RepositoryConcurrencyManager  ──[Serializes same-repo jobs; 409 Conflict]
         │
         ▼
-   EmbeddingQueue             ──[Bounded capacity; Backpressure on full]
+   EmbeddingQueue             ──[Bounded ArrayDeque; Lock/Condition signaling; Backpressure on full]
         │
-   Heterogeneous Batch Drain  ──[Drains mixed-job batches; 200ms flush timeout]
+   Dynamic Wave Batch Drain   ──[Aggregated W×B wave target; 1.5×EMA quiet window; 3000ms flush fallback]
         │
         ▼
-PgVectorBulkWriter            ──[Idempotent ON CONFLICT (id) DO UPDATE; Adaptive splitting]
+PgVectorBulkWriter            ──[Idempotent ON CONFLICT (id) DO UPDATE; Progressive k-way partitioning]
 ```
 
 ### Key Guarantees & Lifecycle Boundaries
@@ -874,12 +874,12 @@ PgVectorBulkWriter            ──[Idempotent ON CONFLICT (id) DO UPDATE; Adap
    `RepositoryConcurrencyManager` grants an exclusive lock per `repositoryId`. If an indexing request arrives for a repository currently in progress, it is rejected immediately with an `IndexingConflictException` (`409 Conflict`), preventing concurrent runs from triggering destructive pre-indexing `DELETE` queries that would wipe out in-flight vector insertions.
 
 3. **Deadlock Elimination via Heterogeneous Draining:**
-   Persistence writers drain records across any active jobs greedily up to `astra.indexing.persistence.batch-size`. A time-bounded flush interval (`flush-interval-ms=200`) ensures partial batches under backpressure are committed without requiring a full batch, preventing multi-job queue deadlocks.
+   Persistence writers drain records across any active jobs greedily up to `astra.indexing.persistence.batch-size` (default: 500). A time-bounded fallback flush interval (`flush-interval-ms=3000`) ensures partial batches under low throughput are committed without requiring a full batch, preventing multi-job queue deadlocks.
 
-4. **Write Idempotency & Adaptive Splitting:**
+4. **Write Idempotency & Progressive Partitioning:**
    - Every `EmbeddedRecord` receives a deterministic UUID derived from `repositoryId + ":" + chunkId`.
    - The bulk persistence SQL executes `ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding`, allowing safe retries on dropped connections.
-   - Oversized payload failures trigger recursive adaptive batch splitting down to `min-batch-size`.
+   - Oversized payload failures trigger progressive k-way partitioning down to `min-batch-size` (default: 10).
 
 5. **Explicit Job Terminal States:**
    Unhandled producer exceptions trigger `EmbeddingQueue.failJob(jobId, throwable)`, which immediately transitions the job state to `FAILED`, cancels remaining staged records for that job, and unblocks awaiting consumer threads.
@@ -896,18 +896,63 @@ Where:
 - $S_{\text{content}}$ = average chunk character size ($\approx 2$ KB)
 - $S_{\text{meta}}$ = metadata JSON attributes ($\approx 1$ KB)
 - $D_{\text{embed}}$ = embedding dimension (768 floats $\times 4$ bytes $\approx 3.07$ KB)
-- $W_{\text{persist}}$ = persistence writer worker count (default: 2)
-- $B_{\text{persist}}$ = persistence bulk batch size (default: 100)
+- $W_{\text{persist}}$ = persistence writer worker count (default: 1)
+- $B_{\text{persist}}$ = persistence bulk batch size (default: 500)
 
-At default values ($2,000 \times \approx 6.1\text{ KB} + 2 \times 100 \times 6.1\text{ KB}$), total staged memory overhead is **$\approx 13.4$ MB**, guaranteeing memory safety under high producer throughput.
+At default values ($2,000 \times \approx 6.1\text{ KB} + 1 \times 500 \times 6.1\text{ KB}$), total staged memory overhead is **$\approx 15.2$ MB**, guaranteeing memory safety under high producer throughput.
 
 #### Distinct Configuration Concerns
 
 | Property | Layer | Concern |
 |---|---|---|
-| `astra.embedding.batch-size` | Embedding Model (Ollama) | Batch size sent to Ollama HTTP API per embedding inference call. |
-| `astra.indexing.embedding-queue.capacity` | Memory Backpressure Buffer | Bounded queue capacity staging embedded records before DB persistence. |
-| `astra.indexing.persistence.batch-size` | PostgreSQL / PGVector | Bulk JDBC insert batch size draining from queue to `vector_store`. |
+| `astra.embedding.batch-size` | Embedding Model (Ollama) | Batch size sent to Ollama HTTP API per embedding inference call (default: 100). |
+| `astra.indexing.embedding-queue.capacity` | Memory Backpressure Buffer | Bounded queue capacity staging embedded records before DB persistence (default: 2000). |
+| `astra.indexing.persistence.batch-size` | PostgreSQL / PGVector | Bulk JDBC insert batch size draining from queue to `vector_store` (default: 500). |
+| `astra.indexing.persistence.flush-interval-ms` | Persistence Fallback | Maximum wait for an initial queue entry under low throughput (default: 3000 ms). |
+| `astra.indexing.persistence.writer-count` | Persistence Concurrency | Number of daemon threads draining queue to PostgreSQL (default: 1). |
 | `astra.indexing.large-repo-threshold-loc` | Pipeline Selection (#31) | Repository classification threshold for large-repo streaming pipeline. |
+
+---
+
+## 14. Dynamic Reactive Wave Batching & Progressive k-Way Partitioning (Issue #49)
+
+### Problem & Motivation
+In parallel indexing, multiple workers ($W=4$) produce embeddings in batches ($B=100$) every ~8.5–9.0 seconds. A static flush timer (1,000 ms) prematurely flushes isolated micro-batches of ~100 records between worker arrival jitters, resulting in hundreds of redundant database round-trips. Furthermore, polling the queue at fixed intervals (e.g. 50 ms) wastes CPU cycles during idle waits.
+
+### Architecture
+
+#### 1. Signal-Driven Queue Coordination (Zero Polling)
+`EmbeddingQueue` replaces the `LinkedBlockingQueue` polling loop with a lock-guarded `ArrayDeque` managed by a single `ReentrantLock` and two condition variables:
+- `recordsAvailable`: Signaled on record submission (`submit`, `submitAll`), job completion (`completeJob`), failure (`failJob`, `recordFailed`), cleanup (`cleanupJob`), admission changes (`closeAdmission`, `openAdmission`), and drain aborts.
+- `recordsDrained`: Signaled after each record removal and when queue space becomes available.
+- All wait operations utilize `Condition.awaitNanos()` bounded by deadlines calculated via `System.nanoTime()`, eliminating all 50 ms busy-polling wakeups.
+
+#### 2. Dynamic Wave Accumulation
+When dynamic batching is enabled (`astra.indexing.persistence.dynamic-batching.enabled=true`):
+- **Aggregated Job Target:** The queue computes a dynamic target batch size under the lock:
+  $$\text{target} = \text{clamp}\left(1, \min(\text{maxBatchSize}, \text{capacity}), \sum_{\text{submitting}} \min(W_j \times B_j, N_{\text{total}, j})\right)$$
+  When unhinted jobs submit, `astra.indexing.persistence.dynamic-batching.adaptive-target-size` (default: 400) is used as a fallback.
+- **Immediate Flush on Target:** When `buffer.size() >= target`, records are drained immediately without delay.
+- **Adaptive Quiet Window:** Tracks inter-arrival time using an Exponentially Weighted Moving Average ($\alpha = 0.2$):
+  $$\tau_{\text{quiet}} = \text{clamp}\left(\text{quietMinMs}, \text{quietMaxMs}, 1.5 \times \text{EMA}(\Delta t_{\text{arrival}})\right)$$
+  Default bounds: `quiet-window-min-ms=3500`, `quiet-window-max-ms=5000`. If submissions pause for longer than $\tau_{\text{quiet}}$, the partial wave is committed. The EWMA state automatically resets when no jobs are submitting.
+- **Maximum Buffer Age:** If continuous trickle submissions arrive within the quiet window, the oldest buffered record age is capped at `max-wait-ms` (default: 10,000 ms), forcing a flush with reason `MAX_WAIT_EXCEEDED`.
+- **Zero-Latency Terminal Flush:** Upon job completion (`completeJob`) or queue closure (`closeAdmission`), remaining records (e.g. an 82-record tail) are flushed immediately with 0 ms latency (`TERMINAL_FLUSH`).
+
+#### 3. Progressive k-Way Partitioning Retry Pipeline
+When a bulk write fails due to payload or statement limits (inspected via SQLSTATE classes `53` and `54` or error message inspection):
+- Instead of traditional binary backoff ($1 \rightarrow 2 \rightarrow 4 \rightarrow 8$ micro-batches), ASTra employs **Progressive Minimal Partitioning** starting at $k = 2$:
+  $$\text{effectiveK} = \min\left(k, \left\lfloor \frac{\text{size}}{\text{minBatchSize}} \right\rfloor\right)$$
+- If $\text{effectiveK} \ge 2$, the failed batch is divided into $\text{effectiveK}$ contiguous, near-equal parts whose sizes differ by at most one:
+  - Sequence for a 400-record batch failing above 150: $400 \rightarrow 200 \rightarrow (67, 67, 66) \rightarrow 200 \rightarrow (67, 67, 66)$.
+  - Each sub-batch is persisted sequentially with $k + 1$ and a reset attempt counter.
+- If splitting is not possible ($\text{effectiveK} < 2$), the batch falls back to exponential backoff ($\text{retryBackoffMs} \times 2^{\text{attempt}}$: 100 ms, 200 ms, 400 ms) and eventually single-record isolation fallback.
+- Transient connection errors (SQLSTATE class `08` or connection error messages) are retried as whole batches with exponential backoff without splitting. Cause chains and `SQLException.getNextException()` are traversed with cycle-guarding `visited` sets.
+
+#### 4. PostgreSQL Protocol & Statement Mechanics
+- **No `max_allowed_packet`:** Unlike MySQL, PostgreSQL does not enforce a `max_allowed_packet` configuration parameter. Memory limits are governed by `work_mem` and `max_stack_depth`.
+- **JDBC Batching Semantics:** The writer executes standard JDBC `batchUpdate` statements (`INSERT INTO vector_store ... VALUES (?::uuid, ?, ?::json, ?::vector) ON CONFLICT (id) DO UPDATE ...`). Under standard PostgreSQL JDBC driver configuration, each item in a batch is sent as an individual protocol execution message unless `reWriteBatchedInserts=true` is enabled on the JDBC URL.
+- **Bind-Parameter Headroom:** A bulk batch of 500 records uses $500 \times 4 = 2,000$ bind parameters, well below the PostgreSQL protocol limit of 65,535 parameters.
+- **Benchmark Context:** Simulation figures cited in ticket discussions (e.g., 74% reduction from 269 writes to 70 writes) were calculated via mathematical replay simulations using logged worker timestamps from real indexing runs rather than direct in-engine PostgreSQL telemetry.
 
 

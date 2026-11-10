@@ -15,7 +15,11 @@ import org.springframework.stereotype.Component;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * and executes bounded, idempotent bulk upserts into PostgreSQL's {@code vector_store}.
  *
  * <p>Employs deterministic RFC-4122 record IDs and {@code ON CONFLICT (id)} updates to guarantee
- * write idempotency during network retries, and uses adaptive batch splitting down to
+ * write idempotency during network retries, and uses progressive k-way partitioning down to
  * {@code minBatchSize} when oversized payloads fail.
  */
 @Component
@@ -89,8 +93,8 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                 return t;
             });
 
-            log.info("Starting {} PGVector bulk persistence writer worker(s) for table {} (batch size: {}, flush timeout: {} ms)",
-                    workers, targetTableName, config.getBatchSize(), config.getFlushIntervalMs());
+            log.info("Starting {} PGVector bulk persistence writer worker(s) for table {} (batch size: {}, flush timeout: {} ms, dynamic: {})",
+                    workers, targetTableName, config.getBatchSize(), config.getFlushIntervalMs(), config.isDynamicBatchingEnabled());
 
             for (int i = 0; i < workers; i++) {
                 writerExecutor.submit(this::writerLoop);
@@ -131,7 +135,18 @@ public class PgVectorBulkWriter implements SmartLifecycle {
     private void writerLoop() {
         while (running.get() || queue.size() > 0) {
             try {
-                List<EmbeddedRecord> batch = queue.drainBatch(config.getBatchSize(), config.getFlushIntervalMs());
+                List<EmbeddedRecord> batch;
+                if (config.isDynamicBatchingEnabled()) {
+                    int target = queue.computeDynamicTarget(config.getBatchSize());
+                    batch = queue.drainDynamicBatch(target, config.getBatchSize());
+                    if (batch != null && !batch.isEmpty()) {
+                        log.debug("[DYNAMIC BATCH DRAIN] Drained {} records (target: {}, reason: {})",
+                                batch.size(), target, queue.getLastFlushReason());
+                    }
+                } else {
+                    batch = queue.drainBatch(config.getBatchSize(), config.getFlushIntervalMs());
+                }
+
                 if (batch != null && !batch.isEmpty()) {
                     persistWithAdaptiveSplitting(batch, 0);
                 }
@@ -145,15 +160,33 @@ public class PgVectorBulkWriter implements SmartLifecycle {
     }
 
     /**
-     * Persists a batch and acknowledges its records. On failure, batches larger than the
-     * configured split threshold are halved; batches at or below it are retried with linearly
-     * increasing delays. Exhausted retries or an interrupted delay report the write
-     * failure to the queue. A null or empty batch is ignored.
+     * Persists a batch and acknowledges its records, delegating to progressive k-way partitioning starting at k=2.
      *
      * @param batch   list of records to persist
      * @param attempt current retry count; normally zero for a new batch
      */
     public void persistWithAdaptiveSplitting(List<EmbeddedRecord> batch, int attempt) {
+        persistWithAdaptiveSplitting(batch, attempt, 2);
+    }
+
+    /**
+     * Persists a batch with progressive k-way partitioning and exponential backoff retry.
+     *
+     * <p>Successful writes acknowledge their records. Connection failures are retried as a whole
+     * batch while retries remain. Other failures are retried when splitting is unavailable.
+     * When retries are exhausted and no split is made, a multi-record batch is attempted one record at a time;
+     * failed records are acknowledged exceptionally. Interruption during backoff restores the
+     * interrupt status and starts the same fallback.
+     *
+     * <p>On size-related failure, calculates {@code effectiveK = min(k, floor(size / minBatchSize))}.
+     * If at least two parts are possible, splits into contiguous near-equal parts whose sizes differ
+     * by at most one, persisting them sequentially with {@code k + 1} and a reset attempt counter.
+     *
+     * @param batch   records to persist; null or empty is ignored
+     * @param attempt current retry count
+     * @param k       progressive partition divisor starting at 2
+     */
+    public void persistWithAdaptiveSplitting(List<EmbeddedRecord> batch, int attempt, int k) {
         if (batch == null || batch.isEmpty()) {
             return;
         }
@@ -170,10 +203,10 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         } catch (Exception ex) {
             log.warn("Bulk insert of {} records failed: {}", batch.size(), ex.getMessage());
 
-            // 1. If it's a transient connection error, retry directly with backoff without splitting
+            // 1. If it's a transient connection error, retry directly with exponential backoff without splitting
             if (isTransientConnectionError(ex) && attempt < config.getMaxRetries()) {
-                long backoff = config.getRetryBackoffMs() * (attempt + 1);
-                log.info("Retrying connection error for batch of {} records (attempt {}/{}) after {} ms backoff",
+                long backoff = config.getRetryBackoffMs() * (1L << attempt);
+                log.info("Retrying connection error for batch of {} records (attempt {}/{}) after {} ms exponential backoff",
                         batch.size(), attempt + 1, config.getMaxRetries(), backoff);
                 try {
                     Thread.sleep(backoff);
@@ -182,25 +215,38 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                     failOrFallback(batch, ex);
                     return;
                 }
-                persistWithAdaptiveSplitting(batch, attempt + 1);
+                persistWithAdaptiveSplitting(batch, attempt + 1, k);
                 return;
             }
 
-            // 2. Only split for size-related failures where batch is large enough that BOTH child sub-batches will be >= minBatchSize
-            if (isSizeRelatedError(ex) && batch.size() >= 2 * config.getMinBatchSize()) {
-                int mid = batch.size() / 2;
-                log.info("Splitting size-failed batch of {} records into sub-batches of {} and {}",
-                        batch.size(), mid, batch.size() - mid);
+            // 2. Progressive k-way partitioning for size-related failures where sub-batches can be >= minBatchSize
+            int effectiveK = Math.min(k, batch.size() / config.getMinBatchSize());
+            if (isSizeRelatedError(ex) && effectiveK >= 2) {
+                int baseSize = batch.size() / effectiveK;
+                int remainder = batch.size() % effectiveK;
+                List<List<EmbeddedRecord>> parts = new ArrayList<>(effectiveK);
+                List<Integer> partSizes = new ArrayList<>(effectiveK);
+                int offset = 0;
+                for (int i = 0; i < effectiveK; i++) {
+                    int partSize = baseSize + (i < remainder ? 1 : 0);
+                    parts.add(batch.subList(offset, offset + partSize));
+                    partSizes.add(partSize);
+                    offset += partSize;
+                }
 
-                persistWithAdaptiveSplitting(batch.subList(0, mid), 0);
-                persistWithAdaptiveSplitting(batch.subList(mid, batch.size()), 0);
+                log.info("Splitting size-failed batch of {} records into {} sub-batches (k={}, effectiveK={}): {}",
+                        batch.size(), effectiveK, k, effectiveK, partSizes);
+
+                for (List<EmbeddedRecord> part : parts) {
+                    persistWithAdaptiveSplitting(part, 0, k + 1);
+                }
                 return;
             }
 
             // 3. For non-size errors or batches that cannot be split, retry with exponential backoff up to maxRetries
             if (attempt < config.getMaxRetries()) {
-                long backoff = config.getRetryBackoffMs() * (attempt + 1);
-                log.info("Retrying failed batch of {} records (attempt {}/{}) after {} ms backoff",
+                long backoff = config.getRetryBackoffMs() * (1L << attempt);
+                log.info("Retrying failed batch of {} records (attempt {}/{}) after {} ms exponential backoff",
                         batch.size(), attempt + 1, config.getMaxRetries(), backoff);
                 try {
                     Thread.sleep(backoff);
@@ -209,7 +255,7 @@ public class PgVectorBulkWriter implements SmartLifecycle {
                     failOrFallback(batch, ex);
                     return;
                 }
-                persistWithAdaptiveSplitting(batch, attempt + 1);
+                persistWithAdaptiveSplitting(batch, attempt + 1, k);
             } else {
                 // 4. Exhausted retries; isolate or fail
                 log.error("Exhausted all retries for batch of {} records; isolating records",
@@ -219,24 +265,48 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         }
     }
 
+    /** Identifies size failures from SQL state classes 53/54 or matching messages in the exception chain. */
     private boolean isSizeRelatedError(Throwable ex) {
         if (ex == null) {
             return false;
         }
-        String msg = ex.getMessage();
-        if (msg != null) {
-            String lower = msg.toLowerCase();
-            if (lower.contains("payload too large") || lower.contains("too large")
-                    || lower.contains("statement too long") || lower.contains("maximum statement size")
-                    || lower.contains("exceeded") || lower.contains("limit") || lower.contains("data truncation")
-                    || lower.contains("string data, right truncation") || lower.contains("value too long")
-                    || lower.contains("batch update size exceeded") || lower.contains("size limit")) {
-                return true;
+
+        // 1. Inspect SQLSTATE through cause chain and SQLException.getNextException()
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = ex;
+        while (current != null && visited.add(current)) {
+            if (current instanceof SQLException sqlEx) {
+                SQLException next = sqlEx;
+                while (next != null) {
+                    String state = next.getSQLState();
+                    if (state != null && (state.startsWith("53") || state.startsWith("54"))) {
+                        return true;
+                    }
+                    next = next.getNextException();
+                    if (next != null && !visited.add(next)) {
+                        break;
+                    }
+                }
             }
+            current = current.getCause();
         }
-        Throwable cause = ex.getCause();
-        if (cause != null && cause != ex) {
-            return isSizeRelatedError(cause);
+
+        // 2. Existing message fallback
+        visited.clear();
+        current = ex;
+        while (current != null && visited.add(current)) {
+            String msg = current.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("payload too large") || lower.contains("too large")
+                        || lower.contains("statement too long") || lower.contains("maximum statement size")
+                        || lower.contains("exceeded") || lower.contains("limit") || lower.contains("data truncation")
+                        || lower.contains("string data, right truncation") || lower.contains("value too long")
+                        || lower.contains("batch update size exceeded") || lower.contains("size limit")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
         }
         return false;
     }
@@ -258,21 +328,45 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         }
     }
 
+    /** Identifies connection failures from SQL state class 08 or matching messages in the exception chain. */
     private boolean isTransientConnectionError(Throwable ex) {
         if (ex == null) {
             return false;
         }
-        String msg = ex.getMessage();
-        if (msg != null) {
-            String lower = msg.toLowerCase();
-            if (lower.contains("connection") || lower.contains("timeout") || lower.contains("refused")
-                    || lower.contains("reset") || lower.contains("closed") || lower.contains("broken pipe")) {
-                return true;
+
+        // 1. Inspect SQLSTATE through cause chain and SQLException.getNextException()
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = ex;
+        while (current != null && visited.add(current)) {
+            if (current instanceof SQLException sqlEx) {
+                SQLException next = sqlEx;
+                while (next != null) {
+                    String state = next.getSQLState();
+                    if (state != null && state.startsWith("08")) {
+                        return true;
+                    }
+                    next = next.getNextException();
+                    if (next != null && !visited.add(next)) {
+                        break;
+                    }
+                }
             }
+            current = current.getCause();
         }
-        Throwable cause = ex.getCause();
-        if (cause != null && cause != ex) {
-            return isTransientConnectionError(cause);
+
+        // 2. Existing message fallback
+        visited.clear();
+        current = ex;
+        while (current != null && visited.add(current)) {
+            String msg = current.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("connection") || lower.contains("timeout") || lower.contains("refused")
+                        || lower.contains("reset") || lower.contains("closed") || lower.contains("broken pipe")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
         }
         return false;
     }
@@ -327,4 +421,3 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         return sb.toString();
     }
 }
-

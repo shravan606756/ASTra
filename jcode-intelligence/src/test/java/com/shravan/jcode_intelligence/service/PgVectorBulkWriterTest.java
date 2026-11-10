@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -355,6 +356,234 @@ class PgVectorBulkWriterTest {
         for (EmbeddedRecord r : allSubmittedRecords) {
             assertTrue(r.acknowledgement().isDone(), "Acknowledgement must be complete");
             assertFalse(r.acknowledgement().isCompletedExceptionally(), "Acknowledgement must not be exceptional");
+        }
+    }
+
+    @Test
+    @DisplayName("Progressive k-way partitioning splits 400 -> 200 -> 67, 67, 66 on size failure")
+    void testProgressiveKWayPartitioningSequence() {
+        List<Integer> attemptedSizes = new ArrayList<>();
+
+        // Fail for batch sizes > 150 with size-related error, succeed when <= 150
+        doAnswer(invocation -> {
+            BatchPreparedStatementSetter setter = invocation.getArgument(1);
+            int batchSize = setter.getBatchSize();
+            attemptedSizes.add(batchSize);
+            if (batchSize > 150) {
+                throw new RuntimeException("Payload too large: batch size " + batchSize + " exceeds statement limit");
+            }
+            return new int[batchSize];
+        }).when(mockJdbcTemplate).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        EmbeddingQueueConfig kConfig = new EmbeddingQueueConfig(1000, 500, 10, 100, 1, 2, 10);
+        EmbeddingQueue kQueue = new EmbeddingQueue(kConfig);
+        PgVectorBulkWriter kWriter = new PgVectorBulkWriter(kQueue, mockJdbcTemplate, kConfig, new ObjectMapper());
+
+        String jobId = "job-kway-seq";
+        kQueue.registerJob(jobId, "repo-kway");
+
+        List<EmbeddedRecord> batch = new ArrayList<>(400);
+        for (int i = 1; i <= 400; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-kway", "c-" + i, "c");
+            batch.add(new EmbeddedRecord(id, jobId, "repo-kway", "c", Map.of("i", i), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        kWriter.persistWithAdaptiveSplitting(batch, 0);
+
+        // Sequence of attempted batch sizes:
+        // 400 -> 200 -> 67, 67, 66 -> 200 -> 67, 67, 66
+        List<Integer> expectedSizes = List.of(400, 200, 67, 67, 66, 200, 67, 67, 66);
+        assertEquals(expectedSizes, attemptedSizes, "Attempted batch sizes must match progressive k-way sequence");
+
+        for (EmbeddedRecord r : batch) {
+            assertTrue(r.acknowledgement().isDone(), "All 400 records must be successfully acknowledged");
+            assertFalse(r.acknowledgement().isCompletedExceptionally(), "Acknowledgement must not be exceptional");
+        }
+    }
+
+    @Test
+    @DisplayName("Progressive k is clamped by floor(size / minBatchSize)")
+    void testKClampingByMinBatchSize() {
+        List<Integer> attemptedSizes = new ArrayList<>();
+
+        // Fail for sizes > 20, with minBatchSize = 10
+        doAnswer(invocation -> {
+            BatchPreparedStatementSetter setter = invocation.getArgument(1);
+            int batchSize = setter.getBatchSize();
+            attemptedSizes.add(batchSize);
+            if (batchSize > 20) {
+                throw new RuntimeException("size limit exceeded: " + batchSize);
+            }
+            return new int[batchSize];
+        }).when(mockJdbcTemplate).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        EmbeddingQueueConfig clampConfig = new EmbeddingQueueConfig(100, 50, 10, 100, 1, 2, 10);
+        EmbeddingQueue clampQueue = new EmbeddingQueue(clampConfig);
+        PgVectorBulkWriter clampWriter = new PgVectorBulkWriter(clampQueue, mockJdbcTemplate, clampConfig, new ObjectMapper());
+
+        String jobId = "job-clamp";
+        clampQueue.registerJob(jobId, "repo-clamp");
+
+        // Batch of size 25: with k=5, floor(25 / 10) = 2, so effectiveK is clamped to 2 (splits 13, 12)
+        List<EmbeddedRecord> batch = new ArrayList<>(25);
+        for (int i = 1; i <= 25; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-clamp", "c-" + i, "c");
+            batch.add(new EmbeddedRecord(id, jobId, "repo-clamp", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        clampWriter.persistWithAdaptiveSplitting(batch, 0, 5);
+
+        assertEquals(List.of(25, 13, 12), attemptedSizes);
+        for (EmbeddedRecord r : batch) {
+            assertTrue(r.acknowledgement().isDone());
+            assertFalse(r.acknowledgement().isCompletedExceptionally());
+        }
+    }
+
+    @Test
+    @DisplayName("Transient connection error with SQLSTATE 08006 triggers whole-batch retry without splitting")
+    void testTransientConnectionErrorSqlState08006RetriesWithoutSplit() throws SQLException {
+        AtomicInteger attempts = new AtomicInteger(0);
+
+        doAnswer(invocation -> {
+            int att = attempts.incrementAndGet();
+            if (att < 3) {
+                throw new RuntimeException(new SQLException("Connection terminated", "08006"));
+            }
+            BatchPreparedStatementSetter setter = invocation.getArgument(1);
+            return new int[setter.getBatchSize()];
+        }).when(mockJdbcTemplate).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        String jobId = "job-sqlstate-08";
+        queue.registerJob(jobId, "repo-08");
+
+        List<EmbeddedRecord> batch = new ArrayList<>();
+        for (int i = 1; i <= 20; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-08", "c-" + i, "c");
+            batch.add(new EmbeddedRecord(id, jobId, "repo-08", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        writer.persistWithAdaptiveSplitting(batch, 0);
+
+        assertEquals(3, attempts.get(), "Must retry whole batch 3 times without splitting");
+        for (EmbeddedRecord r : batch) {
+            assertTrue(r.acknowledgement().isDone());
+            assertFalse(r.acknowledgement().isCompletedExceptionally());
+        }
+    }
+
+    @Test
+    @DisplayName("Size error with SQLSTATE 54001 triggers progressive k-way splitting")
+    void testSizeErrorSqlState54001TriggersSplit() throws SQLException {
+        AtomicInteger writeCallCount = new AtomicInteger(0);
+
+        doAnswer(invocation -> {
+            BatchPreparedStatementSetter setter = invocation.getArgument(1);
+            int batchSize = setter.getBatchSize();
+            writeCallCount.incrementAndGet();
+            if (batchSize > 5) {
+                throw new RuntimeException(new SQLException("statement too complex", "54001"));
+            }
+            return new int[batchSize];
+        }).when(mockJdbcTemplate).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        String jobId = "job-sqlstate-54";
+        queue.registerJob(jobId, "repo-54");
+
+        List<EmbeddedRecord> batch = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-54", "c-" + i, "c");
+            batch.add(new EmbeddedRecord(id, jobId, "repo-54", "c", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        writer.persistWithAdaptiveSplitting(batch, 0);
+
+        assertEquals(3, writeCallCount.get(), "Must split on SQLSTATE 54001 into 2 sub-batches (10 -> 5 and 5)");
+        for (EmbeddedRecord r : batch) {
+            assertTrue(r.acknowledgement().isDone());
+            assertFalse(r.acknowledgement().isCompletedExceptionally());
+        }
+    }
+
+    @Test
+    @DisplayName("Live scaling test: dynamic mode executes fewer JDBC calls than legacy mode under identical workload")
+    void testDynamicModeExecutesFewerJdbcCallsThanLegacy() throws Exception {
+        int totalBatches = 20;
+        int recordsPerBatch = 20; // 400 records total
+        int maxPersistenceBatchSize = 500;
+
+        // Run 1: Legacy Mode (dynamic batching disabled, short flush interval 50ms to simulate micro-flushes)
+        AtomicInteger legacySqlCalls = new AtomicInteger(0);
+        JdbcTemplate legacyJdbc = mock(JdbcTemplate.class);
+        doAnswer(invocation -> {
+            BatchPreparedStatementSetter setter = invocation.getArgument(1);
+            legacySqlCalls.incrementAndGet();
+            return new int[setter.getBatchSize()];
+        }).when(legacyJdbc).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        EmbeddingQueueConfig legacyConfig = new EmbeddingQueueConfig(
+                1000, maxPersistenceBatchSize, 10, 30, 1, 3, 50, false, 400, 1000, 3500, 10000);
+        EmbeddingQueue legacyQueue = new EmbeddingQueue(legacyConfig);
+        PgVectorBulkWriter legacyWriter = new PgVectorBulkWriter(legacyQueue, legacyJdbc, legacyConfig, new ObjectMapper());
+        legacyWriter.start();
+
+        String legacyJobId = "job-compare-legacy";
+        legacyQueue.registerJob(legacyJobId, "repo-compare");
+
+        for (int b = 1; b <= totalBatches; b++) {
+            List<EmbeddedRecord> batch = new ArrayList<>(recordsPerBatch);
+            for (int r = 1; r <= recordsPerBatch; r++) {
+                String id = EmbeddedRecord.generateDeterministicId("repo-compare", "leg-b" + b + "-r" + r, "txt");
+                batch.add(new EmbeddedRecord(id, legacyJobId, "repo-compare", "txt", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+            }
+            legacyQueue.submitAll(batch);
+            Thread.sleep(40); // small delay to let legacy 30ms flush timer expire between submissions
+        }
+        legacyQueue.completeJob(legacyJobId);
+        legacyQueue.awaitJobCompletion(legacyJobId, Duration.ofSeconds(5));
+        legacyWriter.stop();
+
+        // Run 2: Dynamic Mode (enabled with target 400 and quiet window)
+        AtomicInteger dynamicSqlCalls = new AtomicInteger(0);
+        JdbcTemplate dynamicJdbc = mock(JdbcTemplate.class);
+        List<EmbeddedRecord> dynamicSubmitted = new ArrayList<>();
+        doAnswer(invocation -> {
+            BatchPreparedStatementSetter setter = invocation.getArgument(1);
+            dynamicSqlCalls.incrementAndGet();
+            return new int[setter.getBatchSize()];
+        }).when(dynamicJdbc).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        EmbeddingQueueConfig dynamicConfig = new EmbeddingQueueConfig(
+                1000, maxPersistenceBatchSize, 10, 3000, 1, 3, 50, true, 400, 1000, 3500, 10000);
+        EmbeddingQueue dynamicQueue = new EmbeddingQueue(dynamicConfig);
+        PgVectorBulkWriter dynamicWriter = new PgVectorBulkWriter(dynamicQueue, dynamicJdbc, dynamicConfig, new ObjectMapper());
+        dynamicWriter.start();
+
+        String dynamicJobId = "job-compare-dynamic";
+        dynamicQueue.registerJob(dynamicJobId, "repo-compare", 4, 100, 400);
+
+        for (int b = 1; b <= totalBatches; b++) {
+            List<EmbeddedRecord> batch = new ArrayList<>(recordsPerBatch);
+            for (int r = 1; r <= recordsPerBatch; r++) {
+                String id = EmbeddedRecord.generateDeterministicId("repo-compare", "dyn-b" + b + "-r" + r, "txt");
+                batch.add(new EmbeddedRecord(id, dynamicJobId, "repo-compare", "txt", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+            }
+            dynamicSubmitted.addAll(batch);
+            dynamicQueue.submitAll(batch);
+            Thread.sleep(20);
+        }
+        dynamicQueue.completeJob(dynamicJobId);
+        dynamicQueue.awaitJobCompletion(dynamicJobId, Duration.ofSeconds(5));
+        dynamicWriter.stop();
+
+        // Assertions
+        assertTrue(dynamicSqlCalls.get() < legacySqlCalls.get(),
+                String.format("Dynamic mode calls (%d) must be fewer than legacy mode calls (%d)",
+                        dynamicSqlCalls.get(), legacySqlCalls.get()));
+
+        for (EmbeddedRecord r : dynamicSubmitted) {
+            assertTrue(r.acknowledgement().isDone(), "All dynamic mode records must be acknowledged");
+            assertFalse(r.acknowledgement().isCompletedExceptionally());
         }
     }
 }

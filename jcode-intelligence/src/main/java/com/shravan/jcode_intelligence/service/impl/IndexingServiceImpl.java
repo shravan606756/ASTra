@@ -132,8 +132,8 @@ public class IndexingServiceImpl implements IndexingService {
     /**
      * {@inheritDoc}
      *
-     * <p>For a nonblank repository ID, attempts to delete existing vectors before
-     * indexing and saves the resulting statistics. Deletion errors are logged and do not
+     * <p>Uses {@code default} for a null or blank repository ID, attempts to delete existing vectors
+     * before indexing, and saves the resulting statistics. Deletion errors are logged and do not
      * stop indexing. When both a queue and an embedding model are available, waits up to
      * 15 minutes for queued records to finish; otherwise uses the vector store directly.
      *
@@ -199,7 +199,7 @@ public class IndexingServiceImpl implements IndexingService {
 
             if (embeddingQueue != null && embeddingModel != null) {
                 String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
-                embeddingQueue.registerJob(jobId, safeRepoId);
+                embeddingQueue.registerJob(jobId, safeRepoId, workerCount, batchSize, totalDocs);
                 log.info(
                         "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
                         totalDocs, totalBatches, batchSize, workerCount, jobId);

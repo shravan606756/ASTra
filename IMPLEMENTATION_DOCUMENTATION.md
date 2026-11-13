@@ -955,4 +955,22 @@ When a bulk write fails due to payload or statement limits (inspected via SQLSTA
 - **Bind-Parameter Headroom:** A bulk batch of 500 records uses $500 \times 4 = 2,000$ bind parameters, well below the PostgreSQL protocol limit of 65,535 parameters.
 - **Benchmark Context:** Simulation figures cited in ticket discussions (e.g., 74% reduction from 269 writes to 70 writes) were calculated via mathematical replay simulations using logged worker timestamps from real indexing runs rather than direct in-engine PostgreSQL telemetry.
 
+---
+
+## 15. Virtual-Thread-Per-Task Embedding Worker Architecture
+
+### 15.1. Context & Rationale
+In Step 6 (`IndexingServiceImpl`), batch embedding generation involves sending HTTP batches of `batchSize` chunks to the embedding model (e.g., local Ollama or cloud models such as Gemini Embedding 2 / OpenAI) and awaiting vectorized float arrays.
+- This work is blocking network I/O.
+- On Java 21, `Executors.newVirtualThreadPerTaskExecutor()` replaces platform OS worker pools for embedding batch tasks. Virtual threads make blocking on socket reads lightweight, allowing the pipeline to scale concurrency without OS thread stack memory overhead (~1MB per platform thread).
+
+### 15.2. Semaphore Concurrency Bounding
+Because `newVirtualThreadPerTaskExecutor()` does not limit task creation, submitting all batches at once would spawn hundreds of concurrent virtual threads in memory. To protect the embedding provider:
+- In-flight embedding requests are strictly bounded by a `java.util.concurrent.Semaphore` initialized to `workerCount` (`min(totalBatches, chunkingConfig.getMaxParallelWorkers())`).
+- **Pre-Submission Acquisition:** The permit is acquired **before** submitting the task to the executor (`semaphore.acquire()`), ensuring unsubmitted batches do not accumulate in memory.
+- **Permit Release:** The permit is released in the `finally` block of the task after records are staged to `EmbeddingQueue.submitAll(records)`.
+- **Backpressure Preservation:** If the queue is full, `submitAll` blocks while holding the permit, applying natural backpressure to the producer loop.
+- **Carrier Thread Unpinning:** The embedding task avoids `synchronized` blocks. The lock-guarded `EmbeddingQueue` uses `ReentrantLock` and `Condition` variables, allowing virtual threads to unmount from their carrier threads during queue backpressure.
+- **Fail-Fast Cancellation:** If any task throws an unrecoverable exception, `firstFailureRef` halts further submissions and `awaitAllOrCancelOnFailure` cancels all in-flight futures.
+
 

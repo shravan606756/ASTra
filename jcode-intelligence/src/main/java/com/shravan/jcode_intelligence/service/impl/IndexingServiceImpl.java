@@ -34,8 +34,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class IndexingServiceImpl implements IndexingService {
@@ -204,56 +206,87 @@ public class IndexingServiceImpl implements IndexingService {
                         "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
                         totalDocs, totalBatches, batchSize, workerCount, jobId);
 
-                ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+                Semaphore semaphore = new Semaphore(workerCount);
+                AtomicReference<Throwable> firstFailureRef = new AtomicReference<>();
+                ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
                 try {
                     List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
                     for (int i = 0; i < totalDocs; i += batchSize) {
+                        if (firstFailureRef.get() != null) {
+                            break;
+                        }
+
                         int startIdx = i;
                         int endIdx = Math.min(i + batchSize, totalDocs);
                         List<Document> batch = documents.subList(startIdx, endIdx);
                         int batchNum = (startIdx / batchSize) + 1;
 
-                        futures.add(CompletableFuture.runAsync(() -> {
-                            log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
-                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+                        try {
+                            semaphore.acquire();
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);
+                        }
 
-                            long batchStart = System.currentTimeMillis();
+                        if (firstFailureRef.get() != null) {
+                            semaphore.release();
+                            break;
+                        }
 
-                            // Group chunks in this batch to request embeddings in a single model call
-                            List<String> texts = batch.stream()
-                                    .map(Document::getText)
-                                    .toList();
-                            List<float[]> embeddings = embeddingModel.embed(texts);
+                        try {
+                            futures.add(CompletableFuture.runAsync(() -> {
+                                try {
+                                    log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
+                                            batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
 
-                            List<EmbeddedRecord> records = new ArrayList<>(batch.size());
-                            for (int j = 0; j < batch.size(); j++) {
-                                Document doc = batch.get(j);
-                                String chunkId = (String) doc.getMetadata().get("chunkId");
-                                String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
-                                float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
-                                records.add(new EmbeddedRecord(
-                                        recordId,
-                                        jobId,
-                                        safeRepoId,
-                                        doc.getText(),
-                                        doc.getMetadata(),
-                                        embedding,
-                                        new CompletableFuture<>()
-                                ));
-                            }
-                            try {
-                                embeddingQueue.submitAll(records);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                throw new RuntimeException("Interrupted while staging records to embedding queue", e);
-                            }
-                            long batchDuration = System.currentTimeMillis() - batchStart;
-                            int doneDocs = completedDocs.addAndGet(batch.size());
-                            double pct = ((double) doneDocs / totalDocs) * 100.0;
-                            log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
-                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                    String.format("%.1f%%", pct));
-                        }, executor));
+                                    long batchStart = System.currentTimeMillis();
+
+                                    // Group chunks in this batch to request embeddings in a single model call
+                                    List<String> texts = batch.stream()
+                                            .map(Document::getText)
+                                            .toList();
+                                    List<float[]> embeddings = embeddingModel.embed(texts);
+
+                                    List<EmbeddedRecord> records = new ArrayList<>(batch.size());
+                                    for (int j = 0; j < batch.size(); j++) {
+                                        Document doc = batch.get(j);
+                                        String chunkId = (String) doc.getMetadata().get("chunkId");
+                                        String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
+                                        float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
+                                        records.add(new EmbeddedRecord(
+                                                recordId,
+                                                jobId,
+                                                safeRepoId,
+                                                doc.getText(),
+                                                doc.getMetadata(),
+                                                embedding,
+                                                new CompletableFuture<>()
+                                        ));
+                                    }
+                                    try {
+                                        embeddingQueue.submitAll(records);
+                                    } catch (InterruptedException e) {
+                                        Thread.currentThread().interrupt();
+                                        throw new RuntimeException("Interrupted while staging records to embedding queue", e);
+                                    }
+                                    long batchDuration = System.currentTimeMillis() - batchStart;
+                                    int doneDocs = completedDocs.addAndGet(batch.size());
+                                    double pct = ((double) doneDocs / totalDocs) * 100.0;
+                                    log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
+                                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                            String.format("%.1f%%", pct));
+                                } catch (Throwable t) {
+                                    firstFailureRef.compareAndSet(null, t);
+                                    throw t;
+                                } finally {
+                                    semaphore.release();
+                                }
+                            }, executor));
+                        } catch (Throwable submitEx) {
+                            semaphore.release();
+                            firstFailureRef.compareAndSet(null, submitEx);
+                            throw submitEx;
+                        }
                     }
 
                     awaitAllOrCancelOnFailure(futures);

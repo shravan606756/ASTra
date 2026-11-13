@@ -600,4 +600,36 @@ class VirtualThreadEmbeddingPipelineRegressionTest {
             writer.shutdownNow();
         }
     }
+
+    @Test
+    @DisplayName("Edge Case 12: Producer re-checks failure flag after acquiring permit and aborts immediately")
+    void testProducerRechecksFailureAfterPermitAcquireAndDoesNotSubmitNewBatch() throws Exception {
+        int totalBatches = 4;
+        createMockChunks(totalBatches);
+
+        // maxWorkers = 1 so subsequent batches must block in semaphore.acquire()
+        ChunkingConfig config = new ChunkingConfig() {
+            @Override public int getBatchSize() { return 1; }
+            @Override public int getMaxParallelWorkers() { return 1; }
+        };
+
+        EmbeddingQueue queue = new EmbeddingQueue(new EmbeddingQueueConfig(100, 20, 5, 50, 1, 2, 10));
+        AtomicInteger embedInvocations = new AtomicInteger(0);
+
+        when(mockEmbeddingModel.embed(anyList())).thenAnswer(inv -> {
+            embedInvocations.incrementAndGet();
+            // Hold permit briefly to ensure producer thread is blocked in semaphore.acquire() for batch 2
+            Thread.sleep(50);
+            throw new RuntimeException("Batch 1 failure while batch 2 is blocked in acquire");
+        });
+
+        IndexingServiceImpl service = createIndexingService(config, queue);
+
+        assertThrows(RuntimeException.class, () ->
+                service.indexProject(".", "repo-recheck-failure-test"));
+
+        // Only batch 1 should ever be submitted/embedded; batch 2 must abort after unblocking from acquire()
+        assertEquals(1, embedInvocations.get(),
+                "Producer must not submit batch 2 after unblocking from acquire() when firstFailureRef is set");
+    }
 }

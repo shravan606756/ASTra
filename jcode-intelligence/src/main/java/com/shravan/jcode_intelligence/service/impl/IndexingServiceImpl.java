@@ -222,7 +222,17 @@ public class IndexingServiceImpl implements IndexingService {
                         int batchNum = (startIdx / batchSize) + 1;
 
                         try {
+                        try {
                             semaphore.acquire();
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);
+                        }
+
+                        if (firstFailureRef.get() != null) {
+                            semaphore.release();
+                            break;
+                        }
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                             throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);

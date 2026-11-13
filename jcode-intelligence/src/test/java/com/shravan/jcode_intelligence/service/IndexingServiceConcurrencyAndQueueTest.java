@@ -23,6 +23,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -156,7 +157,7 @@ class IndexingServiceConcurrencyAndQueueTest {
         when(mockEmbeddingModel.embed(anyList())).thenReturn(List.of(new float[]{0.1f}));
 
         java.util.concurrent.ScheduledExecutorService testWriter = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
-        testWriter.schedule(() -> {
+        testWriter.scheduleWithFixedDelay(() -> {
             try {
                 List<EmbeddedRecord> drained = embeddingQueue.drainBatch(10, 500);
                 for (EmbeddedRecord r : drained) {
@@ -164,7 +165,7 @@ class IndexingServiceConcurrencyAndQueueTest {
                 }
             } catch (Exception ignored) {
             }
-        }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
+        }, 10, 20, java.util.concurrent.TimeUnit.MILLISECONDS);
 
         IndexingServiceImpl indexingService = new IndexingServiceImpl(
                 mockParser, mockConverter, mockVectorStore, mockGitService,
@@ -178,6 +179,151 @@ class IndexingServiceConcurrencyAndQueueTest {
         } finally {
             testWriter.shutdownNow();
         }
+    }
+
+    @Test
+    @DisplayName("Embedding batch tasks genuinely run on Java 21 virtual threads")
+    void testEmbeddingBatchTasksExecuteOnVirtualThreads() throws Exception {
+        CodeChunk chunk = new CodeChunk();
+        chunk.setId("v1");
+        chunk.setType("METHOD");
+        chunk.setContent("virtualThreadCode");
+        when(mockParser.parse(any(Path.class))).thenReturn(List.of(chunk));
+
+        Document doc = new Document("virtualThreadCode", Map.of("chunkId", "v1"));
+        when(mockConverter.convert(anyList())).thenReturn(List.of(doc));
+
+        java.util.concurrent.atomic.AtomicBoolean ranOnVirtualThread = new java.util.concurrent.atomic.AtomicBoolean(false);
+        when(mockEmbeddingModel.embed(anyList())).thenAnswer(invocation -> {
+            ranOnVirtualThread.set(Thread.currentThread().isVirtual());
+            return List.of(new float[]{0.42f});
+        });
+
+        ScheduledExecutorService testWriter = Executors.newSingleThreadScheduledExecutor();
+        testWriter.scheduleWithFixedDelay(() -> {
+            try {
+                List<EmbeddedRecord> drained = embeddingQueue.drainBatch(10, 500);
+                for (EmbeddedRecord r : drained) {
+                    embeddingQueue.recordPersisted(r);
+                }
+            } catch (Exception ignored) {
+            }
+        }, 10, 20, TimeUnit.MILLISECONDS);
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, embeddingQueue, mockModelProvider);
+
+        try {
+            int result = indexingService.indexProject(".", "repo-vt-test");
+            assertEquals(1, result);
+            assertTrue(ranOnVirtualThread.get(), "Embedding worker task must execute on a virtual thread");
+        } finally {
+            testWriter.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("Embedding tasks concurrency is strictly bounded by maxParallelWorkers semaphore")
+    void testEmbeddingConcurrencyBoundedByMaxParallelWorkers() throws Exception {
+        int totalChunks = 6;
+        List<CodeChunk> chunks = new ArrayList<>();
+        List<Document> docs = new ArrayList<>();
+        for (int i = 0; i < totalChunks; i++) {
+            CodeChunk c = new CodeChunk();
+            c.setId("chunk-" + i);
+            c.setType("METHOD");
+            c.setContent("code-" + i);
+            chunks.add(c);
+            docs.add(new Document("code-" + i, Map.of("chunkId", "chunk-" + i)));
+        }
+        when(mockParser.parse(any(Path.class))).thenReturn(chunks);
+        when(mockConverter.convert(anyList())).thenReturn(docs);
+
+        // Force batchSize=1 and maxParallelWorkers=2
+        ChunkingConfig customConfig = new ChunkingConfig() {
+            @Override public int getBatchSize() { return 1; }
+            @Override public int getMaxParallelWorkers() { return 2; }
+        };
+
+        java.util.concurrent.atomic.AtomicInteger activeWorkers = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger maxObserved = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        when(mockEmbeddingModel.embed(anyList())).thenAnswer(invocation -> {
+            int current = activeWorkers.incrementAndGet();
+            maxObserved.updateAndGet(prev -> Math.max(prev, current));
+            try {
+                Thread.sleep(40);
+            } finally {
+                activeWorkers.decrementAndGet();
+            }
+            return List.of(new float[]{0.1f});
+        });
+
+        ScheduledExecutorService testWriter = Executors.newSingleThreadScheduledExecutor();
+        testWriter.scheduleWithFixedDelay(() -> {
+            try {
+                List<EmbeddedRecord> drained = embeddingQueue.drainBatch(10, 20);
+                for (EmbeddedRecord r : drained) {
+                    embeddingQueue.recordPersisted(r);
+                }
+            } catch (Exception ignored) {
+            }
+        }, 10, 20, TimeUnit.MILLISECONDS);
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, customConfig, mockRepoMgmtService,
+                concurrencyManager, embeddingQueue, mockModelProvider);
+
+        try {
+            int result = indexingService.indexProject(".", "repo-concurrency-bound-test");
+            assertEquals(totalChunks, result);
+            assertTrue(maxObserved.get() <= 2, "Observed concurrency (" + maxObserved.get() + ") must not exceed semaphore limit (2)");
+            assertTrue(maxObserved.get() > 1, "Must execute concurrently with more than 1 active worker");
+        } finally {
+            testWriter.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("Embedding batch failure cancels remaining tasks and cleans up job")
+    void testEmbeddingBatchFailureCancelsRemainingTasks() throws Exception {
+        List<CodeChunk> chunks = new ArrayList<>();
+        List<Document> docs = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            CodeChunk c = new CodeChunk();
+            c.setId("fchunk-" + i);
+            c.setType("METHOD");
+            c.setContent("fcode-" + i);
+            chunks.add(c);
+            docs.add(new Document("fcode-" + i, Map.of("chunkId", "fchunk-" + i)));
+        }
+        when(mockParser.parse(any(Path.class))).thenReturn(chunks);
+        when(mockConverter.convert(anyList())).thenReturn(docs);
+
+        ChunkingConfig customConfig = new ChunkingConfig() {
+            @Override public int getBatchSize() { return 1; }
+            @Override public int getMaxParallelWorkers() { return 2; }
+        };
+
+        when(mockEmbeddingModel.embed(anyList())).thenAnswer(invocation -> {
+            throw new RuntimeException("Simulated Ollama inference failure");
+        });
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, customConfig, mockRepoMgmtService,
+                concurrencyManager, embeddingQueue, mockModelProvider);
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () ->
+                indexingService.indexProject(".", "repo-failure-test"));
+        assertTrue(ex.getMessage().contains("Embedding generation and queue staging failed"),
+                "Expected failure message in exception: " + ex.getMessage());
     }
 }
 

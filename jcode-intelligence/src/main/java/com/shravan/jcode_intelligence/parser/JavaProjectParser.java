@@ -6,10 +6,10 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.shravan.jcode_intelligence.model.CodeChunk;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,37 +21,53 @@ public class JavaProjectParser {
 
     private final JavaParser javaParser;
     private final AstVisitor visitor;
+    private final JavaSourceDiscovery discovery;
 
     public JavaProjectParser(JavaParser javaParser, AstVisitor visitor) {
+        this(javaParser, visitor, new JavaSourceDiscovery());
+    }
+
+    @Autowired
+    public JavaProjectParser(JavaParser javaParser, AstVisitor visitor, JavaSourceDiscovery discovery) {
         this.javaParser = javaParser;
         this.visitor = visitor;
+        this.discovery = discovery != null ? discovery : new JavaSourceDiscovery();
     }
 
     public List<CompilationUnit> parseCompilationUnits(Path projectRoot) throws IOException {
-        List<CompilationUnit> units = new ArrayList<>();
+        List<Path> files = discovery.discover(projectRoot);
+        return parseCompilationUnits(files);
+    }
 
-        Files.walk(projectRoot)
-                .filter(Files::isRegularFile)
-                .filter(path -> path.toString().endsWith(".java"))
-                .filter(this::isIndexableJavaFile)
-                .forEach(path -> {
-                    try {
-                        ParseResult<CompilationUnit> result = javaParser.parse(path);
-                        if (result.isSuccessful() && result.getResult().isPresent()) {
-                            units.add(result.getResult().get());
-                        } else {
-                            log.error("Failed to parse file: {} | Problems: {}", path, result.getProblems());
-                        }
-                    } catch (Exception e) {
-                        log.error("Exception parsing file: {}", path, e);
-                    }
-                });
+    public List<CompilationUnit> parseCompilationUnits(List<Path> files) {
+        List<CompilationUnit> units = new ArrayList<>();
+        if (files == null) {
+            return units;
+        }
+
+        for (Path path : files) {
+            try {
+                ParseResult<CompilationUnit> result = javaParser.parse(path);
+                if (result.isSuccessful() && result.getResult().isPresent()) {
+                    units.add(result.getResult().get());
+                } else {
+                    log.error("Failed to parse file: {} | Problems: {}", path, result.getProblems());
+                }
+            } catch (Exception e) {
+                log.error("Exception parsing file: {}", path, e);
+            }
+        }
 
         return units;
     }
 
     public List<CodeChunk> parse(Path projectRoot) throws IOException {
-        List<CompilationUnit> units = parseCompilationUnits(projectRoot);
+        List<Path> files = discovery.discover(projectRoot);
+        return parse(files);
+    }
+
+    public List<CodeChunk> parse(List<Path> files) {
+        List<CompilationUnit> units = parseCompilationUnits(files);
         List<CodeChunk> chunks = new ArrayList<>();
 
         for (CompilationUnit unit : units) {
@@ -59,21 +75,5 @@ public class JavaProjectParser {
         }
 
         return chunks;
-    }
-
-    /**
-     * Determines whether a Java file should be included in AST semantic indexing.
-     * Excludes build directories (target, build, .git) and non-source test fixture resources (src/test/resources).
-     */
-    private boolean isIndexableJavaFile(Path path) {
-        String normalized = path.toString().replace('\\', '/');
-        if (normalized.contains("/target/") || normalized.contains("/build/") || normalized.contains("/.git/")) {
-            return false;
-        }
-        if (normalized.contains("/src/test/resources/") || normalized.contains("/test-resources/")) {
-            log.debug("Skipping test fixture resource file: {}", path);
-            return false;
-        }
-        return true;
     }
 }

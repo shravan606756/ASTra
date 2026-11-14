@@ -13,6 +13,11 @@ import com.shravan.jcode_intelligence.service.EmbeddingQueue;
 import com.shravan.jcode_intelligence.service.GitService;
 import com.shravan.jcode_intelligence.service.IndexingService;
 import com.shravan.jcode_intelligence.service.RepositoryConcurrencyManager;
+import com.shravan.jcode_intelligence.service.classification.IndexingPipeline;
+import com.shravan.jcode_intelligence.service.classification.IndexingPipelineSelector;
+import com.shravan.jcode_intelligence.service.classification.PipelineSelection;
+import com.shravan.jcode_intelligence.service.classification.RepositoryClassificationResult;
+import com.shravan.jcode_intelligence.service.classification.RepositoryClassifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -28,6 +33,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -57,9 +63,12 @@ public class IndexingServiceImpl implements IndexingService {
     private final RepositoryConcurrencyManager concurrencyManager;
     private final EmbeddingQueue embeddingQueue;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
+    private final RepositoryClassifier classifier;
+    private final IndexingPipelineSelector selector;
 
     /**
-     * Constructs an {@code IndexingServiceImpl} with queue-based persistence and repository concurrency isolation.
+     * Constructs an {@code IndexingServiceImpl} with memory-aware classification, pipeline selection,
+     * queue-based persistence, and repository concurrency isolation.
      *
      * @param parser                      Java project AST parser
      * @param converter                   code chunk to document converter
@@ -74,6 +83,8 @@ public class IndexingServiceImpl implements IndexingService {
      * @param concurrencyManager          repository isolation and concurrency manager
      * @param embeddingQueue              shared bounded embedding queue
      * @param embeddingModelProvider      provider for direct Spring AI embedding generation
+     * @param classifier                  memory-aware repository classifier
+     * @param selector                    pipeline selection component
      */
     @Autowired
     public IndexingServiceImpl(JavaProjectParser parser,
@@ -88,7 +99,9 @@ public class IndexingServiceImpl implements IndexingService {
             com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
             RepositoryConcurrencyManager concurrencyManager,
             EmbeddingQueue embeddingQueue,
-            ObjectProvider<EmbeddingModel> embeddingModelProvider) {
+            ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            RepositoryClassifier classifier,
+            IndexingPipelineSelector selector) {
 
         this.parser = parser;
         this.converter = converter;
@@ -103,6 +116,30 @@ public class IndexingServiceImpl implements IndexingService {
         this.concurrencyManager = concurrencyManager != null ? concurrencyManager : new RepositoryConcurrencyManager();
         this.embeddingQueue = embeddingQueue;
         this.embeddingModelProvider = embeddingModelProvider;
+        this.classifier = classifier;
+        this.selector = selector;
+    }
+
+    /**
+     * 13-argument constructor delegating with null classification dependencies.
+     */
+    public IndexingServiceImpl(JavaProjectParser parser,
+            DocumentConverter converter,
+            VectorStore vectorStore,
+            GitService gitService,
+            JdbcTemplate jdbcTemplate,
+            PackageSummaryGenerator packageSummaryGenerator,
+            IndexingStatisticsCalculator statisticsCalculator,
+            EmbeddingBudgetValidator budgetValidator,
+            ChunkingConfig chunkingConfig,
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
+            RepositoryConcurrencyManager concurrencyManager,
+            EmbeddingQueue embeddingQueue,
+            ObjectProvider<EmbeddingModel> embeddingModelProvider) {
+        this(parser, converter, vectorStore, gitService, jdbcTemplate,
+                packageSummaryGenerator, statisticsCalculator, budgetValidator,
+                chunkingConfig, repositoryManagementService, concurrencyManager,
+                embeddingQueue, embeddingModelProvider, null, null);
     }
 
     /**
@@ -120,7 +157,7 @@ public class IndexingServiceImpl implements IndexingService {
             com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
         this(parser, converter, vectorStore, gitService, jdbcTemplate,
                 packageSummaryGenerator, statisticsCalculator, budgetValidator,
-                chunkingConfig, repositoryManagementService, new RepositoryConcurrencyManager(), null, null);
+                chunkingConfig, repositoryManagementService, new RepositoryConcurrencyManager(), null, null, null, null);
     }
 
     @Override
@@ -154,9 +191,9 @@ public class IndexingServiceImpl implements IndexingService {
         }
 
         try {
-            // [STEP 1] Parse repository source files into element chunks
-            log.info("[STEP 1] Parsing repository source files at path: {}", projectPath);
-            List<CodeChunk> elementChunks = parser.parse(Path.of(projectPath));
+            // [STEP 1] Parse repository source files into element chunks (with memory classification & pipeline selection)
+            Path rootPath = Path.of(projectPath);
+            List<CodeChunk> elementChunks = parseRepository(rootPath, safeRepoId);
             log.info("[STEP 1 COMPLETE] Generated {} element chunk(s)", elementChunks.size());
 
             // [STEP 2] Generate package summaries across the entire repository
@@ -473,5 +510,65 @@ public class IndexingServiceImpl implements IndexingService {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    /**
+     * Parses repository sources with memory-aware classification and pipeline selection if configured,
+     * or delegates to root parsing if classifier is absent or classification fails.
+     *
+     * @param rootPath   source root path
+     * @param safeRepoId repository identifier
+     * @return parsed code chunks
+     * @throws IOException if source parsing fails
+     */
+    private List<CodeChunk> parseRepository(Path rootPath, String safeRepoId) throws IOException {
+        if (classifier == null || selector == null) {
+            log.info("[STEP 1] Parsing repository source files at path: {}", rootPath);
+            return parser.parse(rootPath);
+        }
+
+        RepositoryClassificationResult classificationResult;
+        PipelineSelection selection;
+        try {
+            classificationResult = classifier.classify(rootPath);
+            selection = selector.select(classificationResult, safeRepoId);
+        } catch (IOException | RuntimeException e) {
+            log.warn("Classification failed for repository '{}'; selecting existing pipeline because classification failed", safeRepoId, e);
+            selection = selector.selectFailure("classification failed");
+            log.info("[STEP 1] Parsing repository source files at path: {} (classification failed fallback)", rootPath);
+            return parser.parse(rootPath);
+        }
+
+        logClassificationInfo(safeRepoId, classificationResult, selection);
+
+        if (selection.selectedPipeline() == IndexingPipeline.EXISTING) {
+            log.info("[STEP 1] Parsing {} eligible source file(s) for repository '{}' using {} pipeline",
+                    classificationResult.eligibleFileCount(), safeRepoId, selection.selectedPipeline());
+            return parser.parse(classificationResult.eligibleFiles());
+        } else {
+            // Reserved for #31 (Large-Repository Streaming Indexing Pipeline)
+            throw new UnsupportedOperationException("Streaming pipeline is not yet implemented (Issue #31)");
+        }
+    }
+
+    private void logClassificationInfo(String repositoryId, RepositoryClassificationResult result, PipelineSelection selection) {
+        long maxHeap = result.maxHeapBytes();
+        long budget = result.budgetBytes();
+        long need = result.estimatedNeedBytes();
+
+        String maxHeapMb = (maxHeap == Long.MAX_VALUE) ? "unlimited" : String.format(Locale.ROOT, "%.1f MB", maxHeap / (1024.0 * 1024.0));
+        String budgetMb = (budget == Long.MAX_VALUE) ? "unlimited" : String.format(Locale.ROOT, "%.1f MB", budget / (1024.0 * 1024.0));
+        String needMb = (need == Long.MAX_VALUE) ? "overflow" : String.format(Locale.ROOT, "%.1f MB", need / (1024.0 * 1024.0));
+
+        log.info("Repository classification | repo='{}' | LOC={} | eligibleFiles={} | maxHeap={} bytes ({}) | budget={} bytes ({}) | estimatedNeed={} bytes ({}) | classification={} | pipeline={} | overrideUsed={}",
+                repositoryId,
+                result.totalLoc(),
+                result.eligibleFileCount(),
+                maxHeap, maxHeapMb,
+                budget, budgetMb,
+                need, needMb,
+                result.classification(),
+                selection.selectedPipeline(),
+                result.overrideUsed());
     }
 }

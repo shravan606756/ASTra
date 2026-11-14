@@ -282,6 +282,78 @@ flowchart TB
 
 ---
 
+## Memory-Aware Repository Classification
+
+To prevent JVM heap exhaustion (`OutOfMemoryError`) when indexing large repositories without manual operator tuning, ASTra dynamically classifies each repository before AST parsing begins.
+
+### Classification Formula
+Before parsing starts, ASTra inspects the running JVM's actual heap limit via `Runtime.getRuntime().maxMemory()` and calculates non-blank lines of code (LOC) across all eligible source files:
+
+$$\text{budget} = \text{maxMemory}() \times \text{astra.indexing.memory.budget-fraction}$$
+$$\text{estimatedNeed} = \text{totalLOC} \times \text{astra.indexing.memory.bytes-per-loc}$$
+
+- **NORMAL**: $\text{estimatedNeed} \le \text{budget}$. Fits comfortably in memory; processed via the high-throughput, whole-repository in-memory pipeline.
+- **LARGE**: $\text{estimatedNeed} > \text{budget}$. Exceeds heap budget; requests the memory-bounded streaming pipeline (Issue #31).
+
+```text
+Same repository, same bytes-per-loc:
+  Small Heap -> Small Budget -> need > budget  -> LARGE
+  Large Heap -> Large Budget -> need <= budget -> NORMAL
+```
+
+### Pipeline Routing & Fallback
+- **NORMAL Execution**: Passes the pre-discovered, deduplicated file list directly to `JavaProjectParser.parse(List<Path>)`, eliminating redundant filesystem traversals.
+- **LARGE Fallback (Pre-#31)**: Until the streaming indexing pipeline (Issue #31) is merged, the dedicated `IndexingPipelineSelector` safely routes `LARGE` repositories to the existing pipeline while logging a prominent `WARN` naming the repository and reason.
+- **Classification Failure Fallback**: If file discovery or LOC calculation fails (e.g. filesystem permission or I/O error), ASTra logs a `WARN` with the repository ID and stack trace, selects the existing pipeline with fallback reason `"classification failed"`, and delegates to `parser.parse(root)`. If fallback parsing also fails, the exception propagates cleanly, releasing the repository lock and cleaning up temporary git clones.
+
+### Configuration Properties
+Configured in `application.properties` (or environment variables) via `MemoryClassificationConfig`:
+
+| Property | Default | Description |
+|---|---|---|
+| `astra.indexing.memory.budget-fraction` | `0.4` | Share of `maxMemory()` allocated for retaining ASTs and chunk objects in heap (range: `(0, 1]`). Remaining 60% is reserved for embedding buffers, DB batching, and GC headroom. |
+| `astra.indexing.memory.bytes-per-loc` | `600` | Calibrated memory workload coefficient (bytes of live heap per line of code). Must be positive. |
+| `astra.indexing.loc.normal-threshold` | `null` | Optional manual LOC threshold override. If set (`>= 0`), repositories with `totalLoc <= threshold` are classified `NORMAL` (`overrideUsed = true`). |
+
+### Shared Discovery & Directory Exclusions
+Source file discovery (`JavaSourceDiscovery`) and file eligibility filtering (`IndexableJavaFileFilter`) are unified to ensure the LOC count exactly matches the parsed file set. Deduplication is performed by `toRealPath()` to prevent duplicate parsing from symlinks or hardlinks.
+
+In addition to standard exclusions (`/target/`, `/build/`, `/.git/`, `/src/test/resources/`, `/test-resources/`), five new build/dependency directories are excluded:
+- `/generated-sources/`
+- `/generated-test-sources/`
+- `/node_modules/`
+- `/.gradle/`
+- `/.m2/`
+
+### Calibration Setup & Reproducible Results
+The workload coefficient `bytes-per-loc = 600` was empirically calibrated using an opt-in post-GC live-heap benchmark harness (`JavaParserMemoryCalibrationTest`) against the reference [JavaParser](https://github.com/javaparser/javaparser) repository:
+
+| Calibration Parameter | Measured / Configured Value |
+|---|---|
+| **Target Repository** | [JavaParser](https://github.com/javaparser/javaparser) |
+| **Pinned Commit / Tag** | `javaparser-parent-3.28.2` (`d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68`) |
+| **Eligible Java Files** | 1,570 files |
+| **Non-Blank Lines of Code (LOC)** | 154,200 LOC |
+| **Parsed Chunks Generated** | 27,170 chunks |
+| **JVM & Garbage Collector** | Java 21 (Oracle HotSpot / OpenJDK), Default G1 GC |
+| **Calibration Heap (`-Xmx`)** | `512m` (536,870,912 bytes; requires $\ge \text{need} / 0.4 \approx 231.3$ MB) |
+| **Baseline Live Heap (Post-GC)** | ~26.2 MB (27,485,760 bytes) |
+| **Peak Live Heap (Post-GC)** | ~100.2 MB (105,090,300 bytes) |
+| **Live Heap Delta ($\Delta$)** | ~74.0 MB (77,604,540 bytes) |
+| **Raw Workload Coefficient** | 480 bytes/LOC ($\Delta / \text{LOC}$) |
+| **Safety Margin** | $\times 1.25$ (+25% buffer for AST variation) |
+| **Calibrated `bytes-per-loc`** | **600 bytes/LOC** ($480 \times 1.25$) |
+
+**Exact Calibration Command:**
+```bash
+mvn test -Dtest=JavaParserMemoryCalibrationTest -Dastra.calibration.javaparser.path=/path/to/javaparser -DargLine="-Xmx512m -Xlog:gc*"
+```
+
+> [!NOTE]
+> **Single Reference Point & Recalibration:** This calibration represents a single verified reference codebase (JavaParser). While conservative (combining a 40% budget fraction with a 25% safety margin), memory density per LOC can fluctuate based on AST depth, method length, and generic complexity. The coefficient should be recalibrated as more diverse codebases are benchmarked, or adjusted via `astra.indexing.memory.bytes-per-loc` / `astra.indexing.loc.normal-threshold`.
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |

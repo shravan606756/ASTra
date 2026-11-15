@@ -44,6 +44,11 @@ public class MemoryClassificationConfigTest {
         IllegalArgumentException exOver = assertThrows(IllegalArgumentException.class,
                 () -> new MemoryClassificationConfig(1.01, 500L, null));
         assertTrue(exOver.getMessage().contains("budget-fraction must be in (0, 1]"));
+
+        // Double.NaN is invalid
+        IllegalArgumentException exNan = assertThrows(IllegalArgumentException.class,
+                () -> new MemoryClassificationConfig(Double.NaN, 500L, null));
+        assertTrue(exNan.getMessage().contains("budget-fraction must be in (0, 1]"));
     }
 
     @Test

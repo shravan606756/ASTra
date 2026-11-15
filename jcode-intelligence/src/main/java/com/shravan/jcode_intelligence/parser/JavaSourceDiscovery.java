@@ -10,6 +10,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -58,24 +59,36 @@ public class JavaSourceDiscovery {
         eligible.sort(Comparator.<Path>naturalOrder().thenComparing(Path::toString));
 
         List<Path> uniquePaths = new ArrayList<>();
-        Set<Path> seenRealPaths = new HashSet<>();
+        Set<Object> seenFileIdentities = new HashSet<>();
 
         for (Path path : eligible) {
-            Path realPathKey;
-            try {
-                realPathKey = path.toRealPath();
-            } catch (Exception e) {
-                log.debug("Failed to resolve real path for {}, falling back to normalized absolute path: {}",
-                        path, e.getMessage());
-                realPathKey = path.toAbsolutePath().normalize();
-            }
-
-            if (seenRealPaths.add(realPathKey)) {
+            Object identityKey = resolveFileIdentity(path);
+            if (seenFileIdentities.add(identityKey)) {
                 uniquePaths.add(path);
             }
         }
 
         return List.copyOf(uniquePaths);
+    }
+
+    private Object resolveFileIdentity(Path path) {
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
+            Object fileKey = attrs.fileKey();
+            if (fileKey != null) {
+                return fileKey;
+            }
+        } catch (Exception e) {
+            log.debug("Failed to read fileKey for {}, falling back to real path: {}", path, e.getMessage());
+        }
+
+        try {
+            return path.toRealPath();
+        } catch (Exception e) {
+            log.debug("Failed to resolve real path for {}, falling back to normalized absolute path: {}",
+                    path, e.getMessage());
+            return path.toAbsolutePath().normalize();
+        }
     }
 
     /**

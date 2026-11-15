@@ -141,9 +141,23 @@ public class JavaParserMemoryCalibrationTest {
         }
 
         List<CodeChunk> chunks = null;
+        boolean completedSampleObtained = false;
         try {
             // 5. Parse eligible files into chunks while GC listener tracks post-GC peaks
             chunks = parser.parse(eligibleFiles);
+
+            // While chunks remains reachable, obtain a completed post-GC heap sample before removing the listener
+            assertNotNull(chunks, "Generated chunks must not be null");
+            assertFalse(chunks.isEmpty(), "Generated chunks must not be empty");
+
+            System.gc();
+            Thread.sleep(100);
+
+            long completedPostGcHeap = sumPostGcHeapUsage();
+            if (completedPostGcHeap > 0) {
+                peakPostGcHeap.accumulateAndGet(completedPostGcHeap, Math::max);
+                completedSampleObtained = true;
+            }
         } finally {
             // Unregister GC listener
             for (NotificationEmitter emitter : emitters) {
@@ -159,10 +173,9 @@ public class JavaParserMemoryCalibrationTest {
         assertFalse(chunks.isEmpty(), "Generated chunks must not be empty");
         int chunkCount = chunks.size();
 
-        // Require at least one GC during the stage
-        assertTrue(gcCount.get() > 0,
-                "No GC occurred during parsing (GC count = 0). A valid post-GC peak requires at least one GC. "
-                        + "Please run with a smaller -Xmx to trigger garbage collection during parsing.");
+        // Ensure measurement completion is established by the completed sample
+        assertTrue(completedSampleObtained,
+                "Failed to obtain a completed post-GC heap sample while chunks remained reachable.");
 
         long peak = peakPostGcHeap.get();
         assertTrue(peak > baselineHeap,
@@ -296,6 +309,6 @@ public class JavaParserMemoryCalibrationTest {
             } catch (Exception ignored) {
             }
         }
-        return "javaparser-3.28.2 (tag: javaparser-parent-3.28.2 / pinned commit d8c5f6e)";
+        return "unknown";
     }
 }

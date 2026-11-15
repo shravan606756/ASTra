@@ -41,12 +41,30 @@ class IndexableJavaFileFilterTest {
     }
 
     @Test
-    @DisplayName("Filter preserves relative-root edge case where target without leading slash is not excluded")
-    void testRelativeRootEdgeCaseUnchanged() {
-        // Path with no leading slash (e.g., "target/MyClass.java") does not contain "/target/"
-        Path relativeTarget = Path.of("target", "MyClass.java");
-        // String representation is "target/MyClass.java" which does not contain "/target/"
-        String normalized = relativeTarget.toString().replace('\\', '/');
-        assertFalse(normalized.contains("/target/"), "Relative path without leading slash must not match /target/");
+    @DisplayName("Filter excludes directories that are the first component of a relative path")
+    void testRelativePathFirstComponentExclusions(@TempDir Path tempDir) throws IOException {
+        Path targetDir = tempDir.resolve("target");
+        Files.createDirectories(targetDir);
+        Path targetFile = targetDir.resolve("MyClass.java");
+        Files.writeString(targetFile, "public class MyClass {}");
+
+        Path genDir = tempDir.resolve("generated-sources");
+        Files.createDirectories(genDir);
+        Path genFile = genDir.resolve("Generated.java");
+        Files.writeString(genFile, "public class Generated {}");
+
+        assertFalse(filter.test(targetFile), "target directory at start of relative path must be excluded");
+        assertFalse(filter.test(genFile), "generated-sources directory at start of relative path must be excluded");
+    }
+
+    @Test
+    @DisplayName("Filter preserves full component matching for similar directory names")
+    void testSimilarDirectoryNamesNotExcluded(@TempDir Path tempDir) throws IOException {
+        Path targetsDir = tempDir.resolve("targets");
+        Files.createDirectories(targetsDir);
+        Path targetsFile = targetsDir.resolve("TargetsClass.java");
+        Files.writeString(targetsFile, "public class TargetsClass {}");
+
+        assertTrue(filter.test(targetsFile), "targets directory should not be excluded by /target/");
     }
 }

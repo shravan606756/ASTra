@@ -38,7 +38,7 @@ public class MemoryClassificationConfig {
 
     @PostConstruct
     public void validate() {
-        if (budgetFraction <= 0.0 || budgetFraction > 1.0) {
+        if (Double.isNaN(budgetFraction) || budgetFraction <= 0.0 || budgetFraction > 1.0) {
             throw new IllegalArgumentException(
                     "astra.indexing.memory.budget-fraction must be in (0, 1], got: " + budgetFraction);
         }

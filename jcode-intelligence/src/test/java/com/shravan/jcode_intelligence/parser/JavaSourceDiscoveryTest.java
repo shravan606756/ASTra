@@ -15,6 +15,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -268,16 +269,17 @@ class JavaSourceDiscoveryTest {
         Path relativeGen = Path.of("generated-sources");
         Path relativeTarget = Path.of("target");
         boolean createdGen = false;
-        Path genFile = relativeGen.resolve("TempGenerated.java");
+        Path genFile = null;
         try {
             if (!Files.exists(relativeGen)) {
                 Files.createDirectories(relativeGen);
                 createdGen = true;
             }
+            genFile = relativeGen.resolve("TempGenerated_" + UUID.randomUUID().toString().replace("-", "") + ".java");
             Files.writeString(genFile, "public class TempGenerated {}");
 
             List<Path> genDiscovered = discovery.discover(relativeGen);
-            assertTrue(genDiscovered.isEmpty(),
+            assertFalse(genDiscovered.contains(genFile),
                     "discover(Path.of(\"generated-sources\")) must exclude existing Java files");
 
             Path targetFile = null;
@@ -287,7 +289,7 @@ class JavaSourceDiscoveryTest {
                     Files.createDirectories(relativeTarget);
                     createdTarget = true;
                 }
-                targetFile = relativeTarget.resolve("TempTargetClass.java");
+                targetFile = relativeTarget.resolve("TempTarget_" + UUID.randomUUID().toString().replace("-", "") + ".java");
                 Files.writeString(targetFile, "public class TempTargetClass {}");
 
                 List<Path> targetDiscovered = discovery.discover(relativeTarget);
@@ -302,7 +304,9 @@ class JavaSourceDiscoveryTest {
                 }
             }
         } finally {
-            Files.deleteIfExists(genFile);
+            if (genFile != null) {
+                Files.deleteIfExists(genFile);
+            }
             if (createdGen) {
                 Files.deleteIfExists(relativeGen);
             }

@@ -40,6 +40,9 @@ public class IndexableJavaFileFilter implements Predicate<Path> {
             return false;
         }
         String normalized = path.toString().replace('\\', '/');
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
         if (normalized.contains("/target/")
                 || normalized.contains("/build/")
                 || normalized.contains("/.git/")

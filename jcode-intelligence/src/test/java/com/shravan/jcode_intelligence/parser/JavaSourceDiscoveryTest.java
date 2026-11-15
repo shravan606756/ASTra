@@ -11,6 +11,7 @@ import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -226,5 +227,85 @@ class JavaSourceDiscoveryTest {
         assertEquals(1, discovered.size(), "Symlink pointing to the same real file must be deduplicated");
         // Because "a_link/File.java" comes before "b_real/File.java" in lexical order, linkFile should be kept
         assertEquals(linkFile, discovered.get(0), "First path in lexical order must be retained");
+    }
+
+    @Test
+    @DisplayName("Hardlinks pointing to the same file are deduplicated by fileKey when available")
+    void testHardlinkDeduplication(@TempDir Path tempDir) throws IOException {
+        Path realDir = tempDir.resolve("b_real");
+        Files.createDirectories(realDir);
+        Path realFile = realDir.resolve("HardlinkTarget.java");
+        Files.writeString(realFile, "public class HardlinkTarget {}");
+
+        Path linkDir = tempDir.resolve("a_link");
+        Files.createDirectories(linkDir);
+        Path linkFile = linkDir.resolve("HardlinkTarget.java");
+
+        try {
+            Files.createLink(linkFile, realFile);
+        } catch (UnsupportedOperationException | FileSystemException | SecurityException e) {
+            Assumptions.assumeTrue(false, "Hardlinks not supported on this environment: " + e.getMessage());
+            return;
+        } catch (IOException e) {
+            Assumptions.assumeTrue(false, "Hardlink creation failed: " + e.getMessage());
+            return;
+        }
+
+        // Check if the underlying filesystem provides a distinct fileKey for hardlink identity
+        BasicFileAttributes attrs = Files.readAttributes(realFile, BasicFileAttributes.class);
+        Assumptions.assumeTrue(attrs.fileKey() != null,
+                "Filesystem-scoped file identity (fileKey) is not available on this environment/OS");
+
+        List<Path> discovered = discovery.discover(tempDir);
+
+        assertEquals(1, discovered.size(), "Hardlink pointing to the same file must be deduplicated");
+        assertEquals(linkFile, discovered.get(0), "First path in lexical order must be retained");
+    }
+
+    @Test
+    @DisplayName("discover(Path.of('generated-sources')) excludes an existing Java file while preserving target behavior")
+    void testDiscoverRelativeExcludedDirectoryRoot() throws IOException {
+        Path relativeGen = Path.of("generated-sources");
+        Path relativeTarget = Path.of("target");
+        boolean createdGen = false;
+        Path genFile = relativeGen.resolve("TempGenerated.java");
+        try {
+            if (!Files.exists(relativeGen)) {
+                Files.createDirectories(relativeGen);
+                createdGen = true;
+            }
+            Files.writeString(genFile, "public class TempGenerated {}");
+
+            List<Path> genDiscovered = discovery.discover(relativeGen);
+            assertTrue(genDiscovered.isEmpty(),
+                    "discover(Path.of(\"generated-sources\")) must exclude existing Java files");
+
+            Path targetFile = null;
+            boolean createdTarget = false;
+            try {
+                if (!Files.exists(relativeTarget)) {
+                    Files.createDirectories(relativeTarget);
+                    createdTarget = true;
+                }
+                targetFile = relativeTarget.resolve("TempTargetClass.java");
+                Files.writeString(targetFile, "public class TempTargetClass {}");
+
+                List<Path> targetDiscovered = discovery.discover(relativeTarget);
+                assertFalse(targetDiscovered.contains(targetFile),
+                        "discover(Path.of(\"target\")) must exclude target Java files");
+            } finally {
+                if (targetFile != null) {
+                    Files.deleteIfExists(targetFile);
+                }
+                if (createdTarget) {
+                    Files.deleteIfExists(relativeTarget);
+                }
+            }
+        } finally {
+            Files.deleteIfExists(genFile);
+            if (createdGen) {
+                Files.deleteIfExists(relativeGen);
+            }
+        }
     }
 }

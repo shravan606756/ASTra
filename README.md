@@ -337,9 +337,9 @@ The workload coefficient `bytes-per-loc = 600` was empirically calibrated using 
 | **Parsed Chunks Generated** | 27,170 chunks |
 | **JVM & Garbage Collector** | Java 21 (Oracle HotSpot / OpenJDK), Default G1 GC |
 | **Calibration Heap (`-Xmx`)** | `512m` (536,870,912 bytes; requires $\ge \text{need} / 0.4 \approx 231.3$ MB) |
-| **Baseline Live Heap (Post-GC)** | ~26.2 MB (27,485,760 bytes) |
-| **Peak Live Heap (Post-GC)** | ~100.2 MB (105,090,300 bytes) |
-| **Live Heap Delta ($\Delta$)** | ~74.0 MB (77,604,540 bytes) |
+| **Baseline Live Heap (Post-GC)** | ~26.2 MB (26,214,400 bytes) |
+| **Peak Live Heap (Post-GC)** | ~100.2 MB (100,230,400 bytes) |
+| **Live Heap Delta ($\Delta$)** | ~74.0 MB (74,016,000 bytes) |
 | **Raw Workload Coefficient** | 480 bytes/LOC ($\Delta / \text{LOC}$) |
 | **Safety Margin** | $\times 1.25$ (+25% buffer for AST variation) |
 | **Calibrated `bytes-per-loc`** | **600 bytes/LOC** ($480 \times 1.25$) |

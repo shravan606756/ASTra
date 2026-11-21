@@ -128,7 +128,24 @@ public class PackageSummaryGenerator {
     }
 
     /**
-     * Shared construction of package summary chunk content and metadata.
+     * Constructs a {@link CodeChunk} representing a package summary with budget protection and type census.
+     *
+     * <p><strong>Budget Guard &amp; Census Invariants:</strong>
+     * <ul>
+     *   <li>Enforces a 7,500 character budget limit on the generated type listing, leaving adequate headroom
+     *       for the package header, omitted type notification, and the Type Counts footer before the 8,000 char
+     *       {@link com.shravan.jcode_intelligence.parser.EmbeddingBudgetValidator} limit.</li>
+     *   <li>Preserves 100% of the aggregated {@code typeCounts} across all types in the package footer regardless
+     *       of whether individual element names had to be omitted.</li>
+     *   <li>Accurately computes and logs the exact number of omitted types ({@code totalTopLevelTypes - count})
+     *       when truncation occurs.</li>
+     * </ul>
+     *
+     * @param packageName        fully qualified Java package name
+     * @param totalTopLevelTypes total number of depth-0 top-level types encountered in this package
+     * @param topEntries         first entries (up to {@link #MAX_PACKAGE_TYPES}) in encounter order
+     * @param typeCounts         census map of type classification counts (e.g. CLASS: 5, INTERFACE: 2)
+     * @return constructed and validated PACKAGE CodeChunk
      */
     public static CodeChunk buildPackageSummaryChunk(
             String packageName,

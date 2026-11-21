@@ -69,6 +69,29 @@ import java.util.concurrent.atomic.AtomicReference;
  * has returned an error, because the queue and database layer currently lack
  * fencing tokens.</li>
  * </ul>
+ *
+ * <p>
+ * <strong>Architecture Guidelines for Future Agents &amp; Contributors:</strong>
+ * <ul>
+ * <li><strong>Non-Destructive Upserting:</strong> Issue #31 strictly mandates that streaming pipelines
+ * NEVER delete existing vector records. All writes are upserted via PostgreSQL {@code ON CONFLICT (id) DO UPDATE}
+ * using deterministic IDs. Do NOT introduce pre-indexing deletions or post-run sweeps in this pipeline without
+ * an explicit architectural review.</li>
+ * <li><strong>Dynamic Wave Pass Sizing:</strong> Chunk accumulation thresholds are calculated dynamically
+ * via {@link #computeDynamicPassBatchSize(int)}. On machines with large unallocated heaps, waves scale up
+ * to process tens of thousands of chunks per pass; on constrained environments (or tests with low bases),
+ * the configured {@code batchSize} floor is strictly preserved.</li>
+ * <li><strong>Real-Time Memory Relief Valve:</strong> {@link #shouldFlushOnMemoryPressure} evaluates
+ * unallocated heap after each parsed file. If free heap dips below {@code safetyHeadroomFraction} (default: 25%),
+ * any non-empty chunk buffer is flushed early to relieve heap pressure before an OOM can occur.</li>
+ * <li><strong>Bounded Worker Dispatching:</strong> Sub-batches passed to virtual thread workers are strictly capped
+ * by {@code Math.min(chunkingConfig.getBatchSize(), embeddingQueue.getCapacity())} to avoid queue overflow.</li>
+ * <li><strong>Permit Reclaim &amp; Persistence Deadlines:</strong> Worker permits must be reclaimed with a 15-minute
+ * timeout (preventing indefinite hangs), followed by {@code embeddingQueue.awaitJobCompletion(15 min)}.</li>
+ * <li><strong>Clean Producer Shutdown:</strong> On failure, the virtual-thread worker executor must be terminated
+ * via {@link #shutdownAndAwaitTermination} <em>before</em> {@code embeddingQueue.cleanupJob} is called,
+ * preventing in-flight or backoff retry threads from reviving state on a cleaned-up job.</li>
+ * </ul>
  */
 @Service
 public class StreamingIndexingService {
@@ -296,6 +319,25 @@ public class StreamingIndexingService {
         }
     }
 
+    /**
+     * Drains, converts, audits, partitions, and stages a chunk slice to {@link EmbeddingQueue}.
+     *
+     * <p>Sub-batches are bounded by {@code maxSubBatchSize} (capped by queue capacity) and dispatched
+     * onto virtual threads using a concurrency semaphore.
+     *
+     * @param slice                  the list of CodeChunks in this wave (cleared on completion)
+     * @param repoId                 repository identifier
+     * @param jobId                  job identifier
+     * @param maxSubBatchSize        maximum allowed documents per sub-batch (capped by queue capacity)
+     * @param semaphore              worker concurrency limiter
+     * @param executor               virtual thread task executor
+     * @param inFlightFutures        tracker for outstanding worker futures
+     * @param firstFailureRef        atomic holder for the first producer failure
+     * @param helper                 batch embedding helper with progressive retry
+     * @param totalSubmittedDocs     atomic counter tracking submitted documents
+     * @param totalBatchesDispatched atomic counter tracking dispatched sub-batches
+     * @param passNumber             1-based streaming pass index
+     */
     private void flushChunkSlice(
             List<CodeChunk> slice,
             String repoId,
@@ -431,6 +473,17 @@ public class StreamingIndexingService {
         return dynamicThreshold;
     }
 
+    /**
+     * Evaluates real-time JVM heap headroom against the safety relief valve threshold.
+     *
+     * <p>If real-time unallocated heap (free memory + unallocated heap up to max) drops below
+     * {@code safetyHeadroomFraction} of max heap, accumulation is immediately aborted and any
+     * non-empty buffer is flushed early to relieve memory pressure before an OutOfMemoryError occurs.
+     *
+     * @param chunkBuffer    the in-memory accumulated chunk buffer
+     * @param configuredBase the configured base batch size
+     * @return true if memory pressure requires an immediate emergency flush, false otherwise
+     */
     private boolean shouldFlushOnMemoryPressure(List<CodeChunk> chunkBuffer, int configuredBase) {
         if (chunkBuffer == null || chunkBuffer.isEmpty()) {
             return false;

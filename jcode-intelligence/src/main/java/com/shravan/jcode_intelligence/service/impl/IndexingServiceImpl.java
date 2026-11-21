@@ -87,6 +87,10 @@ public class IndexingServiceImpl implements IndexingService {
     /**
      * Primary constructor with all dependencies including classification, queue persistence,
      * and optional streaming service.
+     *
+     * <p>The {@link StreamingIndexingService} dependency is marked {@link Nullable} so Spring
+     * treats it as optional and permits null arguments passed by delegating constructors (e.g.
+     * during unit testing or when streaming is disabled).
      */
     @Autowired
     public IndexingServiceImpl(
@@ -262,6 +266,14 @@ public class IndexingServiceImpl implements IndexingService {
         }
     }
 
+    /**
+     * Executes the whole-repository single-pass pipeline (NORMAL repositories or LARGE fallback).
+     *
+     * <p>Batches dispatched to {@link EmbeddingQueue} are strictly capped by {@code embeddingQueue.getCapacity()}
+     * to avoid queue overfill. On failure, worker threads are stopped via {@link #shutdownAndAwaitTermination}
+     * <em>before</em> {@code embeddingQueue.cleanupJob} is called to ensure no in-flight retry producers
+     * submit records to a cleaned-up job.
+     */
     private int executeExistingPipeline(Path rootPath, String safeRepoId, List<Path> eligibleFiles, long startTime) throws IOException {
         // [STEP 1] Parse repository source files into element chunks
         List<CodeChunk> elementChunks;

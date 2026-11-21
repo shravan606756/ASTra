@@ -40,12 +40,24 @@ public class BatchEmbeddingHelper {
 
     /**
      * Generates embeddings for a batch of documents with progressive retry on transient socket/connection errors,
-     * builds {@link EmbeddedRecord} instances with deterministic IDs, and stages them to the bounded embedding queue.
+     * validates vector completeness, builds {@link EmbeddedRecord} instances with deterministic IDs, and stages
+     * them to the bounded {@link EmbeddingQueue}.
+     *
+     * <p><strong>Validation &amp; Invariants:</strong>
+     * <ul>
+     *   <li>Ensures provider returns an embedding list matching the input text count 1:1. Any mismatch or null
+     *       response fails fast with an {@link IllegalStateException} before staging.</li>
+     *   <li>Rejects empty (0-length) or null embedding vectors to protect downstream pgvector persistence.</li>
+     *   <li>Computes deterministic record IDs formatted as {@code repo:chunkId:sha256(content)}, guaranteeing
+     *       idempotent persistence across re-indexing runs.</li>
+     * </ul>
      *
      * @param repositoryId repository identifier
      * @param jobId        job identifier
      * @param batch        list of documents to embed and stage
      * @return the list of embedded records staged to the queue
+     * @throws IllegalStateException if provider returns mismatched or empty embeddings
+     * @throws RuntimeException      if thread is interrupted while awaiting queue staging capacity
      */
     public List<EmbeddedRecord> embedAndStage(String repositoryId, String jobId, List<Document> batch) {
         if (batch == null || batch.isEmpty()) {
@@ -98,10 +110,16 @@ public class BatchEmbeddingHelper {
     /**
      * Executes embedding generation with progressive retry and exponential backoff on transient socket/model errors.
      *
+     * <p>Handles transient OS socket pool exhaustion (such as Windows Socket error 10055 {@code WSAENOBUFS / bind failed})
+     * by backing off progressively (starting at {@code initialBackoffMs} and doubling up to 30 seconds), allowing the
+     * operating system kernel time to recycle sockets sitting in {@code TIME_WAIT}. Non-retryable errors (e.g. invalid
+     * token lengths, authentication rejections) fail immediately on attempt 1.
+     *
      * @param texts        batch of text strings to embed
      * @param repositoryId repository identifier for diagnostic logging
      * @param jobId        job identifier for diagnostic logging
      * @return generated embedding vector array list
+     * @throws RuntimeException if retries are exhausted or a non-retryable error occurs
      */
     public List<float[]> embedWithRetry(List<String> texts, String repositoryId, String jobId) {
         long backoff = initialBackoffMs;
@@ -135,7 +153,19 @@ public class BatchEmbeddingHelper {
     }
 
     /**
-     * Determines whether an error is a transient socket exhaustion, port binding, rate limit, or network blip.
+     * Determines whether an error represents transient socket exhaustion, port binding failure, rate limit, or network blip.
+     *
+     * <p>Recognizes:
+     * <ul>
+     *   <li>Windows/Unix socket bind failures and buffer exhaustion ({@code bind: An operation on a socket...},
+     *       {@code buffer space}, {@code queue was full}, {@code WSAENOBUFS}).</li>
+     *   <li>Connection timeouts, connection resets, and temporary refusal ({@code Connection refused},
+     *       {@code dial tcp}, {@code timeout}).</li>
+     *   <li>Provider HTTP rate limits and gateway blips ({@code 429 Too Many Requests}, {@code 503 Service Unavailable}).</li>
+     * </ul>
+     *
+     * @param t throwable to inspect
+     * @return true if error is considered transient and safe to retry with backoff
      */
     public static boolean isTransientSocketOrModelError(Throwable t) {
         if (t == null) {

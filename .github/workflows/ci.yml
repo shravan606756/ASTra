@@ -40,7 +40,9 @@ jobs:
         shell: bash
         working-directory: ./jcode-intelligence
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
+          if command -v mvn >/dev/null 2>&1; then
+            mvn -B clean verify
+          elif [ "$RUNNER_OS" == "Windows" ]; then
             ./mvnw.cmd -B clean verify
           else
             chmod +x ./mvnw

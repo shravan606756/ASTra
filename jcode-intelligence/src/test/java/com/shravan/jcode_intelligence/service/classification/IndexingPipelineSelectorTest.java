@@ -33,7 +33,7 @@ public class IndexingPipelineSelectorTest {
     }
 
     @Test
-    public void testSelectLargeClassificationFallsBackToExisting() {
+    public void testSelectLargeClassificationSelectsStreamingWithoutFallback() {
         RepositoryClassificationResult result = new RepositoryClassificationResult(
                 RepositoryClass.LARGE,
                 50000L,
@@ -48,10 +48,9 @@ public class IndexingPipelineSelectorTest {
         PipelineSelection selection = selector.select(result, "large-repo");
 
         assertEquals(IndexingPipeline.STREAMING, selection.requestedPipeline());
-        assertEquals(IndexingPipeline.EXISTING, selection.selectedPipeline());
-        assertTrue(selection.fallback());
-        assertNotNull(selection.fallbackReason());
-        assertTrue(selection.fallbackReason().contains("#31"));
+        assertEquals(IndexingPipeline.STREAMING, selection.selectedPipeline());
+        assertFalse(selection.fallback());
+        assertNull(selection.fallbackReason());
     }
 
     @Test
@@ -66,8 +65,9 @@ public class IndexingPipelineSelectorTest {
                 RepositoryClass.LARGE, 10000L, 1, List.of(), 1000L, 400L, 2000L, false);
         PipelineSelection largeSel = selector.select(large);
         assertEquals(IndexingPipeline.STREAMING, largeSel.requestedPipeline());
-        assertEquals(IndexingPipeline.EXISTING, largeSel.selectedPipeline());
-        assertTrue(largeSel.fallback());
+        assertEquals(IndexingPipeline.STREAMING, largeSel.selectedPipeline());
+        assertFalse(largeSel.fallback());
+        assertNull(largeSel.fallbackReason());
     }
 
     @Test

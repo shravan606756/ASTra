@@ -1113,5 +1113,61 @@ mvn test -Dtest=JavaParserMemoryCalibrationTest \
 #### 4. Scope and Recalibration Notice
 The calibrated value `bytes-per-loc = 600` is derived from a single data point (JavaParser). While the 25% safety margin and conservative 0.4 budget fraction accommodate typical Java codebases, memory consumption per LOC can vary depending on code characteristics (such as exceptionally large method bodies, dense annotations, or deeply nested generics). Recalibration is recommended as more repositories are analyzed. Operators can adjust `astra.indexing.memory.bytes-per-loc` or configure `astra.indexing.loc.normal-threshold` as needed.
 
+---
+
+## 17. Large-Repository Streaming Indexing Pipeline (Issue #31)
+
+### 17.1. Architecture & Mechanics
+To prevent JVM `OutOfMemoryError` on monolithic codebases where holding all CompilationUnits and ASTs simultaneously exceeds available heap headroom, ASTra provides the `STREAMING` pipeline executed by `StreamingIndexingService`:
+1. **Incremental AST Ingestion:** Iterates through pre-discovered `eligibleFiles()` in lexical order, parsing each file individually via `parser.parse(List.of(file))` without invoking root-based traversals.
+2. **Incremental Accumulators:**
+   - `PackageSummaryGenerator.Accumulator`: Incrementally tracks distinct non-blank packages, qualifying top-level types (nesting depth 0), per-type counts, and the first 100 type entries in encounter order. Packages without qualifying top-level types are retained.
+   - `IndexingStatisticsAccumulator`: Incrementally computes indexing metrics, tracking distinct non-blank packages, elemental types, total chunks (including package summaries), and largest class/method with strict tie handling (`>` comparison keeping earlier encounter).
+3. **Threshold-Sized Slice Draining & Dynamic Heap Adaptation:**
+   - Chunks are buffered in memory until the buffer reaches the wave threshold computed by `computeDynamicPassBatchSize()`.
+   - On low-memory environments or unit tests (`configuredBase < 500`), the configured floor `astra.indexing.large-repo.batch-size` (default: 2,000) is strictly respected.
+   - On capable hardware with abundant RAM, the pass threshold expands dynamically based on real-time unallocated heap and `budget-fraction` (e.g. 20,000–40,000+ chunks on a 3GB+ heap), minimizing wave count while maintaining bounded heap bounds.
+   - **Real-Time Safety Relief Valve:** Sized via `astra.indexing.large-repo.safety-headroom-fraction` (default 0.25). Evaluated after each parsed file: if real-time unallocated heap drops below 25% of max heap, accumulation is immediately aborted and any non-empty buffer is flushed early to relieve memory pressure regardless of buffer size.
+4. **Sub-Batch Partitioning Capped by Queue Capacity:** Documents in each drained slice are partitioned into copied sub-batches capped by `Math.min(chunkingConfig.getBatchSize(), embeddingQueue.getCapacity())`. This guarantees that an oversized batch is never dispatched to `EmbeddingQueue.submitAll()`.
+5. **Semaphore Backpressure & Virtual-Thread Workers with Progressive Retry:** Concurrency is bounded by `chunkingConfig.getMaxParallelWorkers()` permits. Pre-submission permit acquisition and queue capacity backpressure prevent producer heap inflation. Tasks run on virtual threads using `BatchEmbeddingHelper`, which includes progressive exponential retry (up to 5 attempts) to recover from transient Windows socket buffer exhaustion (`WSAENOBUFS / bind failed`) and Ollama connection blips.
+6. **Package Summaries & Final Partial Flush:** After all files are parsed, package summaries are generated from the accumulator, added to the buffer, and the remaining partial slice is flushed.
+7. **Permit Reclamation & Completion:** Reclaims all worker permits, verifies zero in-flight failures, completes the job, awaits persistence with a 15-minute timeout, saves diagnostic statistics, and returns the total submitted document count.
+
+### 17.2. Write Fencing & Persistence Semantics
+- **No Vector Deletions:** Unlike the whole-repository single-pass pipeline (which issues `DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?`), the streaming pipeline never deletes vectors before indexing. Matching deterministic chunk IDs are upserted via PostgreSQL `ON CONFLICT (id) DO UPDATE`.
+- **Stale Rows:** When files, classes, or methods are deleted or renamed in the repository, previous vector rows remain in PostgreSQL unless pruned out-of-band.
+- **In-Flight Writes on Failure (No Write Fencing):** If a streaming indexing failure occurs after batches have been admitted to `EmbeddingQueue`, in-flight persistence transactions in `PgVectorBulkWriter` can finish committing to PostgreSQL after the failure is recorded and the indexing call returns an error. The queue and persistence layers currently do not implement fencing tokens.
+
+### 17.3. OS-Level Socket & TCP Port Tuning for Monolithic Workloads
+When indexing monolithic repositories (e.g., Spring Framework generating ~134,871 chunks across 1,349 sub-batches), parallel virtual-thread workers continuously make HTTP requests to Ollama and PostgreSQL JDBC connections. By default, operating systems place closed sockets in a `TIME_WAIT` state to ensure out-of-order packets drain safely:
+- On Windows, the default `TcpTimedWaitDelay` is **240 seconds (4 minutes)** with ~16,384 dynamic ports. Under heavy load, rapid socket turnover can exhaust the pool, triggering Windows Socket error 10055 (`WSAENOBUFS: bind failed - operation on a socket could not be performed because the system lacked sufficient buffer space or because a queue was full`).
+- While ASTra's `BatchEmbeddingHelper` implements progressive exponential retry to absorb temporary socket delays, configuring the operating system removes the bottleneck entirely.
+
+#### OS Optimization Commands:
+- **Windows (Administrator PowerShell):**
+  ```powershell
+  # Expand dynamic ephemeral TCP port range (from 16,384 to 64,510 ports)
+  netsh int ipv4 set dynamicport tcp start=1025 num=64510
+
+  # Reduce TIME_WAIT delay from 240 seconds down to 30 seconds
+  Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpTimedWaitDelay" -Type DWord -Value 30
+  ```
+- **Linux (root / sudo):**
+  ```bash
+  # Expand ephemeral port range & enable fast socket recycling
+  sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+  sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+  ulimit -n 65535
+  ```
+  *(To persist across reboots, add the `sysctl` settings to `/etc/sysctl.conf`, and add `* soft nofile 65535` and `* hard nofile 65535` to `/etc/security/limits.conf`)*
+- **macOS (Terminal):**
+  ```bash
+  # Expand ephemeral port range & reduce MSL
+  sudo sysctl -w net.inet.ip.portrange.first=1024
+  sudo sysctl -w net.inet.tcp.msl=15000
+  ulimit -n 65536
+  ```
+
+
 
 

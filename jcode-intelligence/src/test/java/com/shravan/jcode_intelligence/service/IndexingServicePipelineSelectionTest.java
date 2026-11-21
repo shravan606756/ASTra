@@ -10,11 +10,14 @@ import com.shravan.jcode_intelligence.parser.JavaProjectParser;
 import com.shravan.jcode_intelligence.parser.PackageSummaryGenerator;
 import com.shravan.jcode_intelligence.service.classification.*;
 import com.shravan.jcode_intelligence.service.impl.IndexingServiceImpl;
+import com.shravan.jcode_intelligence.service.streaming.StreamingIndexingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.io.IOException;
@@ -26,6 +29,8 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -44,8 +49,13 @@ public class IndexingServicePipelineSelectionTest {
     private RepositoryConcurrencyManager concurrencyManager;
     private RepositoryClassifier mockClassifier;
     private IndexingPipelineSelector mockSelector;
+    private StreamingIndexingService mockStreamingService;
+    private EmbeddingQueue mockQueue;
+    private ObjectProvider<EmbeddingModel> mockModelProvider;
+    private EmbeddingModel mockModel;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() throws IOException {
         mockParser = mock(JavaProjectParser.class);
         mockConverter = mock(DocumentConverter.class);
@@ -60,6 +70,19 @@ public class IndexingServicePipelineSelectionTest {
         concurrencyManager = new RepositoryConcurrencyManager();
         mockClassifier = mock(RepositoryClassifier.class);
         mockSelector = mock(IndexingPipelineSelector.class);
+        mockStreamingService = mock(StreamingIndexingService.class);
+        mockQueue = mock(EmbeddingQueue.class);
+        mockModelProvider = mock(ObjectProvider.class);
+        mockModel = mock(EmbeddingModel.class);
+        when(mockModel.embed(anyList())).thenAnswer(inv -> {
+            List<String> texts = inv.getArgument(0);
+            List<float[]> embeddings = new ArrayList<>();
+            for (int i = 0; i < texts.size(); i++) {
+                embeddings.add(new float[]{0.1f, 0.2f});
+            }
+            return embeddings;
+        });
+        when(mockModelProvider.getIfAvailable()).thenReturn(mockModel);
 
         when(mockSummaryGenerator.generatePackageSummaries(any())).thenReturn(List.of());
         when(mockConverter.convert(anyList())).thenAnswer(inv -> {
@@ -123,6 +146,7 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(2, indexedCount);
         verify(mockParser).parse(eligibleFiles);
         verify(mockParser, never()).parse(any(Path.class));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-normal"));
         verify(mockVectorStore).add(docs);
         assertFalse(concurrencyManager.isLocked("repo-normal"), "Lock must be released");
     }
@@ -166,7 +190,237 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(2, indexedCount);
         verify(mockParser).parse(eligibleFiles);
         verify(mockParser, never()).parse(any(Path.class));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-large"));
         assertFalse(concurrencyManager.isLocked("repo-large"), "Lock must be released");
+    }
+
+    @Test
+    @DisplayName("LARGE classification dispatches to STREAMING service when available")
+    void testLargeClassificationDispatchesToStreamingService() throws Exception {
+        List<Path> eligibleFiles = List.of(Path.of("src/Stream1.java"), Path.of("src/Stream2.java"));
+        RepositoryClassificationResult result = new RepositoryClassificationResult(
+                RepositoryClass.LARGE,
+                100_000L,
+                eligibleFiles.size(),
+                eligibleFiles,
+                100_000_000L,
+                40_000_000L,
+                60_000_000L,
+                false
+        );
+
+        when(mockClassifier.classify(any(Path.class))).thenReturn(result);
+        when(mockSelector.select(eq(result), eq("repo-streaming")))
+                .thenReturn(new PipelineSelection(IndexingPipeline.STREAMING, IndexingPipeline.STREAMING, false, null));
+        when(mockStreamingService.index(eq("repo-streaming"), eq(eligibleFiles))).thenReturn(50);
+
+        IndexingServiceImpl service = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, mockQueue, mockModelProvider,
+                mockClassifier, mockSelector, mockStreamingService
+        );
+
+        int indexedCount = service.indexProject(".", "repo-streaming");
+
+        assertEquals(50, indexedCount);
+        verify(mockStreamingService).index("repo-streaming", eligibleFiles);
+        verify(mockParser, never()).parse(anyList());
+        verify(mockParser, never()).parse(any(Path.class));
+        verify(mockJdbcTemplate, never()).update(anyString(), anyString());
+        verify(mockVectorStore, never()).add(anyList());
+        assertFalse(concurrencyManager.isLocked("repo-streaming"), "Lock must be released");
+    }
+
+    @Test
+    @DisplayName("LARGE classification with STREAMING selected falls back to EXISTING when streaming service unavailable")
+    void testLargeClassificationStreamingFallbackWhenUnavailable() throws Exception {
+        List<Path> eligibleFiles = List.of(Path.of("src/Stream1.java"));
+        RepositoryClassificationResult result = new RepositoryClassificationResult(
+                RepositoryClass.LARGE,
+                100_000L,
+                eligibleFiles.size(),
+                eligibleFiles,
+                100_000_000L,
+                40_000_000L,
+                60_000_000L,
+                false
+        );
+
+        when(mockClassifier.classify(any(Path.class))).thenReturn(result);
+        when(mockSelector.select(eq(result), eq("repo-streaming-fallback")))
+                .thenReturn(new PipelineSelection(IndexingPipeline.STREAMING, IndexingPipeline.STREAMING, false, null));
+
+        List<CodeChunk> chunks = List.of(createChunk("c1", "Stream1"));
+        when(mockParser.parse(eligibleFiles)).thenReturn(chunks);
+
+        // streamingIndexingService is null, so it falls back to EXISTING pipeline with eligibleFiles
+        IndexingServiceImpl service = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, mockQueue, mockModelProvider,
+                mockClassifier, mockSelector, null
+        );
+
+        int indexedCount = service.indexProject(".", "repo-streaming-fallback");
+
+        assertEquals(1, indexedCount);
+        verify(mockParser).parse(eligibleFiles);
+        verify(mockParser, never()).parse(any(Path.class));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-streaming-fallback"));
+        assertFalse(concurrencyManager.isLocked("repo-streaming-fallback"), "Lock must be released");
+    }
+
+    @Test
+    @DisplayName("LARGE classification with STREAMING selected falls back to EXISTING when queue is null")
+    void testLargeClassificationQueueUnavailableFallsBackToExisting() throws Exception {
+        List<Path> eligibleFiles = List.of(Path.of("src/StreamQueue.java"));
+        RepositoryClassificationResult result = new RepositoryClassificationResult(
+                RepositoryClass.LARGE,
+                100_000L,
+                eligibleFiles.size(),
+                eligibleFiles,
+                100_000_000L,
+                40_000_000L,
+                60_000_000L,
+                false
+        );
+
+        when(mockClassifier.classify(any(Path.class))).thenReturn(result);
+        when(mockSelector.select(eq(result), eq("repo-queue-fallback")))
+                .thenReturn(new PipelineSelection(IndexingPipeline.STREAMING, IndexingPipeline.STREAMING, false, null));
+
+        List<CodeChunk> chunks = List.of(createChunk("c1", "StreamQueue"));
+        when(mockParser.parse(eligibleFiles)).thenReturn(chunks);
+
+        IndexingServiceImpl service = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, null, mockModelProvider,
+                mockClassifier, mockSelector, mockStreamingService
+        );
+
+        int indexedCount = service.indexProject(".", "repo-queue-fallback");
+
+        assertEquals(1, indexedCount);
+        verify(mockStreamingService, never()).index(anyString(), anyList());
+        verify(mockParser).parse(eligibleFiles);
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-queue-fallback"));
+        assertFalse(concurrencyManager.isLocked("repo-queue-fallback"), "Lock must be released");
+    }
+
+    @Test
+    @DisplayName("LARGE classification with STREAMING selected falls back to EXISTING when model is null")
+    @SuppressWarnings("unchecked")
+    void testLargeClassificationModelUnavailableFallsBackToExisting() throws Exception {
+        List<Path> eligibleFiles = List.of(Path.of("src/StreamModel.java"));
+        RepositoryClassificationResult result = new RepositoryClassificationResult(
+                RepositoryClass.LARGE,
+                100_000L,
+                eligibleFiles.size(),
+                eligibleFiles,
+                100_000_000L,
+                40_000_000L,
+                60_000_000L,
+                false
+        );
+
+        when(mockClassifier.classify(any(Path.class))).thenReturn(result);
+        when(mockSelector.select(eq(result), eq("repo-model-fallback")))
+                .thenReturn(new PipelineSelection(IndexingPipeline.STREAMING, IndexingPipeline.STREAMING, false, null));
+
+        ObjectProvider<EmbeddingModel> emptyModelProvider = mock(ObjectProvider.class);
+        when(emptyModelProvider.getIfAvailable()).thenReturn(null);
+
+        List<CodeChunk> chunks = List.of(createChunk("c1", "StreamModel"));
+        when(mockParser.parse(eligibleFiles)).thenReturn(chunks);
+
+        IndexingServiceImpl service = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, mockQueue, emptyModelProvider,
+                mockClassifier, mockSelector, mockStreamingService
+        );
+
+        int indexedCount = service.indexProject(".", "repo-model-fallback");
+
+        assertEquals(1, indexedCount);
+        verify(mockStreamingService, never()).index(anyString(), anyList());
+        verify(mockParser).parse(eligibleFiles);
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-model-fallback"));
+        assertFalse(concurrencyManager.isLocked("repo-model-fallback"), "Lock must be released");
+    }
+
+    @Test
+    @DisplayName("Lock is released after streaming pipeline IOException failure")
+    void testLockReleasedAfterStreamingIOExceptionFailure() throws Exception {
+        List<Path> eligibleFiles = List.of(Path.of("src/StreamFail.java"));
+        RepositoryClassificationResult result = new RepositoryClassificationResult(
+                RepositoryClass.LARGE,
+                100_000L,
+                eligibleFiles.size(),
+                eligibleFiles,
+                100_000_000L,
+                40_000_000L,
+                60_000_000L,
+                false
+        );
+
+        when(mockClassifier.classify(any(Path.class))).thenReturn(result);
+        when(mockSelector.select(eq(result), eq("repo-stream-ioe")))
+                .thenReturn(new PipelineSelection(IndexingPipeline.STREAMING, IndexingPipeline.STREAMING, false, null));
+        when(mockStreamingService.index(eq("repo-stream-ioe"), eq(eligibleFiles)))
+                .thenThrow(new IOException("Streaming disk fault"));
+
+        IndexingServiceImpl service = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, mockQueue, mockModelProvider,
+                mockClassifier, mockSelector, mockStreamingService
+        );
+
+        IOException ex = assertThrows(IOException.class, () -> service.indexProject(".", "repo-stream-ioe"));
+        assertEquals("Streaming disk fault", ex.getMessage());
+        assertFalse(concurrencyManager.isLocked("repo-stream-ioe"), "Lock must be released on failure");
+    }
+
+    @Test
+    @DisplayName("Lock is released after streaming pipeline RuntimeException failure")
+    void testLockReleasedAfterStreamingRuntimeExceptionFailure() throws Exception {
+        List<Path> eligibleFiles = List.of(Path.of("src/StreamFailRuntime.java"));
+        RepositoryClassificationResult result = new RepositoryClassificationResult(
+                RepositoryClass.LARGE,
+                100_000L,
+                eligibleFiles.size(),
+                eligibleFiles,
+                100_000_000L,
+                40_000_000L,
+                60_000_000L,
+                false
+        );
+
+        when(mockClassifier.classify(any(Path.class))).thenReturn(result);
+        when(mockSelector.select(eq(result), eq("repo-stream-re")))
+                .thenReturn(new PipelineSelection(IndexingPipeline.STREAMING, IndexingPipeline.STREAMING, false, null));
+        when(mockStreamingService.index(eq("repo-stream-re"), eq(eligibleFiles)))
+                .thenThrow(new RuntimeException("Queue buffer overflow"));
+
+        IndexingServiceImpl service = new IndexingServiceImpl(
+                mockParser, mockConverter, mockVectorStore, mockGitService,
+                mockJdbcTemplate, mockSummaryGenerator, mockStatsCalculator,
+                mockBudgetValidator, chunkingConfig, mockRepoMgmtService,
+                concurrencyManager, mockQueue, mockModelProvider,
+                mockClassifier, mockSelector, mockStreamingService
+        );
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> service.indexProject(".", "repo-stream-re"));
+        assertEquals("Queue buffer overflow", ex.getMessage());
+        assertFalse(concurrencyManager.isLocked("repo-stream-re"), "Lock must be released on failure");
     }
 
     @Test

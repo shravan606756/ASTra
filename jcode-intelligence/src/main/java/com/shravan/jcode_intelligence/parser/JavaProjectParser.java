@@ -61,17 +61,49 @@ public class JavaProjectParser {
         return units;
     }
 
+    /**
+     * Discovers and parses all Java source files under the given project root into {@link CodeChunk}s.
+     *
+     * @param projectRoot directory root of the project
+     * @return list of parsed CodeChunks across all successfully visited files
+     * @throws IOException if source discovery or directory scanning fails
+     */
     public List<CodeChunk> parse(Path projectRoot) throws IOException {
         List<Path> files = discovery.discover(projectRoot);
         return parse(files);
     }
 
+    /**
+     * Parses the specified list of Java source files into {@link CodeChunk}s with per-file error isolation.
+     *
+     * <p><strong>Error Isolation Guarantees:</strong>
+     * Each file's AST is visited into an isolated temporary chunk list. Chunks are added to the returned
+     * list only if parsing and AST visitation for that file complete successfully without exceptions.
+     * A parse or visitor failure in an individual file logs an error and skips that file entirely without
+     * leaving partial or corrupt chunks in the result.
+     *
+     * @param files list of Java source file paths to parse
+     * @return list of parsed CodeChunks for all valid files
+     */
     public List<CodeChunk> parse(List<Path> files) {
-        List<CompilationUnit> units = parseCompilationUnits(files);
         List<CodeChunk> chunks = new ArrayList<>();
+        if (files == null) {
+            return chunks;
+        }
 
-        for (CompilationUnit unit : units) {
-            visitor.visit(unit, chunks);
+        for (Path path : files) {
+            try {
+                ParseResult<CompilationUnit> result = javaParser.parse(path);
+                if (result.isSuccessful() && result.getResult().isPresent()) {
+                    List<CodeChunk> fileChunks = new ArrayList<>();
+                    visitor.visit(result.getResult().get(), fileChunks);
+                    chunks.addAll(fileChunks);
+                } else {
+                    log.error("Failed to parse file: {} | Problems: {}", path, result.getProblems());
+                }
+            } catch (Exception e) {
+                log.error("Exception parsing file: {}", path, e);
+            }
         }
 
         return chunks;

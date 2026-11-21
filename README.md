@@ -303,17 +303,20 @@ Same repository, same bytes-per-loc:
 
 ### Pipeline Routing & Fallback
 - **NORMAL Execution**: Passes the pre-discovered, deduplicated file list directly to `JavaProjectParser.parse(List<Path>)`, eliminating redundant filesystem traversals.
-- **LARGE Fallback (Pre-#31)**: Until the streaming indexing pipeline (Issue #31) is merged, the dedicated `IndexingPipelineSelector` safely routes `LARGE` repositories to the existing pipeline while logging a prominent `WARN` naming the repository and reason.
+- **LARGE Routing**: Repositories classified as `LARGE` are routed to the `STREAMING` pipeline (`StreamingIndexingService`) when streaming components, queue, and model are available. Otherwise, a warning is logged and execution safely falls back to the existing list parsing pipeline.
 - **Classification Failure Fallback**: If file discovery or LOC calculation fails (e.g. filesystem permission or I/O error), ASTra logs a `WARN` with the repository ID and stack trace, selects the existing pipeline with fallback reason `"classification failed"`, and delegates to `parser.parse(root)`. If fallback parsing also fails, the exception propagates cleanly, releasing the repository lock and cleaning up temporary git clones.
+- **Streaming Write Fencing & Persistence Semantics**: The streaming pipeline does not delete vectors prior to indexing; matching deterministic chunk IDs are upserted (`ON CONFLICT (id) DO UPDATE`), leaving stale rows if files or classes are removed. In-flight JDBC persistence writes may complete after failure because write fencing tokens are not implemented.
 
 ### Configuration Properties
-Configured in `application.properties` (or environment variables) via `MemoryClassificationConfig`:
+Configured in `application.properties` (or environment variables) via `MemoryClassificationConfig` and `LargeRepoIndexingConfig`:
 
 | Property | Default | Description |
 |---|---|---|
 | `astra.indexing.memory.budget-fraction` | `0.4` | Share of `maxMemory()` allocated for retaining ASTs and chunk objects in heap (range: `(0, 1]`). Remaining 60% is reserved for embedding buffers, DB batching, and GC headroom. |
 | `astra.indexing.memory.bytes-per-loc` | `600` | Calibrated memory workload coefficient (bytes of live heap per line of code). Must be positive. |
 | `astra.indexing.loc.normal-threshold` | `null` | Optional manual LOC threshold override. If set (`>= 0`), repositories with `totalLoc <= threshold` are classified `NORMAL` (`overrideUsed = true`). |
+| `astra.indexing.large-repo.batch-size` | `2000` | Chunk batch size floor per streaming wave in the LARGE repository streaming pipeline. Scope: LARGE streaming pipeline only (no effect on NORMAL repositories). When running, the pipeline dynamically scales the wave threshold upward based on real-time available JVM heap and `budget-fraction` (e.g. 20,000–40,000+ chunks on 3GB+ heap). |
+| `astra.indexing.large-repo.safety-headroom-fraction` | `0.25` | Real-time safety relief valve headroom fraction of max heap below which an early pass flush is triggered (default: 0.25, i.e. 25% safety reserve). Protects against sudden allocation spikes. |
 
 ### Shared Discovery & Directory Exclusions
 Source file discovery (`JavaSourceDiscovery`) and file eligibility filtering (`IndexableJavaFileFilter`) are unified to ensure the LOC count exactly matches the parsed file set. Deduplication is performed by `toRealPath()` to prevent duplicate parsing from symlinks or hardlinks.
@@ -351,6 +354,73 @@ mvn test -Dtest=JavaParserMemoryCalibrationTest -Dastra.calibration.javaparser.p
 
 > [!NOTE]
 > **Single Reference Point & Recalibration:** This calibration represents a single verified reference codebase (JavaParser). While conservative (combining a 40% budget fraction with a 25% safety margin), memory density per LOC can fluctuate based on AST depth, method length, and generic complexity. The coefficient should be recalibrated as more diverse codebases are benchmarked, or adjusted via `astra.indexing.memory.bytes-per-loc` / `astra.indexing.loc.normal-threshold`.
+
+### LARGE Streaming Pipeline Memory Calibration & Telemetry
+For repositories classified as `LARGE` (or to empirically validate peak live-heap memory behavior under streaming chunk accumulation), an opt-in benchmark harness (`LargeRepoStreamingMemoryCalibrationTest`) evaluates streaming memory consumption under constrained heap limits:
+
+| Calibration Parameter | Measured / Configured Value |
+|---|---|
+| **Benchmark Harness** | `LargeRepoStreamingMemoryCalibrationTest` |
+| **Activation Property** | `-Dastra.calibration.large-repo.path=/path/to/repo` |
+| **Streaming Batch Size (`astra.indexing.large-repo.batch-size`)** | 2,000 chunks (configurable threshold slice) |
+| **Queue Capacity & Backpressure** | Bounded in-process `EmbeddingQueue` with counting persistence drainer |
+| **Recommended Heap Limit (`-Xmx`)** | `512m` (e.g. `-Xmx512m -Xlog:gc*`) |
+| **Observed Memory Footprint** | Bounded live heap ($\le$ baseline + threshold slice memory + largest single-file chunks) |
+
+**Exact Calibration Command:**
+```bash
+mvn test -Dtest=LargeRepoStreamingMemoryCalibrationTest \
+  -Dastra.calibration.large-repo.path=/path/to/repo \
+  -DargLine="-Xmx512m -Xlog:gc*"
+```
+
+> [!TIP]
+> **Constrained Heap Streaming:** Because the STREAMING pipeline flushes and releases references every 2,000 chunks (bounded by threshold plus the largest single file's chunk count), peak live heap remains constrained regardless of overall repository LOC. This enables large repositories to be indexed safely within modest JVM heap envelopes.
+
+### Operating System Socket & TCP Port Tuning (Massive Repositories)
+When indexing massive repositories (50,000–150,000+ chunks, e.g. Spring Framework), parallel virtual thread workers continuously dispatch HTTP requests to local Ollama and JDBC transactions to PostgreSQL. On high-volume runs, default operating system TCP socket settings may exhaust available ephemeral ports, resulting in `WSAENOBUFS (10055)` or `bind: address already in use` errors while closed connections sit in `TIME_WAIT`.
+
+While ASTra includes built-in progressive exponential retries in `BatchEmbeddingHelper` to transparently absorb transient port recycling blips, applying the following OS-level tuning ensures maximum throughput without connection bottlenecks:
+
+#### Windows (Run in Administrator PowerShell)
+```powershell
+# 1. Expand dynamic ephemeral TCP port range (from 16,384 to 64,510 ports)
+netsh int ipv4 set dynamicport tcp start=1025 num=64510
+
+# 2. Reduce TIME_WAIT socket delay from 240 seconds down to 30 seconds
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpTimedWaitDelay" -Type DWord -Value 30
+
+# Verify the updated settings:
+netsh int ipv4 show dynamicport tcp
+Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpTimedWaitDelay"
+```
+
+#### Linux (Run with sudo)
+```bash
+# 1. Expand dynamic ephemeral port range
+sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+
+# 2. Enable fast reuse of TIME_WAIT sockets for outgoing connections
+sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+
+# 3. Increase file descriptor limits for active sockets
+ulimit -n 65535
+```
+*(To persist across reboots, append the `sysctl` settings to `/etc/sysctl.conf`, and add `* soft nofile 65535` and `* hard nofile 65535` to `/etc/security/limits.conf`)*
+
+#### macOS (Run in Terminal)
+```bash
+# 1. Expand ephemeral port range
+sudo sysctl -w net.inet.ip.portrange.first=1024
+sudo sysctl -w net.inet.ip.portrange.hifirst=1024
+
+# 2. Reduce TCP Maximum Segment Lifetime (TIME_WAIT) to 15-30 seconds
+sudo sysctl -w net.inet.tcp.msl=15000
+
+# 3. Increase maximum open file descriptors
+sudo launchctl limit maxfiles 65536 65536
+ulimit -n 65536
+```
 
 ---
 

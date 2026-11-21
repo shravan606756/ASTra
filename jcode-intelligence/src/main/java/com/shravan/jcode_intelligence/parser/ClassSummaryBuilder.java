@@ -56,6 +56,8 @@ public class ClassSummaryBuilder implements TypeSummaryBuilder {
 
         sb.append("}\n");
 
+        ensureWithinDocumentBudget(sb);
+
         return sb.toString();
     }
 
@@ -107,13 +109,14 @@ public class ClassSummaryBuilder implements TypeSummaryBuilder {
 
         sb.append("}\n");
 
+        ensureWithinDocumentBudget(sb);
+
         return sb.toString();
     }
 
     @Override
     public String buildRecordSummary(RecordDeclaration declaration,
                                      CompilationUnit cu) {
-
         StringBuilder sb = new StringBuilder();
 
         appendPackage(sb, cu);
@@ -145,6 +148,8 @@ public class ClassSummaryBuilder implements TypeSummaryBuilder {
         appendMethodsFromMembers(sb, declaration);
 
         sb.append("}\n");
+
+        ensureWithinDocumentBudget(sb);
 
         return sb.toString();
     }
@@ -288,9 +293,10 @@ public class ClassSummaryBuilder implements TypeSummaryBuilder {
         if (!methods.isEmpty()) {
             sb.append("\n    // Methods\n");
             int maxMethods = Math.min(40, budgetEstimator.getMaxSummaryMethods());
+            int maxBudget = budgetEstimator.getMaxDocumentBudget();
             int count = 0;
             for (MethodDeclaration method : methods) {
-                if (count >= maxMethods) {
+                if (count >= maxMethods || sb.length() >= maxBudget - 400) {
                     sb.append(String.format("    // ... %d additional method signatures omitted from class summary\n",
                             methods.size() - count));
                     break;
@@ -378,9 +384,10 @@ public class ClassSummaryBuilder implements TypeSummaryBuilder {
         if (!methods.isEmpty()) {
             sb.append("\n    // Methods\n");
             int maxMethods = Math.min(40, budgetEstimator.getMaxSummaryMethods());
+            int maxBudget = budgetEstimator.getMaxDocumentBudget();
             int count = 0;
             for (MethodDeclaration method : methods) {
-                if (count >= maxMethods) {
+                if (count >= maxMethods || sb.length() >= maxBudget - 400) {
                     sb.append(String.format("    // ... %d additional method signatures omitted\n", methods.size() - count));
                     break;
                 }
@@ -388,6 +395,16 @@ public class ClassSummaryBuilder implements TypeSummaryBuilder {
                 sb.append("\n");
                 count++;
             }
+        }
+    }
+
+    private void ensureWithinDocumentBudget(StringBuilder sb) {
+        int maxDocBudget = budgetEstimator.getMaxDocumentBudget();
+        if (sb.length() > maxDocBudget) {
+            String suffix = "\n    // ... remaining declarations omitted to respect document character budget\n}\n";
+            int keepLen = Math.max(0, maxDocBudget - suffix.length());
+            sb.setLength(keepLen);
+            sb.append(suffix);
         }
     }
 }

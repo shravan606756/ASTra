@@ -38,16 +38,17 @@ public class IndexingPipelineSelector {
         String repoId = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "unknown";
 
         if (result.classification() == RepositoryClass.NORMAL) {
+            log.info("Repository '{}' classified as NORMAL repo (LOC={}); selecting EXISTING one-pass pipeline", repoId, result.totalLoc());
             return new PipelineSelection(IndexingPipeline.EXISTING, IndexingPipeline.EXISTING, false, null);
         }
 
-        // RepositoryClass.LARGE: requests STREAMING, but falls back to EXISTING until #31 is merged
-        log.warn("Repository '{}' is classified as LARGE (requested STREAMING pipeline), but streaming pipeline (#31) is not yet available; falling back to existing pipeline", repoId);
+        // RepositoryClass.LARGE: selects STREAMING without fallback
+        log.info("Repository '{}' classified as LARGE repo (LOC={}); selecting STREAMING pipeline", repoId, result.totalLoc());
         return new PipelineSelection(
                 IndexingPipeline.STREAMING,
-                IndexingPipeline.EXISTING,
-                true,
-                "streaming pipeline (#31) is not yet available; falling back to existing pipeline"
+                IndexingPipeline.STREAMING,
+                false,
+                null
         );
     }
 

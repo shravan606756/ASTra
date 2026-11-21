@@ -29,6 +29,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -73,6 +74,14 @@ public class IndexingServicePipelineSelectionTest {
         mockQueue = mock(EmbeddingQueue.class);
         mockModelProvider = mock(ObjectProvider.class);
         mockModel = mock(EmbeddingModel.class);
+        when(mockModel.embed(anyList())).thenAnswer(inv -> {
+            List<String> texts = inv.getArgument(0);
+            List<float[]> embeddings = new ArrayList<>();
+            for (int i = 0; i < texts.size(); i++) {
+                embeddings.add(new float[]{0.1f, 0.2f});
+            }
+            return embeddings;
+        });
         when(mockModelProvider.getIfAvailable()).thenReturn(mockModel);
 
         when(mockSummaryGenerator.generatePackageSummaries(any())).thenReturn(List.of());
@@ -137,7 +146,7 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(2, indexedCount);
         verify(mockParser).parse(eligibleFiles);
         verify(mockParser, never()).parse(any(Path.class));
-        verify(mockJdbcTemplate).update(contains("DELETE FROM vector_store"), eq("repo-normal"));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-normal"));
         verify(mockVectorStore).add(docs);
         assertFalse(concurrencyManager.isLocked("repo-normal"), "Lock must be released");
     }
@@ -181,7 +190,7 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(2, indexedCount);
         verify(mockParser).parse(eligibleFiles);
         verify(mockParser, never()).parse(any(Path.class));
-        verify(mockJdbcTemplate).update(contains("DELETE FROM vector_store"), eq("repo-large"));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-large"));
         assertFalse(concurrencyManager.isLocked("repo-large"), "Lock must be released");
     }
 
@@ -260,7 +269,7 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(1, indexedCount);
         verify(mockParser).parse(eligibleFiles);
         verify(mockParser, never()).parse(any(Path.class));
-        verify(mockJdbcTemplate).update(contains("DELETE FROM vector_store"), eq("repo-streaming-fallback"));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-streaming-fallback"));
         assertFalse(concurrencyManager.isLocked("repo-streaming-fallback"), "Lock must be released");
     }
 
@@ -299,7 +308,7 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(1, indexedCount);
         verify(mockStreamingService, never()).index(anyString(), anyList());
         verify(mockParser).parse(eligibleFiles);
-        verify(mockJdbcTemplate).update(contains("DELETE FROM vector_store"), eq("repo-queue-fallback"));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-queue-fallback"));
         assertFalse(concurrencyManager.isLocked("repo-queue-fallback"), "Lock must be released");
     }
 
@@ -342,7 +351,7 @@ public class IndexingServicePipelineSelectionTest {
         assertEquals(1, indexedCount);
         verify(mockStreamingService, never()).index(anyString(), anyList());
         verify(mockParser).parse(eligibleFiles);
-        verify(mockJdbcTemplate).update(contains("DELETE FROM vector_store"), eq("repo-model-fallback"));
+        verify(mockJdbcTemplate).update(argThat(sql -> sql != null && sql.contains("DELETE FROM vector_store") && sql.contains("metadata->>'repositoryId'")), eq("repo-model-fallback"));
         assertFalse(concurrencyManager.isLocked("repo-model-fallback"), "Lock must be released");
     }
 

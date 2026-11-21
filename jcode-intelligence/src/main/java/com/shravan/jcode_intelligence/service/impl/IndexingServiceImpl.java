@@ -28,6 +28,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -104,7 +105,7 @@ public class IndexingServiceImpl implements IndexingService {
             @Autowired(required = false) ObjectProvider<EmbeddingModel> embeddingModelProvider,
             @Autowired(required = false) RepositoryClassifier classifier,
             @Autowired(required = false) IndexingPipelineSelector selector,
-            @Autowired(required = false) StreamingIndexingService streamingIndexingService
+            @Nullable StreamingIndexingService streamingIndexingService
     ) {
         this.parser = parser;
         this.converter = converter;
@@ -303,7 +304,9 @@ public class IndexingServiceImpl implements IndexingService {
 
         // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
         int totalDocs = documents.size();
-        int batchSize = Math.max(1, chunkingConfig.getBatchSize());
+        int configuredBatchSize = Math.max(1, chunkingConfig.getBatchSize());
+        int queueCapacity = (embeddingQueue != null) ? embeddingQueue.getCapacity() : Integer.MAX_VALUE;
+        int batchSize = Math.max(1, Math.min(configuredBatchSize, queueCapacity));
         int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
 
         int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
@@ -385,6 +388,7 @@ public class IndexingServiceImpl implements IndexingService {
                 embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
             } catch (Throwable t) {
                 embeddingQueue.failJob(jobId, t);
+                shutdownAndAwaitTermination(executor);
                 embeddingQueue.cleanupJob(jobId);
                 throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
             } finally {

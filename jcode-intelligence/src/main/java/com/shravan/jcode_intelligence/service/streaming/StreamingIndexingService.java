@@ -202,8 +202,8 @@ public class StreamingIndexingService {
                         chunkBuffer.subList(0, sliceSize).clear();
                         double percent = totalFiles > 0 ? (processedFiles * 100.0 / totalFiles) : 100.0;
                         log.info(
-                                "[STREAMING PASS {}] Accumulated {} chunk(s) (files parsed: {}/{} [{:.1f}%], buffer remaining: {}). Flushing pass {} to workers...",
-                                passCounter, slice.size(), processedFiles, totalFiles, percent, chunkBuffer.size(),
+                                "[STREAMING PASS {}] Accumulated {} chunk(s) (files parsed: {}/{} [{}], buffer remaining: {}). Flushing pass {} to workers...",
+                                passCounter, slice.size(), processedFiles, totalFiles, String.format("%.1f%%", percent), chunkBuffer.size(),
                                 passCounter);
                         flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                                 inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
@@ -236,9 +236,10 @@ public class StreamingIndexingService {
                         passCounter);
             }
 
-            // Reclaim all permits to ensure all in-flight worker tasks have finished
-            // execution
-            semaphore.acquire(configuredWorkers);
+            // Reclaim all permits to ensure all in-flight worker tasks have finished execution
+            if (!semaphore.tryAcquire(configuredWorkers, 15, TimeUnit.MINUTES)) {
+                throw new TimeoutException("Timed out after 15 minutes waiting for worker permits to be released");
+            }
             semaphore.release(configuredWorkers);
 
             // Await completion of any remaining in-flight future handles
@@ -424,15 +425,14 @@ public class StreamingIndexingService {
 
         double availMb = realTimeAvailableMemory / (1024.0 * 1024.0);
         double budgetMb = dynamicBudgetBytes / (1024.0 * 1024.0);
-        log.info("[STREAMING DYNAMIC HEAP SIZING] Real-time available heap: {:.1f} MB (budget: {:.0f}%, {:.1f} MB). Pass threshold dynamically sized to {} chunks (base floor: {})",
-                availMb, budgetFraction * 100.0, budgetMb, dynamicThreshold, configuredBase);
+        log.info("[STREAMING DYNAMIC HEAP SIZING] Real-time available heap: {} MB (budget: {}%, {} MB). Pass threshold dynamically sized to {} chunks (base floor: {})",
+                String.format("%.1f", availMb), String.format("%.0f", budgetFraction * 100.0), String.format("%.1f", budgetMb), dynamicThreshold, configuredBase);
 
         return dynamicThreshold;
     }
 
     private boolean shouldFlushOnMemoryPressure(List<CodeChunk> chunkBuffer, int configuredBase) {
-        int minFloor = Math.max(1, configuredBase);
-        if (chunkBuffer.size() < minFloor) {
+        if (chunkBuffer == null || chunkBuffer.isEmpty()) {
             return false;
         }
         Runtime runtime = Runtime.getRuntime();
@@ -441,8 +441,8 @@ public class StreamingIndexingService {
         double headroom = (largeRepoConfig != null) ? largeRepoConfig.getSafetyHeadroomFraction() : 0.25;
         // If real-time available heap drops below safety headroom fraction of max heap, flush early to prevent OOM
         if (free < (long) (max * headroom)) {
-            log.warn("[STREAMING MEMORY PRESSURE FLUSH] Available heap dropped to {} MB (< {:.0f}% of max). Flushing {} buffered chunks early to relieve memory pressure.",
-                    free / (1024 * 1024), headroom * 100.0, chunkBuffer.size());
+            log.warn("[STREAMING MEMORY PRESSURE FLUSH] Available heap dropped to {} MB (< {}% of max). Flushing {} buffered chunks early to relieve memory pressure.",
+                    free / (1024 * 1024), String.format("%.0f", headroom * 100.0), chunkBuffer.size());
             return true;
         }
         return false;

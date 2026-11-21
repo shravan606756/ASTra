@@ -57,6 +57,10 @@ public class LargeRepoIndexingConfig {
     }
 
     public void setBatchSize(int batchSize) {
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException(
+                    "astra.indexing.large-repo.batch-size must be positive, got: " + batchSize);
+        }
         this.batchSize = batchSize;
     }
 
@@ -65,6 +69,10 @@ public class LargeRepoIndexingConfig {
     }
 
     public void setSafetyHeadroomFraction(double safetyHeadroomFraction) {
+        if (Double.isNaN(safetyHeadroomFraction) || safetyHeadroomFraction <= 0.0 || safetyHeadroomFraction >= 1.0) {
+            throw new IllegalArgumentException(
+                    "astra.indexing.large-repo.safety-headroom-fraction must be in (0, 1), got: " + safetyHeadroomFraction);
+        }
         this.safetyHeadroomFraction = safetyHeadroomFraction;
     }
 }

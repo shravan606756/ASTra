@@ -50,4 +50,29 @@ class LargeRepoIndexingConfigTest {
                 new LargeRepoIndexingConfig(-100));
         assertTrue(ex.getMessage().contains("must be positive"));
     }
+
+    @Test
+    @DisplayName("setBatchSize validates positive integer")
+    void testSetBatchSizeValidation() {
+        LargeRepoIndexingConfig config = new LargeRepoIndexingConfig();
+        config.setBatchSize(5000);
+        assertEquals(5000, config.getBatchSize());
+
+        assertThrows(IllegalArgumentException.class, () -> config.setBatchSize(0));
+        assertThrows(IllegalArgumentException.class, () -> config.setBatchSize(-10));
+    }
+
+    @Test
+    @DisplayName("setSafetyHeadroomFraction validates range (0, 1)")
+    void testSetSafetyHeadroomFractionValidation() {
+        LargeRepoIndexingConfig config = new LargeRepoIndexingConfig();
+        config.setSafetyHeadroomFraction(0.30);
+        assertEquals(0.30, config.getSafetyHeadroomFraction(), 0.001);
+
+        assertThrows(IllegalArgumentException.class, () -> config.setSafetyHeadroomFraction(0.0));
+        assertThrows(IllegalArgumentException.class, () -> config.setSafetyHeadroomFraction(1.0));
+        assertThrows(IllegalArgumentException.class, () -> config.setSafetyHeadroomFraction(1.5));
+        assertThrows(IllegalArgumentException.class, () -> config.setSafetyHeadroomFraction(-0.2));
+        assertThrows(IllegalArgumentException.class, () -> config.setSafetyHeadroomFraction(Double.NaN));
+    }
 }

@@ -67,11 +67,22 @@ public class JavaProjectParser {
     }
 
     public List<CodeChunk> parse(List<Path> files) {
-        List<CompilationUnit> units = parseCompilationUnits(files);
         List<CodeChunk> chunks = new ArrayList<>();
+        if (files == null) {
+            return chunks;
+        }
 
-        for (CompilationUnit unit : units) {
-            visitor.visit(unit, chunks);
+        for (Path path : files) {
+            try {
+                ParseResult<CompilationUnit> result = javaParser.parse(path);
+                if (result.isSuccessful() && result.getResult().isPresent()) {
+                    visitor.visit(result.getResult().get(), chunks);
+                } else {
+                    log.error("Failed to parse file: {} | Problems: {}", path, result.getProblems());
+                }
+            } catch (Exception e) {
+                log.error("Exception parsing file: {}", path, e);
+            }
         }
 
         return chunks;

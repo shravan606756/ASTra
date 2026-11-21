@@ -76,7 +76,9 @@ public class JavaProjectParser {
             try {
                 ParseResult<CompilationUnit> result = javaParser.parse(path);
                 if (result.isSuccessful() && result.getResult().isPresent()) {
-                    visitor.visit(result.getResult().get(), chunks);
+                    List<CodeChunk> fileChunks = new ArrayList<>();
+                    visitor.visit(result.getResult().get(), fileChunks);
+                    chunks.addAll(fileChunks);
                 } else {
                     log.error("Failed to parse file: {} | Problems: {}", path, result.getProblems());
                 }

@@ -145,8 +145,12 @@ public class PackageSummaryGenerator {
             if (count >= MAX_PACKAGE_TYPES) {
                 break;
             }
-            sb.append("  - ").append(entry.type())
-                    .append(" ").append(entry.elementName()).append("\n");
+            String line = "  - " + entry.type() + " " + entry.elementName() + "\n";
+            // Check character budget: reserve space for omitted notice and type counts footer
+            if (sb.length() + line.length() > 7500) {
+                break;
+            }
+            sb.append(line);
             count++;
         }
 

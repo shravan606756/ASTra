@@ -137,6 +137,29 @@ class PackageSummaryGeneratorTest {
         }
     }
 
+    @Test
+    @DisplayName("Package summary respects character budget when type names are exceptionally large")
+    void testPackageSummaryBudgetTruncation() {
+        PackageSummaryGenerator.Accumulator acc = generator.createAccumulator();
+
+        List<CodeChunk> chunks = new ArrayList<>();
+        String longTypeName = "A".repeat(200);
+        for (int i = 1; i <= 50; i++) {
+            chunks.add(createChunk("com.example.budget", "CLASS", longTypeName + i, 0));
+        }
+
+        acc.accumulate(chunks);
+
+        List<CodeChunk> summaries = acc.generateSummaries();
+        assertEquals(1, summaries.size());
+
+        CodeChunk summary = summaries.get(0);
+        assertTrue(summary.getContent().length() <= 8000, "Summary must fit within 8000 chars");
+        assertTrue(summary.getContent().contains("Total 50 top-level types"));
+        assertTrue(summary.getContent().contains("CLASS: 50"), "All type counts must be preserved");
+        assertTrue(summary.getContent().contains("additional top-level types omitted from package summary"));
+    }
+
     private CodeChunk createChunk(String pkg, String type, String name, int depth) {
         CodeChunk chunk = new CodeChunk();
         chunk.setId("chunk-" + name);

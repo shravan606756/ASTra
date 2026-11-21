@@ -68,17 +68,29 @@ class BatchEmbeddingHelperTest {
     }
 
     @Test
-    @DisplayName("Missing embeddings fallback to empty float array")
-    void testMissingEmbeddingsFallback() throws Exception {
+    @DisplayName("Mismatched or empty embeddings throw IllegalStateException and do not stage records")
+    void testMismatchedOrEmptyEmbeddingsThrows() {
         Document doc = new Document("class C {}", Map.of("chunkId", "chunk-3"));
         when(mockModel.embed(anyList())).thenReturn(List.of()); // Empty response
 
-        List<EmbeddedRecord> staged = helper.embedAndStage("repo-1", "job-1", List.of(doc));
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                helper.embedAndStage("repo-1", "job-1", List.of(doc)));
 
-        assertEquals(1, staged.size());
-        assertNotNull(staged.get(0).embedding());
-        assertEquals(0, staged.get(0).embedding().length);
-        verify(mockQueue).submitAll(staged);
+        assertTrue(ex.getMessage().contains("returned 0 embedding(s) for 1 input text(s)"));
+        verifyNoInteractions(mockQueue);
+    }
+
+    @Test
+    @DisplayName("Zero-length embedding vector throws IllegalStateException and does not stage records")
+    void testEmptyVectorThrows() {
+        Document doc = new Document("class C {}", Map.of("chunkId", "chunk-3"));
+        when(mockModel.embed(anyList())).thenReturn(List.of(new float[0])); // Zero-length vector
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                helper.embedAndStage("repo-1", "job-1", List.of(doc)));
+
+        assertTrue(ex.getMessage().contains("empty or null vector"));
+        verifyNoInteractions(mockQueue);
     }
 
     @Test

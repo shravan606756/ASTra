@@ -57,13 +57,23 @@ public class BatchEmbeddingHelper {
                 .map(Document::getText)
                 .toList();
         List<float[]> embeddings = embedWithRetry(texts, repositoryId, jobId);
+        if (embeddings == null || embeddings.size() != texts.size()) {
+            throw new IllegalStateException(String.format(
+                    "Embedding provider returned %d embedding(s) for %d input text(s) in repo '%s' job '%s'",
+                    embeddings != null ? embeddings.size() : 0, texts.size(), repositoryId, jobId));
+        }
 
         List<EmbeddedRecord> records = new ArrayList<>(batch.size());
         for (int j = 0; j < batch.size(); j++) {
             Document doc = batch.get(j);
             String chunkId = (String) doc.getMetadata().get("chunkId");
             String recordId = EmbeddedRecord.generateDeterministicId(repositoryId, chunkId, doc.getText());
-            float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
+            float[] embedding = embeddings.get(j);
+            if (embedding == null || embedding.length == 0) {
+                throw new IllegalStateException(String.format(
+                        "Embedding provider returned empty or null vector for document %d (chunkId: %s) in repo '%s'",
+                        j, chunkId, repositoryId));
+            }
             records.add(new EmbeddedRecord(
                     recordId,
                     jobId,

@@ -1113,5 +1113,31 @@ mvn test -Dtest=JavaParserMemoryCalibrationTest \
 #### 4. Scope and Recalibration Notice
 The calibrated value `bytes-per-loc = 600` is derived from a single data point (JavaParser). While the 25% safety margin and conservative 0.4 budget fraction accommodate typical Java codebases, memory consumption per LOC can vary depending on code characteristics (such as exceptionally large method bodies, dense annotations, or deeply nested generics). Recalibration is recommended as more repositories are analyzed. Operators can adjust `astra.indexing.memory.bytes-per-loc` or configure `astra.indexing.loc.normal-threshold` as needed.
 
+---
+
+## 17. Large-Repository Streaming Indexing Pipeline (Issue #31)
+
+### 17.1. Architecture & Mechanics
+To prevent JVM `OutOfMemoryError` on monolithic codebases where holding all CompilationUnits and ASTs simultaneously exceeds available heap headroom, ASTra provides the `STREAMING` pipeline executed by `StreamingIndexingService`:
+1. **Incremental AST Ingestion:** Iterates through pre-discovered `eligibleFiles()` in lexical order, parsing each file individually via `parser.parse(List.of(file))` without invoking root-based traversals.
+2. **Incremental Accumulators:**
+   - `PackageSummaryGenerator.Accumulator`: Incrementally tracks distinct non-blank packages, qualifying top-level types (nesting depth 0), per-type counts, and the first 100 type entries in encounter order. Packages without qualifying top-level types are retained.
+   - `IndexingStatisticsAccumulator`: Incrementally computes indexing metrics, tracking distinct non-blank packages, elemental types, total chunks (including package summaries), and largest class/method with strict tie handling (`>` comparison keeping earlier encounter).
+3. **Threshold-Sized Slice Draining & Dynamic Heap Adaptation:**
+   - Chunks are buffered in memory until the buffer reaches the wave threshold computed by `computeDynamicPassBatchSize()`.
+   - On low-memory environments or unit tests (`configuredBase < 500`), the configured floor `astra.indexing.large-repo.batch-size` (default: 2,000) is strictly respected.
+   - On capable hardware with abundant RAM, the pass threshold expands dynamically based on real-time unallocated heap and `budget-fraction` (e.g. 20,000–40,000+ chunks on a 3GB+ heap), minimizing wave count while maintaining bounded heap bounds.
+   - **Real-Time Safety Relief Valve:** Sized via `astra.indexing.large-repo.safety-headroom-fraction` (default 0.25). Evaluated after each parsed file: if real-time unallocated heap drops below 25% of max heap, accumulation is immediately aborted and the current buffer is flushed early to relieve memory pressure.
+4. **Sub-Batch Partitioning Capped by Queue Capacity:** Documents in each drained slice are partitioned into copied sub-batches capped by `Math.min(chunkingConfig.getBatchSize(), embeddingQueue.getCapacity())`. This guarantees that an oversized batch is never dispatched to `EmbeddingQueue.submitAll()`.
+5. **Semaphore Backpressure & Virtual-Thread Workers with Progressive Retry:** Concurrency is bounded by `chunkingConfig.getMaxParallelWorkers()` permits. Pre-submission permit acquisition and queue capacity backpressure prevent producer heap inflation. Tasks run on virtual threads using `BatchEmbeddingHelper`, which includes progressive exponential retry (up to 5 attempts) to recover from transient Windows socket buffer exhaustion (`WSAENOBUFS / bind failed`) and Ollama connection blips.
+6. **Package Summaries & Final Partial Flush:** After all files are parsed, package summaries are generated from the accumulator, added to the buffer, and the remaining partial slice is flushed.
+7. **Permit Reclamation & Completion:** Reclaims all worker permits, verifies zero in-flight failures, completes the job, awaits persistence with a 15-minute timeout, saves diagnostic statistics, and returns the total submitted document count.
+
+### 17.2. Write Fencing & Persistence Semantics
+- **No Vector Deletions:** Unlike the whole-repository single-pass pipeline (which issues `DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?`), the streaming pipeline never deletes vectors before indexing. Matching deterministic chunk IDs are upserted via PostgreSQL `ON CONFLICT (id) DO UPDATE`.
+- **Stale Rows:** When files, classes, or methods are deleted or renamed in the repository, previous vector rows remain in PostgreSQL unless pruned out-of-band.
+- **In-Flight Writes on Failure (No Write Fencing):** If a streaming indexing failure occurs after batches have been admitted to `EmbeddingQueue`, in-flight persistence transactions in `PgVectorBulkWriter` can finish committing to PostgreSQL after the failure is recorded and the indexing call returns an error. The queue and persistence layers currently do not implement fencing tokens.
+
+
 
 

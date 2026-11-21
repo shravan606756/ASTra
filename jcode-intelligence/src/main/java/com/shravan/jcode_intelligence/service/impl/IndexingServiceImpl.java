@@ -9,6 +9,7 @@ import com.shravan.jcode_intelligence.parser.EmbeddingBudgetValidator;
 import com.shravan.jcode_intelligence.parser.JavaProjectParser;
 import com.shravan.jcode_intelligence.parser.PackageSummaryGenerator;
 import com.shravan.jcode_intelligence.parser.IndexingStatisticsCalculator;
+import com.shravan.jcode_intelligence.service.BatchEmbeddingHelper;
 import com.shravan.jcode_intelligence.service.EmbeddingQueue;
 import com.shravan.jcode_intelligence.service.GitService;
 import com.shravan.jcode_intelligence.service.IndexingService;
@@ -18,6 +19,7 @@ import com.shravan.jcode_intelligence.service.classification.IndexingPipelineSel
 import com.shravan.jcode_intelligence.service.classification.PipelineSelection;
 import com.shravan.jcode_intelligence.service.classification.RepositoryClassificationResult;
 import com.shravan.jcode_intelligence.service.classification.RepositoryClassifier;
+import com.shravan.jcode_intelligence.service.streaming.StreamingIndexingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -39,12 +41,26 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * Service implementation for parsing, chunking, embedding, and indexing Java projects
+ * into PGVector store.
+ *
+ * <p>Supports memory-aware classification, routing to either the whole-repository single-pass
+ * (NORMAL) pipeline or the chunk-streaming (LARGE) pipeline (Issue #31).
+ *
+ * <p><strong>Write Fencing &amp; Persistence Semantics for LARGE Streaming:</strong>
+ * <ul>
+ *     <li>The streaming pipeline does not delete existing vector records; matching deterministic
+ *     chunk IDs are updated via {@code ON CONFLICT (id) DO UPDATE}.</li>
+ *     <li>Stale rows remain if classes or methods are removed from the repository.</li>
+ *     <li>In-flight JDBC writes may finish after failure because the queue does not implement write fencing.</li>
+ * </ul>
+ */
 @Service
 public class IndexingServiceImpl implements IndexingService {
 
@@ -65,29 +81,15 @@ public class IndexingServiceImpl implements IndexingService {
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final RepositoryClassifier classifier;
     private final IndexingPipelineSelector selector;
+    private final StreamingIndexingService streamingIndexingService;
 
     /**
-     * Constructs an {@code IndexingServiceImpl} with memory-aware classification, pipeline selection,
-     * queue-based persistence, and repository concurrency isolation.
-     *
-     * @param parser                      Java project AST parser
-     * @param converter                   code chunk to document converter
-     * @param vectorStore                 vector store for embedding storage
-     * @param gitService                  Git repository service
-     * @param jdbcTemplate                Spring JDBC template
-     * @param packageSummaryGenerator     package summary generator
-     * @param statisticsCalculator        indexing metrics calculator
-     * @param budgetValidator             pre-embedding token budget validator
-     * @param chunkingConfig              chunking and sizing configuration
-     * @param repositoryManagementService repository metadata management service
-     * @param concurrencyManager          repository isolation and concurrency manager
-     * @param embeddingQueue              shared bounded embedding queue
-     * @param embeddingModelProvider      provider for direct Spring AI embedding generation
-     * @param classifier                  memory-aware repository classifier
-     * @param selector                    pipeline selection component
+     * Primary constructor with all dependencies including classification, queue persistence,
+     * and optional streaming service.
      */
     @Autowired
-    public IndexingServiceImpl(JavaProjectParser parser,
+    public IndexingServiceImpl(
+            JavaProjectParser parser,
             DocumentConverter converter,
             VectorStore vectorStore,
             GitService gitService,
@@ -98,11 +100,12 @@ public class IndexingServiceImpl implements IndexingService {
             ChunkingConfig chunkingConfig,
             com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
             RepositoryConcurrencyManager concurrencyManager,
-            EmbeddingQueue embeddingQueue,
-            ObjectProvider<EmbeddingModel> embeddingModelProvider,
-            RepositoryClassifier classifier,
-            IndexingPipelineSelector selector) {
-
+            @Autowired(required = false) EmbeddingQueue embeddingQueue,
+            @Autowired(required = false) ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            @Autowired(required = false) RepositoryClassifier classifier,
+            @Autowired(required = false) IndexingPipelineSelector selector,
+            @Autowired(required = false) StreamingIndexingService streamingIndexingService
+    ) {
         this.parser = parser;
         this.converter = converter;
         this.vectorStore = vectorStore;
@@ -118,12 +121,14 @@ public class IndexingServiceImpl implements IndexingService {
         this.embeddingModelProvider = embeddingModelProvider;
         this.classifier = classifier;
         this.selector = selector;
+        this.streamingIndexingService = streamingIndexingService;
     }
 
     /**
-     * 13-argument constructor delegating with null classification dependencies.
+     * 15-argument constructor delegating with null streaming service.
      */
-    public IndexingServiceImpl(JavaProjectParser parser,
+    public IndexingServiceImpl(
+            JavaProjectParser parser,
             DocumentConverter converter,
             VectorStore vectorStore,
             GitService gitService,
@@ -135,17 +140,21 @@ public class IndexingServiceImpl implements IndexingService {
             com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
             RepositoryConcurrencyManager concurrencyManager,
             EmbeddingQueue embeddingQueue,
-            ObjectProvider<EmbeddingModel> embeddingModelProvider) {
+            ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            RepositoryClassifier classifier,
+            IndexingPipelineSelector selector
+    ) {
         this(parser, converter, vectorStore, gitService, jdbcTemplate,
                 packageSummaryGenerator, statisticsCalculator, budgetValidator,
                 chunkingConfig, repositoryManagementService, concurrencyManager,
-                embeddingQueue, embeddingModelProvider, null, null);
+                embeddingQueue, embeddingModelProvider, classifier, selector, null);
     }
 
     /**
-     * Legacy constructor preserved for backwards compatibility with existing test configurations.
+     * 13-argument constructor delegating with null classification and streaming dependencies.
      */
-    public IndexingServiceImpl(JavaProjectParser parser,
+    public IndexingServiceImpl(
+            JavaProjectParser parser,
             DocumentConverter converter,
             VectorStore vectorStore,
             GitService gitService,
@@ -154,10 +163,36 @@ public class IndexingServiceImpl implements IndexingService {
             IndexingStatisticsCalculator statisticsCalculator,
             EmbeddingBudgetValidator budgetValidator,
             ChunkingConfig chunkingConfig,
-            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService) {
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
+            RepositoryConcurrencyManager concurrencyManager,
+            EmbeddingQueue embeddingQueue,
+            ObjectProvider<EmbeddingModel> embeddingModelProvider
+    ) {
         this(parser, converter, vectorStore, gitService, jdbcTemplate,
                 packageSummaryGenerator, statisticsCalculator, budgetValidator,
-                chunkingConfig, repositoryManagementService, new RepositoryConcurrencyManager(), null, null, null, null);
+                chunkingConfig, repositoryManagementService, concurrencyManager,
+                embeddingQueue, embeddingModelProvider, null, null, null);
+    }
+
+    /**
+     * Legacy constructor preserved for backwards compatibility with existing test configurations.
+     */
+    public IndexingServiceImpl(
+            JavaProjectParser parser,
+            DocumentConverter converter,
+            VectorStore vectorStore,
+            GitService gitService,
+            JdbcTemplate jdbcTemplate,
+            PackageSummaryGenerator packageSummaryGenerator,
+            IndexingStatisticsCalculator statisticsCalculator,
+            EmbeddingBudgetValidator budgetValidator,
+            ChunkingConfig chunkingConfig,
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService
+    ) {
+        this(parser, converter, vectorStore, gitService, jdbcTemplate,
+                packageSummaryGenerator, statisticsCalculator, budgetValidator,
+                chunkingConfig, repositoryManagementService, new RepositoryConcurrencyManager(),
+                null, null, null, null, null);
     }
 
     @Override
@@ -171,15 +206,8 @@ public class IndexingServiceImpl implements IndexingService {
     /**
      * {@inheritDoc}
      *
-     * <p>Uses {@code default} for a null or blank repository ID, attempts to delete existing vectors
-     * before indexing, and saves the resulting statistics. Deletion errors are logged and do not
-     * stop indexing. When both a queue and an embedding model are available, waits up to
-     * 15 minutes for queued records to finish; otherwise uses the vector store directly.
-     *
-     * @throws com.shravan.jcode_intelligence.exception.IndexingConflictException if the
-     *         repository's indexing lock is already held, including by the current thread
-     * @throws RuntimeException if batch embedding, queue staging or completion, or direct
-     *         vector store insertion fails
+     * <p>Acquires the exclusive repository indexing lock, classifies repository memory requirements,
+     * routes to STREAMING or EXISTING pipeline, and guarantees release of the lock upon completion.
      */
     @Override
     public int indexProject(String projectPath, String repositoryId) throws IOException {
@@ -191,208 +219,230 @@ public class IndexingServiceImpl implements IndexingService {
         }
 
         try {
-            // [STEP 1] Parse repository source files into element chunks (with memory classification & pipeline selection)
             Path rootPath = Path.of(projectPath);
-            List<CodeChunk> elementChunks = parseRepository(rootPath, safeRepoId);
-            log.info("[STEP 1 COMPLETE] Generated {} element chunk(s)", elementChunks.size());
 
-            // [STEP 2] Generate package summaries across the entire repository
-            log.info("[STEP 2] Generating repository-wide package summaries...");
-            List<CodeChunk> packageChunks = packageSummaryGenerator.generatePackageSummaries(elementChunks);
-            log.info("[STEP 2 COMPLETE] Generated {} package summary chunk(s)", packageChunks.size());
-
-            // Combine element chunks and repo-wide package summary chunks
-            List<CodeChunk> allChunks = new ArrayList<>(elementChunks);
-            allChunks.addAll(packageChunks);
-
-            for (CodeChunk chunk : allChunks) {
-                chunk.setRepositoryId(safeRepoId);
+            RepositoryClassificationResult classificationResult = null;
+            PipelineSelection selection = null;
+            if (classifier != null && selector != null) {
+                try {
+                    classificationResult = classifier.classify(rootPath);
+                    selection = selector.select(classificationResult, safeRepoId);
+                } catch (IOException | RuntimeException e) {
+                    log.warn("Classification failed for repository '{}'; selecting existing pipeline because classification failed", safeRepoId, e);
+                    selection = selector.selectFailure("classification failed");
+                    log.info("[STEP 1] Parsing repository source files at path: {} (classification failed fallback)", rootPath);
+                    return executeExistingPipeline(rootPath, safeRepoId, null, startTime);
+                }
+                logClassificationInfo(safeRepoId, classificationResult, selection);
             }
 
-            // [STEP 3] Convert to Spring AI Document objects
-            log.info("[STEP 3] Converting {} CodeChunks to Spring AI Documents...", allChunks.size());
-            List<Document> documents = converter.convert(allChunks);
-            log.info("[STEP 3 COMPLETE] Converted {} Document(s)", documents.size());
-
-            // [STEP 4] Pre-embedding budget validation and observability audit
-            log.info("[STEP 4] Validating document sizes against embedding budget...");
-            budgetValidator.validateAndAudit(documents, allChunks);
-            log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
-
-            // [STEP 5] Delete existing vectors for this repository
-            log.info("[STEP 5] Cleaning up existing vector records for repository: {}", safeRepoId);
-            deleteExistingRepositoryVectors(safeRepoId);
-
-            // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
-            int totalDocs = documents.size();
-            int batchSize = Math.max(1, chunkingConfig.getBatchSize());
-            int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
-
-            int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
-            int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
-
-            long embeddingStartTime = System.currentTimeMillis();
-            AtomicInteger completedDocs = new AtomicInteger(0);
-
-            EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
-
-            if (embeddingQueue != null && embeddingModel != null) {
-                String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
-                embeddingQueue.registerJob(jobId, safeRepoId, workerCount, batchSize, totalDocs);
-                log.info(
-                        "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
-                        totalDocs, totalBatches, batchSize, workerCount, jobId);
-
-                Semaphore semaphore = new Semaphore(workerCount);
-                AtomicReference<Throwable> firstFailureRef = new AtomicReference<>();
-                ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-                try {
-                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
-                    for (int i = 0; i < totalDocs; i += batchSize) {
-                        if (firstFailureRef.get() != null) {
-                            break;
-                        }
-
-                        int startIdx = i;
-                        int endIdx = Math.min(i + batchSize, totalDocs);
-                        List<Document> batch = documents.subList(startIdx, endIdx);
-                        int batchNum = (startIdx / batchSize) + 1;
-
-                        try {
-                            semaphore.acquire();
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);
-                        }
-
-                        if (firstFailureRef.get() != null) {
-                            semaphore.release();
-                            break;
-                        }
-
-                        try {
-                            futures.add(CompletableFuture.runAsync(() -> {
-                                try {
-                                    log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
-                                            batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
-
-                                    long batchStart = System.currentTimeMillis();
-
-                                    // Group chunks in this batch to request embeddings in a single model call
-                                    List<String> texts = batch.stream()
-                                            .map(Document::getText)
-                                            .toList();
-                                    List<float[]> embeddings = embeddingModel.embed(texts);
-
-                                    List<EmbeddedRecord> records = new ArrayList<>(batch.size());
-                                    for (int j = 0; j < batch.size(); j++) {
-                                        Document doc = batch.get(j);
-                                        String chunkId = (String) doc.getMetadata().get("chunkId");
-                                        String recordId = EmbeddedRecord.generateDeterministicId(safeRepoId, chunkId, doc.getText());
-                                        float[] embedding = (embeddings != null && j < embeddings.size()) ? embeddings.get(j) : new float[0];
-                                        records.add(new EmbeddedRecord(
-                                                recordId,
-                                                jobId,
-                                                safeRepoId,
-                                                doc.getText(),
-                                                doc.getMetadata(),
-                                                embedding,
-                                                new CompletableFuture<>()
-                                        ));
-                                    }
-                                    try {
-                                        embeddingQueue.submitAll(records);
-                                    } catch (InterruptedException e) {
-                                        Thread.currentThread().interrupt();
-                                        throw new RuntimeException("Interrupted while staging records to embedding queue", e);
-                                    }
-                                    long batchDuration = System.currentTimeMillis() - batchStart;
-                                    int doneDocs = completedDocs.addAndGet(batch.size());
-                                    double pct = ((double) doneDocs / totalDocs) * 100.0;
-                                    log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
-                                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                            String.format("%.1f%%", pct));
-                                } catch (Throwable t) {
-                                    firstFailureRef.compareAndSet(null, t);
-                                    throw t;
-                                } finally {
-                                    semaphore.release();
-                                }
-                            }, executor));
-                        } catch (Throwable submitEx) {
-                            semaphore.release();
-                            firstFailureRef.compareAndSet(null, submitEx);
-                            throw submitEx;
-                        }
-                    }
-
-                    awaitAllOrCancelOnFailure(futures);
-
-                    embeddingQueue.completeJob(jobId);
-                    embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
-                } catch (Throwable t) {
-                    embeddingQueue.failJob(jobId, t);
-                    embeddingQueue.cleanupJob(jobId);
-                    throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
-                } finally {
-                    shutdownAndAwaitTermination(executor);
-                }
-            } else {
-                log.info(
-                        "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
-                        totalDocs, totalBatches, batchSize, workerCount);
-
-                ExecutorService executor = Executors.newFixedThreadPool(workerCount);
-                try {
-                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
-
-                    for (int i = 0; i < totalDocs; i += batchSize) {
-                        int startIdx = i;
-                        int endIdx = Math.min(i + batchSize, totalDocs);
-                        List<Document> batch = documents.subList(startIdx, endIdx);
-                        int batchNum = (startIdx / batchSize) + 1;
-
-                        futures.add(CompletableFuture.runAsync(() -> {
-                            log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
-                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
-
-                            long batchStart = System.currentTimeMillis();
-                            vectorStore.add(batch);
-                            long batchDuration = System.currentTimeMillis() - batchStart;
-
-                            int doneDocs = completedDocs.addAndGet(batch.size());
-                            double pct = ((double) doneDocs / totalDocs) * 100.0;
-                            log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
-                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                    String.format("%.1f%%", pct));
-                        }, executor));
-                    }
-
-                    awaitAllOrCancelOnFailure(futures);
-                } finally {
-                    shutdownAndAwaitTermination(executor);
+            // Route to STREAMING if selected and components are available
+            if (selection != null && selection.selectedPipeline() == IndexingPipeline.STREAMING) {
+                EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
+                if (streamingIndexingService != null && embeddingQueue != null && embeddingModel != null) {
+                    log.info("[LARGE REPO - STREAMING] Dispatching repository '{}' to STREAMING pipeline with {} eligible file(s)",
+                            safeRepoId, classificationResult.eligibleFileCount());
+                    return streamingIndexingService.index(safeRepoId, classificationResult.eligibleFiles());
+                } else {
+                    log.warn("STREAMING pipeline selected for repository '{}', but streaming components are unavailable (service={}, queue={}, model={}); falling back to existing pipeline with discovered files",
+                            safeRepoId, streamingIndexingService != null, embeddingQueue != null, embeddingModel != null);
+                    return executeExistingPipeline(rootPath, safeRepoId, classificationResult.eligibleFiles(), startTime);
                 }
             }
 
-            long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
-            log.info(
-                    "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
-                    totalDocs, totalBatches, embeddingDuration, workerCount);
-
-            long duration = System.currentTimeMillis() - startTime;
-
-            // [STEP 7] Compute and log structured indexing statistics
-            IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
-            log.info("\n{}", stats);
-
-            repositoryManagementService.saveRepositoryStats(safeRepoId, stats);
-
-            return documents.size();
+            List<Path> filesToParse = (classificationResult != null) ? classificationResult.eligibleFiles() : null;
+            log.info("[NORMAL REPO - ONE PASS] Dispatching repository '{}' to whole-repository single-pass pipeline ({} eligible file(s))",
+                    safeRepoId, (filesToParse != null ? filesToParse.size() : "all"));
+            return executeExistingPipeline(rootPath, safeRepoId, filesToParse, startTime);
         } finally {
             if (concurrencyManager != null) {
                 concurrencyManager.release(safeRepoId);
             }
         }
+    }
+
+    private int executeExistingPipeline(Path rootPath, String safeRepoId, List<Path> eligibleFiles, long startTime) throws IOException {
+        // [STEP 1] Parse repository source files into element chunks
+        List<CodeChunk> elementChunks;
+        if (eligibleFiles != null) {
+            log.info("[STEP 1] Parsing {} eligible source file(s) for repository '{}' using EXISTING pipeline",
+                    eligibleFiles.size(), safeRepoId);
+            elementChunks = parser.parse(eligibleFiles);
+        } else {
+            log.info("[STEP 1] Parsing repository source files at path: {}", rootPath);
+            elementChunks = parser.parse(rootPath);
+        }
+        log.info("[STEP 1 COMPLETE] Generated {} element chunk(s)", elementChunks.size());
+
+        // [STEP 2] Generate package summaries across the entire repository
+        log.info("[STEP 2] Generating repository-wide package summaries...");
+        List<CodeChunk> packageChunks = packageSummaryGenerator.generatePackageSummaries(elementChunks);
+        log.info("[STEP 2 COMPLETE] Generated {} package summary chunk(s)", packageChunks.size());
+
+        // Combine element chunks and repo-wide package summary chunks
+        List<CodeChunk> allChunks = new ArrayList<>(elementChunks);
+        allChunks.addAll(packageChunks);
+
+        for (CodeChunk chunk : allChunks) {
+            chunk.setRepositoryId(safeRepoId);
+        }
+
+        // [STEP 3] Convert to Spring AI Document objects
+        log.info("[STEP 3] Converting {} CodeChunks to Spring AI Documents...", allChunks.size());
+        List<Document> documents = converter.convert(allChunks);
+        log.info("[STEP 3 COMPLETE] Converted {} Document(s)", documents.size());
+
+        // [STEP 4] Pre-embedding budget validation and observability audit
+        log.info("[STEP 4] Validating document sizes against embedding budget...");
+        budgetValidator.validateAndAudit(documents, allChunks);
+        log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
+
+        // [STEP 5] Delete existing vectors for this repository
+        log.info("[STEP 5] Cleaning up existing vector records for repository: {}", safeRepoId);
+        deleteExistingRepositoryVectors(safeRepoId);
+
+        // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
+        int totalDocs = documents.size();
+        int batchSize = Math.max(1, chunkingConfig.getBatchSize());
+        int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
+
+        int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
+        int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
+
+        long embeddingStartTime = System.currentTimeMillis();
+        AtomicInteger completedDocs = new AtomicInteger(0);
+
+        EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
+
+        if (embeddingQueue != null && embeddingModel != null) {
+            String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
+            embeddingQueue.registerJob(jobId, safeRepoId, workerCount, batchSize, totalDocs);
+            log.info(
+                    "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
+                    totalDocs, totalBatches, batchSize, workerCount, jobId);
+
+            Semaphore semaphore = new Semaphore(workerCount);
+            AtomicReference<Throwable> firstFailureRef = new AtomicReference<>();
+            ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+            BatchEmbeddingHelper embeddingHelper = new BatchEmbeddingHelper(embeddingQueue, embeddingModel);
+            try {
+                List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
+                for (int i = 0; i < totalDocs; i += batchSize) {
+                    if (firstFailureRef.get() != null) {
+                        break;
+                    }
+
+                    int startIdx = i;
+                    int endIdx = Math.min(i + batchSize, totalDocs);
+                    List<Document> batch = documents.subList(startIdx, endIdx);
+                    int batchNum = (startIdx / batchSize) + 1;
+
+                    try {
+                        semaphore.acquire();
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);
+                    }
+
+                    if (firstFailureRef.get() != null) {
+                        semaphore.release();
+                        break;
+                    }
+
+                    try {
+                        futures.add(CompletableFuture.runAsync(() -> {
+                            try {
+                                log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
+                                        batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
+                                long batchStart = System.currentTimeMillis();
+
+                                embeddingHelper.embedAndStage(safeRepoId, jobId, batch);
+
+                                long batchDuration = System.currentTimeMillis() - batchStart;
+                                int doneDocs = completedDocs.addAndGet(batch.size());
+                                double pct = ((double) doneDocs / totalDocs) * 100.0;
+                                log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
+                                        batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                        String.format("%.1f%%", pct));
+                            } catch (Throwable t) {
+                                firstFailureRef.compareAndSet(null, t);
+                                throw t;
+                            } finally {
+                                semaphore.release();
+                            }
+                        }, executor));
+                    } catch (Throwable submitEx) {
+                        semaphore.release();
+                        firstFailureRef.compareAndSet(null, submitEx);
+                        throw submitEx;
+                    }
+                }
+
+                awaitAllOrCancelOnFailure(futures);
+
+                embeddingQueue.completeJob(jobId);
+                embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
+            } catch (Throwable t) {
+                embeddingQueue.failJob(jobId, t);
+                embeddingQueue.cleanupJob(jobId);
+                throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
+            } finally {
+                shutdownAndAwaitTermination(executor);
+            }
+        } else {
+            log.info(
+                    "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
+                    totalDocs, totalBatches, batchSize, workerCount);
+
+            ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+            try {
+                List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
+
+                for (int i = 0; i < totalDocs; i += batchSize) {
+                    int startIdx = i;
+                    int endIdx = Math.min(i + batchSize, totalDocs);
+                    List<Document> batch = documents.subList(startIdx, endIdx);
+                    int batchNum = (startIdx / batchSize) + 1;
+
+                    futures.add(CompletableFuture.runAsync(() -> {
+                        log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
+                                batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
+                        long batchStart = System.currentTimeMillis();
+                        vectorStore.add(batch);
+                        long batchDuration = System.currentTimeMillis() - batchStart;
+
+                        int doneDocs = completedDocs.addAndGet(batch.size());
+                        double pct = ((double) doneDocs / totalDocs) * 100.0;
+                        log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
+                                batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                String.format("%.1f%%", pct));
+                    }, executor));
+                }
+
+                awaitAllOrCancelOnFailure(futures);
+            } finally {
+                shutdownAndAwaitTermination(executor);
+            }
+        }
+
+        long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
+        log.info(
+                "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
+                totalDocs, totalBatches, embeddingDuration, workerCount);
+
+        long duration = System.currentTimeMillis() - startTime;
+
+        // [STEP 7] Compute and log structured indexing statistics
+        IndexingStatistics stats = statisticsCalculator.calculate(allChunks, duration);
+        log.info("\n{}", stats);
+
+        if (repositoryManagementService != null) {
+            repositoryManagementService.saveRepositoryStats(safeRepoId, stats);
+        }
+
+        return documents.size();
     }
 
     private void deleteExistingRepositoryVectors(String repositoryId) {
@@ -406,29 +456,17 @@ public class IndexingServiceImpl implements IndexingService {
         }
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public int indexGitRepository(String gitUrl) throws IOException {
         String repoId = extractRepoName(gitUrl);
         return indexGitRepository(gitUrl, repoId, null);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public int indexGitRepository(String gitUrl, String repositoryId) throws IOException {
         return indexGitRepository(gitUrl, repositoryId, null);
     }
 
-    /**
-     * {@inheritDoc}
-     * <p>
-     * Shallow clones the repository using {@link GitService#cloneRepository(String, String)},
-     * parses and vectors the project files, and guarantees removal of temporary files upon completion.
-     */
     @Override
     public int indexGitRepository(String gitUrl, String repositoryId, String branch) throws IOException {
         Path tempDir = null;
@@ -445,8 +483,9 @@ public class IndexingServiceImpl implements IndexingService {
     }
 
     private String extractRepoName(String gitUrl) {
-        if (gitUrl == null)
+        if (gitUrl == null) {
             return "git-repo";
+        }
         String name = gitUrl.substring(gitUrl.lastIndexOf('/') + 1);
         if (name.endsWith(".git")) {
             name = name.substring(0, name.length() - 4);
@@ -509,45 +548,6 @@ public class IndexingServiceImpl implements IndexingService {
             if (interrupted) {
                 Thread.currentThread().interrupt();
             }
-        }
-    }
-
-    /**
-     * Parses repository sources with memory-aware classification and pipeline selection if configured,
-     * or delegates to root parsing if classifier is absent or classification fails.
-     *
-     * @param rootPath   source root path
-     * @param safeRepoId repository identifier
-     * @return parsed code chunks
-     * @throws IOException if source parsing fails
-     */
-    private List<CodeChunk> parseRepository(Path rootPath, String safeRepoId) throws IOException {
-        if (classifier == null || selector == null) {
-            log.info("[STEP 1] Parsing repository source files at path: {}", rootPath);
-            return parser.parse(rootPath);
-        }
-
-        RepositoryClassificationResult classificationResult;
-        PipelineSelection selection;
-        try {
-            classificationResult = classifier.classify(rootPath);
-            selection = selector.select(classificationResult, safeRepoId);
-        } catch (IOException | RuntimeException e) {
-            log.warn("Classification failed for repository '{}'; selecting existing pipeline because classification failed", safeRepoId, e);
-            selection = selector.selectFailure("classification failed");
-            log.info("[STEP 1] Parsing repository source files at path: {} (classification failed fallback)", rootPath);
-            return parser.parse(rootPath);
-        }
-
-        logClassificationInfo(safeRepoId, classificationResult, selection);
-
-        if (selection.selectedPipeline() == IndexingPipeline.EXISTING) {
-            log.info("[STEP 1] Parsing {} eligible source file(s) for repository '{}' using {} pipeline",
-                    classificationResult.eligibleFileCount(), safeRepoId, selection.selectedPipeline());
-            return parser.parse(classificationResult.eligibleFiles());
-        } else {
-            // Reserved for #31 (Large-Repository Streaming Indexing Pipeline)
-            throw new UnsupportedOperationException("Streaming pipeline is not yet implemented (Issue #31)");
         }
     }
 

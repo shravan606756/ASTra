@@ -400,16 +400,13 @@ Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
 # 1. Expand dynamic ephemeral port range
 sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
 
-# 2. Reduce TCP FIN/TIME_WAIT timeout to 30 seconds
-sudo sysctl -w net.ipv4.tcp_fin_timeout=30
-
-# 3. Enable fast reuse of TIME_WAIT sockets for outgoing connections
+# 2. Enable fast reuse of TIME_WAIT sockets for outgoing connections
 sudo sysctl -w net.ipv4.tcp_tw_reuse=1
 
-# 4. Increase file descriptor limits for active sockets
+# 3. Increase file descriptor limits for active sockets
 ulimit -n 65535
 ```
-*(To persist across reboots, append the `sysctl` settings to `/etc/sysctl.conf` and `nofile 65535` to `/etc/security/limits.conf`)*
+*(To persist across reboots, append the `sysctl` settings to `/etc/sysctl.conf`, and add `* soft nofile 65535` and `* hard nofile 65535` to `/etc/security/limits.conf`)*
 
 #### macOS (Run in Terminal)
 ```bash

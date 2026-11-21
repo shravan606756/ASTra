@@ -1127,7 +1127,7 @@ To prevent JVM `OutOfMemoryError` on monolithic codebases where holding all Comp
    - Chunks are buffered in memory until the buffer reaches the wave threshold computed by `computeDynamicPassBatchSize()`.
    - On low-memory environments or unit tests (`configuredBase < 500`), the configured floor `astra.indexing.large-repo.batch-size` (default: 2,000) is strictly respected.
    - On capable hardware with abundant RAM, the pass threshold expands dynamically based on real-time unallocated heap and `budget-fraction` (e.g. 20,000–40,000+ chunks on a 3GB+ heap), minimizing wave count while maintaining bounded heap bounds.
-   - **Real-Time Safety Relief Valve:** Sized via `astra.indexing.large-repo.safety-headroom-fraction` (default 0.25). Evaluated after each parsed file: if real-time unallocated heap drops below 25% of max heap, accumulation is immediately aborted and the current buffer is flushed early to relieve memory pressure.
+   - **Real-Time Safety Relief Valve:** Sized via `astra.indexing.large-repo.safety-headroom-fraction` (default 0.25). Evaluated after each parsed file: if real-time unallocated heap drops below 25% of max heap, accumulation is immediately aborted and any non-empty buffer is flushed early to relieve memory pressure regardless of buffer size.
 4. **Sub-Batch Partitioning Capped by Queue Capacity:** Documents in each drained slice are partitioned into copied sub-batches capped by `Math.min(chunkingConfig.getBatchSize(), embeddingQueue.getCapacity())`. This guarantees that an oversized batch is never dispatched to `EmbeddingQueue.submitAll()`.
 5. **Semaphore Backpressure & Virtual-Thread Workers with Progressive Retry:** Concurrency is bounded by `chunkingConfig.getMaxParallelWorkers()` permits. Pre-submission permit acquisition and queue capacity backpressure prevent producer heap inflation. Tasks run on virtual threads using `BatchEmbeddingHelper`, which includes progressive exponential retry (up to 5 attempts) to recover from transient Windows socket buffer exhaustion (`WSAENOBUFS / bind failed`) and Ollama connection blips.
 6. **Package Summaries & Final Partial Flush:** After all files are parsed, package summaries are generated from the accumulator, added to the buffer, and the remaining partial slice is flushed.
@@ -1156,10 +1156,10 @@ When indexing monolithic repositories (e.g., Spring Framework generating ~134,87
   ```bash
   # Expand ephemeral port range & enable fast socket recycling
   sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
-  sudo sysctl -w net.ipv4.tcp_fin_timeout=30
   sudo sysctl -w net.ipv4.tcp_tw_reuse=1
   ulimit -n 65535
   ```
+  *(To persist across reboots, add the `sysctl` settings to `/etc/sysctl.conf`, and add `* soft nofile 65535` and `* hard nofile 65535` to `/etc/security/limits.conf`)*
 - **macOS (Terminal):**
   ```bash
   # Expand ephemeral port range & reduce MSL

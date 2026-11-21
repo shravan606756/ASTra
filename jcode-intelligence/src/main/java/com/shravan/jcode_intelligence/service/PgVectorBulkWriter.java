@@ -87,8 +87,9 @@ public class PgVectorBulkWriter implements SmartLifecycle {
         if (running.compareAndSet(false, true)) {
             queue.openAdmission();
             int workers = Math.max(1, config.getWriterCount());
+            java.util.concurrent.atomic.AtomicInteger threadIndex = new java.util.concurrent.atomic.AtomicInteger(1);
             writerExecutor = Executors.newFixedThreadPool(workers, r -> {
-                Thread t = new Thread(r, "astra-vector-writer");
+                Thread t = new Thread(r, "astra-writer-" + threadIndex.getAndIncrement());
                 t.setDaemon(true);
                 return t;
             });

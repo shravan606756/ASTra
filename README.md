@@ -377,6 +377,54 @@ mvn test -Dtest=LargeRepoStreamingMemoryCalibrationTest \
 > [!TIP]
 > **Constrained Heap Streaming:** Because the STREAMING pipeline flushes and releases references every 2,000 chunks (bounded by threshold plus the largest single file's chunk count), peak live heap remains constrained regardless of overall repository LOC. This enables large repositories to be indexed safely within modest JVM heap envelopes.
 
+### Operating System Socket & TCP Port Tuning (Massive Repositories)
+When indexing massive repositories (50,000–150,000+ chunks, e.g. Spring Framework), parallel virtual thread workers continuously dispatch HTTP requests to local Ollama and JDBC transactions to PostgreSQL. On high-volume runs, default operating system TCP socket settings may exhaust available ephemeral ports, resulting in `WSAENOBUFS (10055)` or `bind: address already in use` errors while closed connections sit in `TIME_WAIT`.
+
+While ASTra includes built-in progressive exponential retries in `BatchEmbeddingHelper` to transparently absorb transient port recycling blips, applying the following OS-level tuning ensures maximum throughput without connection bottlenecks:
+
+#### Windows (Run in Administrator PowerShell)
+```powershell
+# 1. Expand dynamic ephemeral TCP port range (from 16,384 to 64,510 ports)
+netsh int ipv4 set dynamicport tcp start=1025 num=64510
+
+# 2. Reduce TIME_WAIT socket delay from 240 seconds down to 30 seconds
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpTimedWaitDelay" -Type DWord -Value 30
+
+# Verify the updated settings:
+netsh int ipv4 show dynamicport tcp
+Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpTimedWaitDelay"
+```
+
+#### Linux (Run with sudo)
+```bash
+# 1. Expand dynamic ephemeral port range
+sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+
+# 2. Reduce TCP FIN/TIME_WAIT timeout to 30 seconds
+sudo sysctl -w net.ipv4.tcp_fin_timeout=30
+
+# 3. Enable fast reuse of TIME_WAIT sockets for outgoing connections
+sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+
+# 4. Increase file descriptor limits for active sockets
+ulimit -n 65535
+```
+*(To persist across reboots, append the `sysctl` settings to `/etc/sysctl.conf` and `nofile 65535` to `/etc/security/limits.conf`)*
+
+#### macOS (Run in Terminal)
+```bash
+# 1. Expand ephemeral port range
+sudo sysctl -w net.inet.ip.portrange.first=1024
+sudo sysctl -w net.inet.ip.portrange.hifirst=1024
+
+# 2. Reduce TCP Maximum Segment Lifetime (TIME_WAIT) to 15-30 seconds
+sudo sysctl -w net.inet.tcp.msl=15000
+
+# 3. Increase maximum open file descriptors
+sudo launchctl limit maxfiles 65536 65536
+ulimit -n 65536
+```
+
 ---
 
 ## Tech Stack

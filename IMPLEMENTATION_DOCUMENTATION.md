@@ -1138,6 +1138,36 @@ To prevent JVM `OutOfMemoryError` on monolithic codebases where holding all Comp
 - **Stale Rows:** When files, classes, or methods are deleted or renamed in the repository, previous vector rows remain in PostgreSQL unless pruned out-of-band.
 - **In-Flight Writes on Failure (No Write Fencing):** If a streaming indexing failure occurs after batches have been admitted to `EmbeddingQueue`, in-flight persistence transactions in `PgVectorBulkWriter` can finish committing to PostgreSQL after the failure is recorded and the indexing call returns an error. The queue and persistence layers currently do not implement fencing tokens.
 
+### 17.3. OS-Level Socket & TCP Port Tuning for Monolithic Workloads
+When indexing monolithic repositories (e.g., Spring Framework generating ~134,871 chunks across 1,349 sub-batches), parallel virtual-thread workers continuously make HTTP requests to Ollama and PostgreSQL JDBC connections. By default, operating systems place closed sockets in a `TIME_WAIT` state to ensure out-of-order packets drain safely:
+- On Windows, the default `TcpTimedWaitDelay` is **240 seconds (4 minutes)** with ~16,384 dynamic ports. Under heavy load, rapid socket turnover can exhaust the pool, triggering Windows Socket error 10055 (`WSAENOBUFS: bind failed - operation on a socket could not be performed because the system lacked sufficient buffer space or because a queue was full`).
+- While ASTra's `BatchEmbeddingHelper` implements progressive exponential retry to absorb temporary socket delays, configuring the operating system removes the bottleneck entirely.
+
+#### OS Optimization Commands:
+- **Windows (Administrator PowerShell):**
+  ```powershell
+  # Expand dynamic ephemeral TCP port range (from 16,384 to 64,510 ports)
+  netsh int ipv4 set dynamicport tcp start=1025 num=64510
+
+  # Reduce TIME_WAIT delay from 240 seconds down to 30 seconds
+  Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -Name "TcpTimedWaitDelay" -Type DWord -Value 30
+  ```
+- **Linux (root / sudo):**
+  ```bash
+  # Expand ephemeral port range & enable fast socket recycling
+  sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+  sudo sysctl -w net.ipv4.tcp_fin_timeout=30
+  sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+  ulimit -n 65535
+  ```
+- **macOS (Terminal):**
+  ```bash
+  # Expand ephemeral port range & reduce MSL
+  sudo sysctl -w net.inet.ip.portrange.first=1024
+  sudo sysctl -w net.inet.tcp.msl=15000
+  ulimit -n 65536
+  ```
+
 
 
 

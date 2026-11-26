@@ -214,16 +214,23 @@ public class LuceneGenerationStore implements AutoCloseable {
             activeStagingSessions.remove(session);
 
             Path repoDir = session.getStagingDir().getParent();
-            Path currentTmp = repoDir.resolve("CURRENT.tmp");
             Path currentFile = repoDir.resolve("CURRENT");
-
-            Files.writeString(currentTmp, session.getGenerationName(), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            Path currentTmp = repoDir.resolve("CURRENT." + UUID.randomUUID().toString().replace("-", "") + ".tmp");
 
             try {
-                Files.move(currentTmp, currentFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(currentTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(currentTmp, session.getGenerationName(), StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+
+                try {
+                    Files.move(currentTmp, currentFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(currentTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                try {
+                    Files.deleteIfExists(currentTmp);
+                } catch (IOException ignored) {
+                }
             }
 
             // Invalidate or refresh cached searcher for this repository
@@ -519,6 +526,14 @@ public class LuceneGenerationStore implements AutoCloseable {
                                 && !activeGens.contains(name)
                                 && !activeDirs.contains(entry.toAbsolutePath().normalize())) {
                             deleteRecursively(entry);
+                        }
+                    } else if (Files.isRegularFile(entry)) {
+                        String name = entry.getFileName().toString();
+                        if (name.startsWith("CURRENT") && name.endsWith(".tmp")) {
+                            try {
+                                Files.deleteIfExists(entry);
+                            } catch (IOException ignored) {
+                            }
                         }
                     }
                 }

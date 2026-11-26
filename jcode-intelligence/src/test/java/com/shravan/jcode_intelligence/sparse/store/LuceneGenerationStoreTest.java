@@ -290,4 +290,67 @@ class LuceneGenerationStoreTest {
         List<Document> searchResults = store.search(repoId, "concurrent", 10);
         assertFalse(searchResults.isEmpty());
     }
+
+    @Test
+    @DisplayName("Two concurrent publishes do not interfere and published generation matches a completed session")
+    void testConcurrentPublishesDoNotInterfere() throws Exception {
+        String repoId = "concurrent-publish-repo";
+
+        LuceneGenerationStore.StagingSession session1 = store.stageGeneration(repoId);
+        session1.writeDocuments(List.of(new Document("doc-1", "session one unique text",
+                Map.of("repositoryId", repoId, "docId", "doc-1"))));
+
+        LuceneGenerationStore.StagingSession session2 = store.stageGeneration(repoId);
+        session2.writeDocuments(List.of(new Document("doc-2", "session two unique text",
+                Map.of("repositoryId", repoId, "docId", "doc-2"))));
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        Future<?> f1 = executor.submit(() -> {
+            barrier.await();
+            store.publishGeneration(session1);
+            return null;
+        });
+
+        Future<?> f2 = executor.submit(() -> {
+            barrier.await();
+            store.publishGeneration(session2);
+            return null;
+        });
+
+        // Ensure both completed without throwing exceptions
+        f1.get(10, TimeUnit.SECONDS);
+        f2.get(10, TimeUnit.SECONDS);
+        executor.shutdown();
+
+        Path currentFile = tempDir.resolve("sparse-index").resolve(repoId).resolve("CURRENT");
+        assertTrue(Files.exists(currentFile), "CURRENT file must exist");
+        String publishedGen = Files.readString(currentFile, java.nio.charset.StandardCharsets.UTF_8).trim();
+
+        // The published generation must match one of the completed sessions
+        java.util.Set<String> validGens = java.util.Set.of(session1.getGenerationName(), session2.getGenerationName());
+        assertTrue(validGens.contains(publishedGen),
+                "CURRENT generation (" + publishedGen + ") must match a completed session (" + validGens + ")");
+
+        // The directory for the published generation must exist and be valid
+        Path publishedGenDir = tempDir.resolve("sparse-index").resolve(repoId).resolve(publishedGen);
+        assertTrue(Files.isDirectory(publishedGenDir), "Published generation directory must exist");
+
+        // Verify search works and retrieves the document from the winning session
+        String expectedDocId = publishedGen.equals(session1.getGenerationName()) ? "doc-1" : "doc-2";
+        String query = publishedGen.equals(session1.getGenerationName()) ? "session one" : "session two";
+        List<Document> searchResults = store.search(repoId, query, 5);
+        assertFalse(searchResults.isEmpty(), "Search should find document for published generation");
+        assertEquals(expectedDocId, searchResults.get(0).getId());
+
+        // Verify no stray temporary CURRENT.*.tmp files were left behind
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(tempDir.resolve("sparse-index").resolve(repoId))) {
+            for (Path entry : stream) {
+                String name = entry.getFileName().toString();
+                assertFalse(name.startsWith("CURRENT") && name.endsWith(".tmp"),
+                        "No temporary CURRENT pointer files should remain: " + name);
+            }
+        }
+    }
 }

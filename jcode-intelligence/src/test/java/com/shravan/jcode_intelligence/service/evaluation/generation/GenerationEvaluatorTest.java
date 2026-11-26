@@ -227,4 +227,104 @@ class GenerationEvaluatorTest {
         assertEquals(0, result.totalCitations());
         assertNull(result.citationPrecision(), "Citation precision must be null when answer contains 0 citations");
     }
+
+    @Test
+    @DisplayName("Empty judge JSON {} is treated as failed evaluation rather than receiving perfect faithfulness")
+    void testEmptyJudgeJson_treatedAsFailedEvaluation() {
+        when(mockLlmClient.generateWithUsage(any(), isNull()))
+                .thenReturn(new LLMResponse("{}", 10, 10, 15L, "judge-model"));
+
+        GenerationEvaluationResult result = evaluator.evaluate(
+                "query", "prompt", "Generated answer.", "reference", List.of()
+        );
+
+        assertNotNull(result);
+        assertEquals("FAILED", result.status());
+        assertFalse(result.isSuccess());
+        assertNotNull(result.failureReason());
+        assertTrue(result.failureReason().contains("claims") || result.failureReason().contains("Invalid judge JSON"));
+        assertNull(result.faithfulness(), "Faithfulness must be null on failed evaluation, never 1.0");
+        assertNull(result.relevancy(), "Relevancy must be null on failed evaluation");
+        assertNull(result.correctness(), "Correctness must be null on failed evaluation");
+        assertNull(result.totalClaims());
+        assertNull(result.ungroundedClaims());
+    }
+
+    @Test
+    @DisplayName("Incomplete judge JSON missing relevancyRating is treated as failed evaluation")
+    void testIncompleteJudgeJson_missingRelevancyRating_treatedAsFailedEvaluation() {
+        String judgeJsonResponse = """
+                {
+                  "claims": [
+                    { "claim": "Valid statement", "verdict": "SUPPORTED" }
+                  ],
+                  "correctnessRating": 4
+                }
+                """;
+
+        when(mockLlmClient.generateWithUsage(any(), isNull()))
+                .thenReturn(new LLMResponse(judgeJsonResponse, 40, 20, 15L, "judge-model"));
+
+        GenerationEvaluationResult result = evaluator.evaluate(
+                "query", "prompt", "Generated answer.", "reference", List.of()
+        );
+
+        assertNotNull(result);
+        assertEquals("FAILED", result.status());
+        assertFalse(result.isSuccess());
+        assertNotNull(result.failureReason());
+        assertTrue(result.failureReason().contains("relevancyRating"));
+        assertNull(result.faithfulness());
+    }
+
+    @Test
+    @DisplayName("Incomplete judge JSON missing correctnessRating when reference answer is present is treated as failed evaluation")
+    void testIncompleteJudgeJson_missingCorrectnessWithReference_treatedAsFailedEvaluation() {
+        String judgeJsonResponse = """
+                {
+                  "claims": [
+                    { "claim": "Valid statement", "verdict": "SUPPORTED" }
+                  ],
+                  "relevancyRating": 5
+                }
+                """;
+
+        when(mockLlmClient.generateWithUsage(any(), isNull()))
+                .thenReturn(new LLMResponse(judgeJsonResponse, 40, 20, 15L, "judge-model"));
+
+        GenerationEvaluationResult result = evaluator.evaluate(
+                "query", "prompt", "Generated answer.", "ground-truth reference answer", List.of()
+        );
+
+        assertNotNull(result);
+        assertEquals("FAILED", result.status());
+        assertFalse(result.isSuccess());
+        assertNotNull(result.failureReason());
+        assertTrue(result.failureReason().contains("correctnessRating"));
+        assertNull(result.faithfulness());
+    }
+
+    @Test
+    @DisplayName("Invalid field types in judge JSON are treated as failed evaluation")
+    void testInvalidFieldTypes_treatedAsFailedEvaluation() {
+        String judgeJsonResponse = """
+                {
+                  "claims": "not-an-array",
+                  "relevancyRating": "five",
+                  "correctnessRating": 4
+                }
+                """;
+
+        when(mockLlmClient.generateWithUsage(any(), isNull()))
+                .thenReturn(new LLMResponse(judgeJsonResponse, 30, 20, 15L, "judge-model"));
+
+        GenerationEvaluationResult result = evaluator.evaluate(
+                "query", "prompt", "Generated answer.", "reference", List.of()
+        );
+
+        assertNotNull(result);
+        assertEquals("FAILED", result.status());
+        assertFalse(result.isSuccess());
+        assertNull(result.faithfulness());
+    }
 }

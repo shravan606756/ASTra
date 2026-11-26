@@ -245,45 +245,72 @@ public class GenerationEvaluator {
             }
 
             JsonNode root = objectMapper.readTree(json);
+            if (root == null || !root.isObject()) {
+                return GenerationEvaluationResult.failed("Invalid judge JSON: root must be a JSON object");
+            }
 
-            // 1. Claims and Faithfulness
+            // 1. Validate required fields and their types
+            if (!root.has("claims") || !root.get("claims").isArray()) {
+                return GenerationEvaluationResult.failed("Invalid judge JSON: missing or non-array 'claims' field");
+            }
+
+            if (!root.hasNonNull("relevancyRating") || !root.get("relevancyRating").isNumber()) {
+                return GenerationEvaluationResult.failed("Invalid judge JSON: missing or non-numeric 'relevancyRating'");
+            }
+
+            if (hasReferenceAnswer && (!root.hasNonNull("correctnessRating") || !root.get("correctnessRating").isNumber())) {
+                return GenerationEvaluationResult.failed(
+                        "Invalid judge JSON: missing or non-numeric 'correctnessRating' when reference answer is provided");
+            }
+
+            if (root.hasNonNull("correctnessRating") && !root.get("correctnessRating").isNumber()) {
+                return GenerationEvaluationResult.failed("Invalid judge JSON: 'correctnessRating' must be numeric or null");
+            }
+
+            if (root.has("citationVerdicts") && !root.get("citationVerdicts").isArray()) {
+                return GenerationEvaluationResult.failed("Invalid judge JSON: 'citationVerdicts' must be an array");
+            }
+
+            // 2. Claims and Faithfulness
             List<ClaimVerdict> claimVerdicts = new ArrayList<>();
             int groundedCount = 0;
             JsonNode claimsNode = root.get("claims");
-            if (claimsNode != null && claimsNode.isArray()) {
-                for (JsonNode cNode : claimsNode) {
-                    String claim = cNode.has("claim") ? cNode.get("claim").asText() : "";
-                    String verdict = cNode.has("verdict") ? cNode.get("verdict").asText() : "UNGROUNDED";
-                    ClaimVerdict cv = new ClaimVerdict(claim, verdict);
-                    claimVerdicts.add(cv);
-                    if (cv.isGrounded()) {
-                        groundedCount++;
-                    }
+            for (JsonNode cNode : claimsNode) {
+                if (!cNode.isObject()) {
+                    return GenerationEvaluationResult.failed("Invalid judge JSON: claim entry must be a JSON object");
+                }
+                String claim = cNode.has("claim") ? cNode.get("claim").asText() : "";
+                String verdict = cNode.has("verdict") ? cNode.get("verdict").asText() : "UNGROUNDED";
+                ClaimVerdict cv = new ClaimVerdict(claim, verdict);
+                claimVerdicts.add(cv);
+                if (cv.isGrounded()) {
+                    groundedCount++;
                 }
             }
 
             int totalClaims = claimVerdicts.size();
             int ungroundedClaims = totalClaims - groundedCount;
-            Double faithfulness = (totalClaims > 0) ? (double) groundedCount / totalClaims : 1.0;
+            Double faithfulness = (totalClaims > 0) ? (double) groundedCount / totalClaims : null;
 
-            // 2. Ratings
-            Double relevancy = null;
-            if (root.has("relevancyRating") && !root.get("relevancyRating").isNull()) {
-                relevancy = normalizeRating(root.get("relevancyRating").asDouble());
-            }
+            // 3. Ratings
+            Double relevancy = normalizeRating(root.get("relevancyRating").asDouble());
 
             Double correctness = null;
-            if (hasReferenceAnswer && root.has("correctnessRating") && !root.get("correctnessRating").isNull()) {
+            if (hasReferenceAnswer) {
                 correctness = normalizeRating(root.get("correctnessRating").asDouble());
             }
 
-            // 3. Citation verdicts and Citation Precision
+            // 4. Citation verdicts and Citation Precision
             Map<Integer, String> judgeVerdicts = new HashMap<>();
             Map<Integer, String> judgeRationales = new HashMap<>();
             JsonNode citVerdictsNode = root.get("citationVerdicts");
             if (citVerdictsNode != null && citVerdictsNode.isArray()) {
                 for (JsonNode cvNode : citVerdictsNode) {
-                    int idx = cvNode.has("citationIndex") ? cvNode.get("citationIndex").asInt() : -1;
+                    if (!cvNode.isObject()) {
+                        return GenerationEvaluationResult.failed("Invalid judge JSON: citation verdict entry must be a JSON object");
+                    }
+                    int idx = cvNode.has("citationIndex") && cvNode.get("citationIndex").isInt()
+                            ? cvNode.get("citationIndex").asInt() : -1;
                     String v = cvNode.has("verdict") ? cvNode.get("verdict").asText() : "UNSUPPORTED";
                     String r = cvNode.has("rationale") ? cvNode.get("rationale").asText() : "";
                     if (idx >= 0) {

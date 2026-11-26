@@ -8,18 +8,37 @@ import java.util.EnumMap;
 import java.util.Map;
 
 /**
- * Centralized configuration for intent-aware retrieval.
+ * Centralized configuration for intent-aware retrieval and heuristic reranking.
  *
  * <p>Provides per-intent:
  * <ul>
  *   <li>Chunk-type weights for reranking</li>
  *   <li>Adaptive Top-K values (raw fetch + final return)</li>
+ *   <li>Configurable heuristic reranking weights (w_retrieval, w_symbol, w_completeness, neutral score)</li>
+ *   <li>Default reranking strategy selection</li>
  * </ul>
  *
  * <p>All values are configurable via {@code application.properties}.
  */
 @Configuration
 public class IntentRetrievalConfig {
+
+    // ── Heuristic Reranking & Strategy Configuration ─────────
+
+    @Value("${astra.retrieval.rerank.strategy:heuristic}")
+    private String rerankingStrategy = "heuristic";
+
+    @Value("${astra.retrieval.rerank.w-retrieval:10.0}")
+    private double wRetrieval = 10.0;
+
+    @Value("${astra.retrieval.rerank.w-symbol:1.0}")
+    private double wSymbol = 1.0;
+
+    @Value("${astra.retrieval.rerank.w-completeness:1.0}")
+    private double wCompleteness = 1.0;
+
+    @Value("${astra.retrieval.rerank.neutral-retrieval-score:0.5}")
+    private double neutralRetrievalScore = 0.5;
 
     // ── Adaptive Top-K per Intent ─────────────────────────────
 
@@ -53,8 +72,8 @@ public class IntentRetrievalConfig {
     @Value("${astra.retrieval.raw-fetch-multiplier:2}")
     private int rawFetchMultiplier;
 
-    @Value("${astra.retrieval.similarity-threshold:0.65}")
-    private double similarityThreshold;
+    @Value("${astra.retrieval.similarity-threshold:0.50}")
+    private double similarityThreshold = 0.50;
 
     @Value("${astra.debug.intent:true}")
     private boolean debugIntentEnabled;
@@ -89,6 +108,46 @@ public class IntentRetrievalConfig {
 
     public boolean isDebugIntentEnabled() {
         return debugIntentEnabled;
+    }
+
+    public String getRerankingStrategy() {
+        return rerankingStrategy;
+    }
+
+    public void setRerankingStrategy(String rerankingStrategy) {
+        this.rerankingStrategy = rerankingStrategy;
+    }
+
+    public double getWRetrieval() {
+        return wRetrieval;
+    }
+
+    public void setWRetrieval(double wRetrieval) {
+        this.wRetrieval = wRetrieval;
+    }
+
+    public double getWSymbol() {
+        return wSymbol;
+    }
+
+    public void setWSymbol(double wSymbol) {
+        this.wSymbol = wSymbol;
+    }
+
+    public double getWCompleteness() {
+        return wCompleteness;
+    }
+
+    public void setWCompleteness(double wCompleteness) {
+        this.wCompleteness = wCompleteness;
+    }
+
+    public double getNeutralRetrievalScore() {
+        return neutralRetrievalScore;
+    }
+
+    public void setNeutralRetrievalScore(double neutralRetrievalScore) {
+        this.neutralRetrievalScore = neutralRetrievalScore;
     }
 
     // ── Chunk-Type Weights per Intent ─────────────────────────

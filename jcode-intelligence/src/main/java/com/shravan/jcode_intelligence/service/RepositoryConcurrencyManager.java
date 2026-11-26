@@ -116,7 +116,7 @@ public class RepositoryConcurrencyManager {
     }
 
     private String normalizeRepoId(String repositoryId) {
-        return LuceneGenerationStore.validateRepositoryId(repositoryId);
+        return (repositoryId != null && !repositoryId.isBlank()) ? repositoryId.trim() : "default";
     }
 }
 

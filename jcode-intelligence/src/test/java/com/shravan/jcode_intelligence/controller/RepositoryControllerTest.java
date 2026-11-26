@@ -63,4 +63,19 @@ class RepositoryControllerTest {
 
         verifyNoInteractions(service);
     }
+
+    @Test
+    @DisplayName("Legacy repository ID repo@v1 is accepted by controller and passed to service")
+    void testLegacyRepoAtV1AcceptedByController() {
+        when(service.removeRepository("repo@v1")).thenReturn(true);
+        when(service.getRepositoryStats("repo@v1")).thenReturn(new RepositoryStatsDTO());
+
+        ResponseEntity<Void> deleteResponse = controller.removeRepository("repo@v1");
+        assertEquals(HttpStatus.NO_CONTENT, deleteResponse.getStatusCode());
+        verify(service).removeRepository("repo@v1");
+
+        ResponseEntity<RepositoryStatsDTO> statsResponse = controller.getRepositoryStats("repo@v1");
+        assertEquals(HttpStatus.OK, statsResponse.getStatusCode());
+        verify(service).getRepositoryStats("repo@v1");
+    }
 }

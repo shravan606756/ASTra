@@ -84,13 +84,14 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
         if (repositoryId == null || repositoryId.isBlank()) {
             throw new IllegalArgumentException("repositoryId must not be null or blank for repository deletion");
         }
-        String safeRepoId = normalizeRepoId(repositoryId);
+        String safeRepoId = repositoryId.trim();
         if (concurrencyManager != null) {
             concurrencyManager.acquireOrThrow(safeRepoId);
         }
         try {
-            // Check sparse existence before SQL deletion
-            boolean sparseExisted = (luceneGenerationStore != null) && luceneGenerationStore.hasIndex(safeRepoId);
+            boolean isSafeSparseId = LuceneGenerationStore.isValidRepositoryId(safeRepoId);
+            // Check sparse existence before SQL deletion only if ID is safe for sparse filesystem store
+            boolean sparseExisted = isSafeSparseId && (luceneGenerationStore != null) && luceneGenerationStore.hasIndex(safeRepoId);
 
             String sqlVector = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
             int deletedVectors = jdbcTemplate.update(sqlVector, safeRepoId);
@@ -100,8 +101,8 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
 
             boolean removed = deletedVectors > 0 || deletedStats > 0 || sparseExisted;
 
-            // Delete sparse data after commit, or immediately without an active transaction
-            if (removed && luceneGenerationStore != null) {
+            // Delete sparse data after commit, or immediately without an active transaction, only if safe for sparse store
+            if (removed && isSafeSparseId && luceneGenerationStore != null) {
                 if (TransactionSynchronizationManager.isActualTransactionActive()) {
                     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                         @Override
@@ -123,7 +124,10 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
     }
 
     private String normalizeRepoId(String repositoryId) {
-        return LuceneGenerationStore.validateNonBlankRepositoryId(repositoryId);
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank");
+        }
+        return repositoryId.trim();
     }
 
     @Override
@@ -169,7 +173,10 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
 
     @Override
     public com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId) {
-        String safeRepoId = normalizeRepoId(repositoryId);
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank");
+        }
+        String safeRepoId = repositoryId.trim();
         String sql = "SELECT * FROM repository_statistics WHERE repository_id = ?";
 
         return jdbcTemplate.query(sql, rs -> {

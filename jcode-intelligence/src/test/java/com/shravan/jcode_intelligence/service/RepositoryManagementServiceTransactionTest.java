@@ -185,4 +185,53 @@ class RepositoryManagementServiceTransactionTest {
         verify(store).hasIndex("default");
         verify(concurrencyManager).release("default");
     }
+
+    @Test
+    @DisplayName("Legacy repository ID repo@v1 is deleted via parameterized SQL and never passed to sparse store")
+    void testLegacyRepoAtV1DeletedViaSqlWithoutSparseAccess() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        LuceneGenerationStore store = mock(LuceneGenerationStore.class);
+        RepositoryConcurrencyManager concurrencyManager = mock(RepositoryConcurrencyManager.class);
+
+        when(jdbcTemplate.update(eq("DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?"), eq("repo@v1")))
+                .thenReturn(10);
+        when(jdbcTemplate.update(eq("DELETE FROM repository_statistics WHERE repository_id = ?"), eq("repo@v1")))
+                .thenReturn(1);
+
+        RepositoryManagementServiceImpl service =
+                new RepositoryManagementServiceImpl(jdbcTemplate, concurrencyManager, store);
+
+        boolean removed = service.removeRepository("repo@v1");
+        assertTrue(removed, "Legacy repo@v1 with SQL rows must return true for successful removal");
+
+        // Concurrency manager locks on the trimmed ID
+        verify(concurrencyManager).acquireOrThrow("repo@v1");
+        verify(concurrencyManager).release("repo@v1");
+
+        // Parameterized SQL updates executed for repo@v1
+        verify(jdbcTemplate).update("DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?", "repo@v1");
+        verify(jdbcTemplate).update("DELETE FROM repository_statistics WHERE repository_id = ?", "repo@v1");
+
+        // CRITICAL: LuceneGenerationStore must NEVER be called with the unsafe legacy ID
+        verify(store, never()).hasIndex(anyString());
+        verify(store, never()).deleteRepositoryIndex(anyString());
+        verifyNoInteractions(store);
+    }
+
+    @Test
+    @DisplayName("Legacy repository ID repo@v1 statistics can be read via parameterized SQL without sparse store access")
+    void testLegacyRepoAtV1StatisticsReadViaSql() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        LuceneGenerationStore store = mock(LuceneGenerationStore.class);
+        RepositoryConcurrencyManager concurrencyManager = mock(RepositoryConcurrencyManager.class);
+
+        RepositoryManagementServiceImpl service =
+                new RepositoryManagementServiceImpl(jdbcTemplate, concurrencyManager, store);
+
+        service.getRepositoryStats("repo@v1");
+
+        verify(jdbcTemplate).query(eq("SELECT * FROM repository_statistics WHERE repository_id = ?"),
+                any(org.springframework.jdbc.core.ResultSetExtractor.class), eq("repo@v1"));
+        verifyNoInteractions(store);
+    }
 }

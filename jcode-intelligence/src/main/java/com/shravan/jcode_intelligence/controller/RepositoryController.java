@@ -31,8 +31,7 @@ public class RepositoryController {
         if (repositoryId == null || repositoryId.isBlank()) {
             throw new IllegalArgumentException("repositoryId must not be null or blank for repository deletion");
         }
-        LuceneGenerationStore.validateNonBlankRepositoryId(repositoryId);
-        boolean removed = repositoryManagementService.removeRepository(repositoryId);
+        boolean removed = repositoryManagementService.removeRepository(repositoryId.trim());
         if (removed) {
             return ResponseEntity.noContent().build();
         } else {
@@ -45,7 +44,6 @@ public class RepositoryController {
         if (repositoryId == null || repositoryId.isBlank()) {
             throw new IllegalArgumentException("repositoryId must not be null or blank");
         }
-        LuceneGenerationStore.validateNonBlankRepositoryId(repositoryId);
-        return ResponseEntity.ok(repositoryManagementService.getRepositoryStats(repositoryId));
+        return ResponseEntity.ok(repositoryManagementService.getRepositoryStats(repositoryId.trim()));
     }
 }

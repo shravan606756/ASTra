@@ -459,4 +459,29 @@ class LuceneGenerationStoreTest {
         assertEquals(1, results.size());
         assertEquals("doc-def", results.get(0).getId());
     }
+
+    @Test
+    @DisplayName("isValidRepositoryId distinguishes safe filesystem IDs from unsafe or legacy IDs")
+    void testIsValidRepositoryId() {
+        assertTrue(LuceneGenerationStore.isValidRepositoryId("valid-repo"));
+        assertTrue(LuceneGenerationStore.isValidRepositoryId("repo_123"));
+        assertTrue(LuceneGenerationStore.isValidRepositoryId("repo.v1"));
+        assertTrue(LuceneGenerationStore.isValidRepositoryId("REPO-A"));
+
+        // Unsafe or legacy IDs
+        assertFalse(LuceneGenerationStore.isValidRepositoryId("repo@v1"));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId("repo#1"));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId("../outside"));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId(".."));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId("."));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId(""));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId("   "));
+        assertFalse(LuceneGenerationStore.isValidRepositoryId(null));
+
+        // Filesystem operations strictly reject legacy repo@v1
+        assertThrows(IllegalArgumentException.class, () -> store.stageGeneration("repo@v1"));
+        assertThrows(IllegalArgumentException.class, () -> store.resolveRepoDir("repo@v1"));
+        assertThrows(IllegalArgumentException.class, () -> store.search("repo@v1", "query", 5));
+        assertThrows(IllegalArgumentException.class, () -> store.hasIndex("repo@v1"));
+    }
 }

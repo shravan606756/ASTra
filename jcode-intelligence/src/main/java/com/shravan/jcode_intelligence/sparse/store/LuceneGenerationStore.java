@@ -114,6 +114,21 @@ public class LuceneGenerationStore implements AutoCloseable {
     }
 
     /**
+     * Checks whether the provided repositoryId is a valid single safe path component
+     * suitable for filesystem storage without throwing an exception.
+     *
+     * @param repositoryId caller-provided repository identifier
+     * @return true if repositoryId is non-null, non-blank, and safe for filesystem operations
+     */
+    public static boolean isValidRepositoryId(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            return false;
+        }
+        String trimmed = repositoryId.trim();
+        return !trimmed.equals(".") && !trimmed.equals("..") && SAFE_REPO_ID_PATTERN.matcher(trimmed).matches();
+    }
+
+    /**
      * Resolves and verifies the repository directory under the configured index root.
      *
      * @param repositoryId caller-provided repository identifier

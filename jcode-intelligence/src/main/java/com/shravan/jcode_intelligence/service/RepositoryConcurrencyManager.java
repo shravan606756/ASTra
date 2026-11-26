@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.service;
 
 import com.shravan.jcode_intelligence.exception.IndexingConflictException;
+import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -115,7 +116,7 @@ public class RepositoryConcurrencyManager {
     }
 
     private String normalizeRepoId(String repositoryId) {
-        return (repositoryId != null && !repositoryId.isBlank()) ? repositoryId.trim() : "default";
+        return LuceneGenerationStore.validateRepositoryId(repositoryId);
     }
 }
 

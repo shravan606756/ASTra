@@ -353,4 +353,87 @@ class LuceneGenerationStoreTest {
             }
         }
     }
+
+    @Test
+    @DisplayName("resolveRepoDir confines safe IDs to index root and rejects traversal and absolute path IDs")
+    void testResolveRepoDir_validAndInvalidIds() {
+        Path baseDir = tempDir.resolve("sparse-index").toAbsolutePath().normalize();
+
+        // Valid repository IDs
+        assertEquals(baseDir.resolve("my-repo"), store.resolveRepoDir("my-repo"));
+        assertEquals(baseDir.resolve("repo_123"), store.resolveRepoDir("repo_123"));
+        assertEquals(baseDir.resolve("repo.v1"), store.resolveRepoDir("repo.v1"));
+        assertEquals(baseDir.resolve("REPO-A"), store.resolveRepoDir("REPO-A"));
+
+        // Null and blank default to "default"
+        assertEquals(baseDir.resolve("default"), store.resolveRepoDir(null));
+        assertEquals(baseDir.resolve("default"), store.resolveRepoDir(""));
+        assertEquals(baseDir.resolve("default"), store.resolveRepoDir("   "));
+
+        // Path traversal and absolute path IDs must throw IllegalArgumentException
+        List<String> invalidIds = List.of(
+                "../escaped",
+                "..\\escaped",
+                "..",
+                ".",
+                "../../root",
+                "/etc/passwd",
+                "/var/data",
+                "C:\\Windows\\System32",
+                "C:/Windows",
+                "foo/bar",
+                "foo\\bar",
+                "foo bar",
+                "foo;bar",
+                "foo*bar"
+        );
+
+        for (String invalidId : invalidIds) {
+            assertThrows(IllegalArgumentException.class, () -> store.resolveRepoDir(invalidId),
+                    "Expected IllegalArgumentException for ID: " + invalidId);
+        }
+    }
+
+    @Test
+    @DisplayName("stageGeneration rejects traversal and absolute path IDs without creating files outside root")
+    void testStageGeneration_rejectsPathTraversalAndAbsolutePaths() throws IOException {
+        Path outsideDir = tempDir.resolve("outside-target");
+        Files.createDirectories(outsideDir);
+
+        assertThrows(IllegalArgumentException.class, () -> store.stageGeneration("../outside-target"));
+        assertThrows(IllegalArgumentException.class, () -> store.stageGeneration(outsideDir.toAbsolutePath().toString()));
+
+        // Verify outside directory remains empty
+        try (var stream = Files.newDirectoryStream(outsideDir)) {
+            assertFalse(stream.iterator().hasNext(), "Outside directory must not contain any staged files");
+        }
+    }
+
+    @Test
+    @DisplayName("search, hasIndex, and getDocumentCount reject path traversal IDs")
+    void testSearchAndHasIndex_rejectsPathTraversal() {
+        assertThrows(IllegalArgumentException.class, () -> store.search("../outside", "query", 5));
+        assertThrows(IllegalArgumentException.class, () -> store.hasIndex("../outside"));
+        assertThrows(IllegalArgumentException.class, () -> store.getDocumentCount("../outside"));
+        assertThrows(IllegalArgumentException.class, () -> store.search("/etc/passwd", "query", 5));
+        assertThrows(IllegalArgumentException.class, () -> store.hasIndex("/etc/passwd"));
+        assertThrows(IllegalArgumentException.class, () -> store.getDocumentCount("/etc/passwd"));
+    }
+
+    @Test
+    @DisplayName("deleteRepositoryIndex rejects path traversal without deleting external directories")
+    void testDeleteRepositoryIndex_rejectsPathTraversalDoesNotDeleteExternalDirectory() throws IOException {
+        Path victimDir = tempDir.resolve("victim-dir");
+        Files.createDirectories(victimDir);
+        Path secretFile = victimDir.resolve("important.txt");
+        Files.writeString(secretFile, "critical data");
+
+        assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex("../victim-dir"));
+        assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex(victimDir.toAbsolutePath().toString()));
+
+        // Verify victim directory and its files still exist
+        assertTrue(Files.exists(victimDir), "Victim directory must not be deleted by path traversal");
+        assertTrue(Files.exists(secretFile), "Victim file must not be deleted by path traversal");
+        assertEquals("critical data", Files.readString(secretFile));
+    }
 }

@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.controller;
 
 import com.shravan.jcode_intelligence.service.RepositoryManagementService;
+import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,6 +28,7 @@ public class RepositoryController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> removeRepository(@PathVariable("id") String repositoryId) {
+        LuceneGenerationStore.validateRepositoryId(repositoryId);
         boolean removed = repositoryManagementService.removeRepository(repositoryId);
         if (removed) {
             return ResponseEntity.noContent().build();
@@ -37,6 +39,7 @@ public class RepositoryController {
 
     @GetMapping("/{id}/stats")
     public ResponseEntity<com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO> getRepositoryStats(@PathVariable("id") String repositoryId) {
+        LuceneGenerationStore.validateRepositoryId(repositoryId);
         return ResponseEntity.ok(repositoryManagementService.getRepositoryStats(repositoryId));
     }
 }

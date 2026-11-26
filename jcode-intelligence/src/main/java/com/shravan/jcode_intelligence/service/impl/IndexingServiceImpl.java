@@ -249,7 +249,7 @@ public class IndexingServiceImpl implements IndexingService {
     @Override
     public int indexProject(String projectPath, String repositoryId) throws IOException {
         long startTime = System.currentTimeMillis();
-        String safeRepoId = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "default";
+        String safeRepoId = LuceneGenerationStore.validateRepositoryId(repositoryId);
 
         if (concurrencyManager != null) {
             concurrencyManager.acquireOrThrow(safeRepoId);

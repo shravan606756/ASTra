@@ -120,7 +120,7 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
     }
 
     private String normalizeRepoId(String repositoryId) {
-        return (repositoryId != null && !repositoryId.isBlank()) ? repositoryId.trim() : "default";
+        return LuceneGenerationStore.validateRepositoryId(repositoryId);
     }
 
     @Override
@@ -166,6 +166,7 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
 
     @Override
     public com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId) {
+        String safeRepoId = normalizeRepoId(repositoryId);
         String sql = "SELECT * FROM repository_statistics WHERE repository_id = ?";
 
         return jdbcTemplate.query(sql, rs -> {
@@ -186,6 +187,6 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
                         rs.getLong("indexing_time_ms"));
             }
             return new com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO();
-        }, repositoryId);
+        }, safeRepoId);
     }
 }

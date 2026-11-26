@@ -42,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -68,13 +69,54 @@ public class LuceneGenerationStore implements AutoCloseable {
     private final LuceneDocumentMapper mapper;
     private final LuceneQueryBuilder queryBuilder;
 
+    public static final Pattern SAFE_REPO_ID_PATTERN = Pattern.compile("^[A-Za-z0-9._-]+$");
+
     private final ConcurrentMap<String, SearcherHolder> searcherCache = new ConcurrentHashMap<>();
     private final Set<StagingSession> activeStagingSessions = ConcurrentHashMap.newKeySet();
     private final ConcurrentMap<String, Object> repoLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
+    /**
+     * Validates that the provided repositoryId is a single safe path component.
+     * Rejects path separators, relative traversal sequences, and absolute paths.
+     * Defaults to "default" if null or blank.
+     *
+     * @param repositoryId caller-provided repository identifier
+     * @return validated safe repository ID
+     * @throws IllegalArgumentException if repositoryId contains path traversal or invalid characters
+     */
+    public static String validateRepositoryId(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            return "default";
+        }
+        String trimmed = repositoryId.trim();
+        if (trimmed.equals(".") || trimmed.equals("..") || !SAFE_REPO_ID_PATTERN.matcher(trimmed).matches()) {
+            throw new IllegalArgumentException("Invalid repositoryId '" + repositoryId +
+                    "': repositoryId must be a single safe path component matching [A-Za-z0-9._-]+ and cannot be '.' or '..'");
+        }
+        return trimmed;
+    }
+
+    /**
+     * Resolves and verifies the repository directory under the configured index root.
+     *
+     * @param repositoryId caller-provided repository identifier
+     * @return normalized Path guaranteed to reside strictly inside the index root
+     * @throws IllegalArgumentException if repositoryId is invalid or attempts path traversal
+     */
+    public Path resolveRepoDir(String repositoryId) {
+        String safeRepoId = validateRepositoryId(repositoryId);
+        Path baseDir = Path.of(config.getIndexDir()).toAbsolutePath().normalize();
+        Path repoDir = baseDir.resolve(safeRepoId).normalize();
+
+        if (!repoDir.startsWith(baseDir) || repoDir.equals(baseDir)) {
+            throw new IllegalArgumentException("Repository path traversal detected for repositoryId: " + repositoryId);
+        }
+        return repoDir;
+    }
+
     private Object getRepoLock(String repositoryId) {
-        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        String safeRepoId = validateRepositoryId(repositoryId);
         return repoLocks.computeIfAbsent(safeRepoId, k -> new Object());
     }
 
@@ -175,10 +217,10 @@ public class LuceneGenerationStore implements AutoCloseable {
      */
     public StagingSession stageGeneration(String repositoryId) throws IOException {
         ensureOpen();
-        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
 
         synchronized (getRepoLock(safeRepoId)) {
-            Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
             Files.createDirectories(repoDir);
 
             String genName = "gen_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().replace("-", "");
@@ -269,7 +311,8 @@ public class LuceneGenerationStore implements AutoCloseable {
      * Deletes the entire index and directory structure for a repository.
      */
     public void deleteRepositoryIndex(String repositoryId) {
-        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
         synchronized (getRepoLock(safeRepoId)) {
             evictAndCloseSearcher(safeRepoId);
 
@@ -279,7 +322,6 @@ public class LuceneGenerationStore implements AutoCloseable {
                 }
             }
 
-            Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
             if (Files.exists(repoDir)) {
                 deleteRecursively(repoDir);
             }
@@ -297,7 +339,8 @@ public class LuceneGenerationStore implements AutoCloseable {
             return Collections.emptyList();
         }
 
-        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
         SearcherHolder holder = acquireSearcher(safeRepoId);
         if (holder == null) {
             return Collections.emptyList();
@@ -378,15 +421,19 @@ public class LuceneGenerationStore implements AutoCloseable {
      * Checks if an active published generation exists for the specified repository.
      */
     public boolean hasIndex(String repositoryId) {
-        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId.trim();
-        Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
         Path currentFile = repoDir.resolve("CURRENT");
         if (!Files.exists(currentFile)) {
             return false;
         }
         try {
             String currentGen = Files.readString(currentFile, StandardCharsets.UTF_8).trim();
-            return Files.isDirectory(repoDir.resolve(currentGen));
+            Path genDir = repoDir.resolve(currentGen).normalize();
+            if (!genDir.startsWith(repoDir) || genDir.equals(repoDir)) {
+                return false;
+            }
+            return Files.isDirectory(genDir);
         } catch (IOException e) {
             log.debug("Failed to verify index existence for repo {}: {}", safeRepoId, e.getMessage());
             return false;
@@ -398,7 +445,8 @@ public class LuceneGenerationStore implements AutoCloseable {
      * or 0 if no active generation exists.
      */
     public int getDocumentCount(String repositoryId) {
-        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId.trim();
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
         SearcherHolder holder = acquireSearcher(safeRepoId);
         if (holder == null) {
             return 0;
@@ -410,7 +458,7 @@ public class LuceneGenerationStore implements AutoCloseable {
      * Lists all repositories that have an active published generation.
      */
     public List<String> listRepositories() {
-        Path baseDir = Path.of(config.getIndexDir());
+        Path baseDir = Path.of(config.getIndexDir()).toAbsolutePath().normalize();
         if (!Files.isDirectory(baseDir)) {
             return Collections.emptyList();
         }
@@ -418,7 +466,10 @@ public class LuceneGenerationStore implements AutoCloseable {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(baseDir)) {
             for (Path repoPath : stream) {
                 if (Files.isDirectory(repoPath) && Files.exists(repoPath.resolve("CURRENT"))) {
-                    repos.add(repoPath.getFileName().toString());
+                    String name = repoPath.getFileName().toString();
+                    if (!name.equals(".") && !name.equals("..") && SAFE_REPO_ID_PATTERN.matcher(name).matches()) {
+                        repos.add(name);
+                    }
                 }
             }
         } catch (IOException e) {
@@ -431,7 +482,8 @@ public class LuceneGenerationStore implements AutoCloseable {
      * Lazily acquires or refreshes a cached point-in-time SearcherHolder for a repository.
      */
     private SearcherHolder acquireSearcher(String repositoryId) {
-        Path repoDir = Path.of(config.getIndexDir()).resolve(repositoryId);
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
         Path currentFile = repoDir.resolve("CURRENT");
         if (!Files.exists(currentFile)) {
             return null;
@@ -441,12 +493,12 @@ public class LuceneGenerationStore implements AutoCloseable {
         try {
             currentGen = Files.readString(currentFile, StandardCharsets.UTF_8).trim();
         } catch (IOException e) {
-            log.debug("Failed to read CURRENT pointer for repo {}: {}", repositoryId, e.getMessage());
+            log.debug("Failed to read CURRENT pointer for repo {}: {}", safeRepoId, e.getMessage());
             return null;
         }
 
-        Path genDir = repoDir.resolve(currentGen);
-        if (!Files.isDirectory(genDir)) {
+        Path genDir = repoDir.resolve(currentGen).normalize();
+        if (!genDir.startsWith(repoDir) || genDir.equals(repoDir) || !Files.isDirectory(genDir)) {
             return null;
         }
 

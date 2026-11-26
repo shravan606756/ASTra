@@ -28,7 +28,10 @@ public class RepositoryController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> removeRepository(@PathVariable("id") String repositoryId) {
-        LuceneGenerationStore.validateRepositoryId(repositoryId);
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank for repository deletion");
+        }
+        LuceneGenerationStore.validateNonBlankRepositoryId(repositoryId);
         boolean removed = repositoryManagementService.removeRepository(repositoryId);
         if (removed) {
             return ResponseEntity.noContent().build();
@@ -39,7 +42,10 @@ public class RepositoryController {
 
     @GetMapping("/{id}/stats")
     public ResponseEntity<com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO> getRepositoryStats(@PathVariable("id") String repositoryId) {
-        LuceneGenerationStore.validateRepositoryId(repositoryId);
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank");
+        }
+        LuceneGenerationStore.validateNonBlankRepositoryId(repositoryId);
         return ResponseEntity.ok(repositoryManagementService.getRepositoryStats(repositoryId));
     }
 }

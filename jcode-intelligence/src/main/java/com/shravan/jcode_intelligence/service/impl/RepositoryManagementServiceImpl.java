@@ -81,6 +81,9 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
     @Override
     @org.springframework.transaction.annotation.Transactional
     public boolean removeRepository(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank for repository deletion");
+        }
         String safeRepoId = normalizeRepoId(repositoryId);
         if (concurrencyManager != null) {
             concurrencyManager.acquireOrThrow(safeRepoId);
@@ -120,7 +123,7 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
     }
 
     private String normalizeRepoId(String repositoryId) {
-        return LuceneGenerationStore.validateRepositoryId(repositoryId);
+        return LuceneGenerationStore.validateNonBlankRepositoryId(repositoryId);
     }
 
     @Override

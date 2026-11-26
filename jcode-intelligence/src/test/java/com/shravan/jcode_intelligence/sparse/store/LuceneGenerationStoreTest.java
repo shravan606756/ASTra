@@ -436,4 +436,27 @@ class LuceneGenerationStoreTest {
         assertTrue(Files.exists(secretFile), "Victim file must not be deleted by path traversal");
         assertEquals("critical data", Files.readString(secretFile));
     }
+
+    @Test
+    @DisplayName("deleteRepositoryIndex rejects blank repository ID and leaves default repository intact")
+    void testDeleteRepositoryIndex_rejectsBlankIdAndLeavesDefaultIntact() throws IOException {
+        // Stage and publish default generation
+        LuceneGenerationStore.StagingSession defaultSession = store.stageGeneration("default");
+        defaultSession.writeDocuments(List.of(new Document("doc-def", "default repo content",
+                Map.of("repositoryId", "default"))));
+        store.publishGeneration(defaultSession);
+
+        assertTrue(store.hasIndex("default"));
+
+        // Attempt deletion with null, empty, and whitespace
+        assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex(null));
+        assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex(""));
+        assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex("   "));
+
+        // Default repository must still be completely intact and searchable
+        assertTrue(store.hasIndex("default"), "Default repository must remain intact after blank deletion attempt");
+        List<Document> results = store.search("default", "default", 5);
+        assertEquals(1, results.size());
+        assertEquals("doc-def", results.get(0).getId());
+    }
 }

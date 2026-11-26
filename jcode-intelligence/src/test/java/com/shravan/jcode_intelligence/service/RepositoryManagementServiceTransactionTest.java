@@ -139,30 +139,50 @@ class RepositoryManagementServiceTransactionTest {
     }
 
     @Test
-    @DisplayName("Preserves ID normalization across concurrency, sparse check, and SQL queries")
+    @DisplayName("Blank or null repositoryId is rejected on removeRepository and leaves default repo intact")
+    void testBlankRepositoryIdRejectedOnDeletion() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        LuceneGenerationStore store = mock(LuceneGenerationStore.class);
+        RepositoryConcurrencyManager concurrencyManager = mock(RepositoryConcurrencyManager.class);
+
+        RepositoryManagementServiceImpl service =
+                new RepositoryManagementServiceImpl(jdbcTemplate, concurrencyManager, store);
+
+        assertThrows(IllegalArgumentException.class, () -> service.removeRepository(null));
+        assertThrows(IllegalArgumentException.class, () -> service.removeRepository(""));
+        assertThrows(IllegalArgumentException.class, () -> service.removeRepository("   "));
+
+        // Verify no interactions with SQL, concurrencyManager, or sparse store
+        verifyNoInteractions(jdbcTemplate);
+        verifyNoInteractions(store);
+        verifyNoInteractions(concurrencyManager);
+    }
+
+    @Test
+    @DisplayName("Trims valid repository IDs and allows explicit default deletion")
     void testIdNormalization() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         LuceneGenerationStore store = mock(LuceneGenerationStore.class);
         RepositoryConcurrencyManager concurrencyManager = mock(RepositoryConcurrencyManager.class);
 
-        when(store.hasIndex("default")).thenReturn(true);
-        when(jdbcTemplate.update(anyString(), eq("default"))).thenReturn(1);
+        when(store.hasIndex("trimmed-repo")).thenReturn(true);
+        when(jdbcTemplate.update(anyString(), eq("trimmed-repo"))).thenReturn(1);
 
         RepositoryManagementServiceImpl service =
                 new RepositoryManagementServiceImpl(jdbcTemplate, concurrencyManager, store);
-
-        service.removeRepository(null);
-        verify(concurrencyManager).acquireOrThrow("default");
-        verify(store).hasIndex("default");
-        verify(concurrencyManager).release("default");
-
-        reset(concurrencyManager, store, jdbcTemplate);
-        when(store.hasIndex("trimmed-repo")).thenReturn(true);
-        when(jdbcTemplate.update(anyString(), eq("trimmed-repo"))).thenReturn(1);
 
         service.removeRepository("   trimmed-repo   ");
         verify(concurrencyManager).acquireOrThrow("trimmed-repo");
         verify(store).hasIndex("trimmed-repo");
         verify(concurrencyManager).release("trimmed-repo");
+
+        reset(concurrencyManager, store, jdbcTemplate);
+        when(store.hasIndex("default")).thenReturn(true);
+        when(jdbcTemplate.update(anyString(), eq("default"))).thenReturn(1);
+
+        service.removeRepository("default");
+        verify(concurrencyManager).acquireOrThrow("default");
+        verify(store).hasIndex("default");
+        verify(concurrencyManager).release("default");
     }
 }

@@ -79,7 +79,7 @@ public class LuceneGenerationStore implements AutoCloseable {
     /**
      * Validates that the provided repositoryId is a single safe path component.
      * Rejects path separators, relative traversal sequences, and absolute paths.
-     * Defaults to "default" if null or blank.
+     * Defaults to "default" if null or blank (for indexing paths where omitted ID intentionally defaults).
      *
      * @param repositoryId caller-provided repository identifier
      * @return validated safe repository ID
@@ -88,6 +88,22 @@ public class LuceneGenerationStore implements AutoCloseable {
     public static String validateRepositoryId(String repositoryId) {
         if (repositoryId == null || repositoryId.isBlank()) {
             return "default";
+        }
+        return validateNonBlankRepositoryId(repositoryId);
+    }
+
+    /**
+     * Strictly validates that the provided repositoryId is non-null, non-blank, and a single safe path component.
+     * Rejects null, blank, path separators, relative traversal sequences, and absolute paths.
+     * Use this for deletion and lookup operations where an omitted ID must not target "default".
+     *
+     * @param repositoryId caller-provided repository identifier
+     * @return trimmed safe repository ID
+     * @throws IllegalArgumentException if repositoryId is null, blank, contains traversal, or invalid characters
+     */
+    public static String validateNonBlankRepositoryId(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank");
         }
         String trimmed = repositoryId.trim();
         if (trimmed.equals(".") || trimmed.equals("..") || !SAFE_REPO_ID_PATTERN.matcher(trimmed).matches()) {
@@ -311,6 +327,9 @@ public class LuceneGenerationStore implements AutoCloseable {
      * Deletes the entire index and directory structure for a repository.
      */
     public void deleteRepositoryIndex(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            throw new IllegalArgumentException("repositoryId must not be null or blank for repository deletion");
+        }
         Path repoDir = resolveRepoDir(repositoryId);
         String safeRepoId = repoDir.getFileName().toString();
         synchronized (getRepoLock(safeRepoId)) {

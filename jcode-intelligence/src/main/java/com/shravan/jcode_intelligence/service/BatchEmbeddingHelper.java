@@ -79,7 +79,9 @@ public class BatchEmbeddingHelper {
         for (int j = 0; j < batch.size(); j++) {
             Document doc = batch.get(j);
             String chunkId = (String) doc.getMetadata().get("chunkId");
-            String recordId = EmbeddedRecord.generateDeterministicId(repositoryId, chunkId, doc.getText());
+            String recordId = (doc.getId() != null && !doc.getId().isBlank())
+                    ? doc.getId()
+                    : EmbeddedRecord.generateDeterministicId(repositoryId, chunkId, doc.getText());
             float[] embedding = embeddings.get(j);
             if (embedding == null || embedding.length == 0) {
                 throw new IllegalStateException(String.format(

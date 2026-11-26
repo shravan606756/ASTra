@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.dto.response;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.shravan.jcode_intelligence.model.RetrievalStrategy;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -17,7 +18,10 @@ public class BenchmarkResponse {
     private String mode; // "DATASET" or "CUSTOM_QUESTIONS"
     private String suiteName;
     private String retrievalConfiguration;
+    private String effectiveStrategy;
+    private String rerankingStrategy;
     private int topK;
+    private int failedQueryCount;
     private String timestamp;
     private BenchmarkSummaryDTO summary;
     private List<QueryBenchmarkResultDTO> results = new ArrayList<>();
@@ -82,6 +86,38 @@ public class BenchmarkResponse {
 
     public void setRetrievalConfiguration(String retrievalConfiguration) {
         this.retrievalConfiguration = retrievalConfiguration;
+    }
+
+    public String getEffectiveStrategy() {
+        return effectiveStrategy;
+    }
+
+    public void setEffectiveStrategy(String effectiveStrategy) {
+        this.effectiveStrategy = effectiveStrategy;
+    }
+
+    public void setEffectiveStrategy(RetrievalStrategy effectiveStrategy) {
+        this.effectiveStrategy = (effectiveStrategy != null) ? effectiveStrategy.name() : null;
+    }
+
+    public RetrievalStrategy getEffectiveStrategyEnum() {
+        return effectiveStrategy != null ? RetrievalStrategy.valueOf(effectiveStrategy) : null;
+    }
+
+    public String getRerankingStrategy() {
+        return rerankingStrategy;
+    }
+
+    public void setRerankingStrategy(String rerankingStrategy) {
+        this.rerankingStrategy = rerankingStrategy;
+    }
+
+    public int getFailedQueryCount() {
+        return failedQueryCount;
+    }
+
+    public void setFailedQueryCount(int failedQueryCount) {
+        this.failedQueryCount = failedQueryCount;
     }
 
     public int getTopK() {

@@ -51,9 +51,12 @@ public class QueryIntentClassifier {
     };
 
     private static final String[] WORKFLOW_SIGNALS = {
-            "workflow", "how does", "how do", "step by step", "step-by-step",
-            "end to end", "end-to-end", "data flow", "execution flow",
-            "what happens when", "process of", "how is", "how are"
+            "workflow", "how does java", "how does symbol", "step by step", "step-by-step",
+            "end to end", "end-to-end", "data flow", "execution flow", "traversal flow",
+            "what happens when", "process of", "pipeline", "start to finish",
+            "batch-parse", "trace the", "trace ", "initialization with", "ordering and",
+            "import ordering", "collected during", "handling and", "syntax errors",
+            "how are comments", "how does source root"
     };
 
     private static final String[] PACKAGE_SIGNALS = {
@@ -62,11 +65,13 @@ public class QueryIntentClassifier {
     };
 
     private static final String[] RELATIONSHIP_SIGNALS = {
-            "which classes use", "who calls", "who uses", "what uses",
-            "what calls", "depends on", "dependency", "dependencies",
-            "inheritance", "hierarchy", "call graph", "callers of",
-            "implementations of", "subclasses of", "what implements",
-            "which classes implement", "related to", "relationship"
+            "which classes use", "which classes extend", "which classes call",
+            "which classes implement", "who calls", "who uses", "what uses",
+            "what calls", "what implements", "what extends", "callers of",
+            "called by", "users of", "used by", "implementations of",
+            "subclasses of", "what interfaces does", "interfaces does",
+            "implements ", "depends on", "dependency", "dependencies",
+            "inheritance", "hierarchy", "call graph", "related to", "relationship"
     };
 
     private static final String[] SEARCH_SIGNALS = {
@@ -84,12 +89,15 @@ public class QueryIntentClassifier {
 
     private static final String[] METHOD_SIGNALS = {
             "method", "function", "implementation of", "algorithm",
-            "return value", "parameters of", "signature of"
+            "return value", "parameters of", "signature of", "causes an",
+            "findfirst", "getparentnode", "remove", "replace", "clone",
+            "walk", "compute", "determine", "enable lexical"
     };
 
     private static final String[] CLASS_SIGNALS = {
             "class", "interface", "enum", "record", "responsibilities of",
-            "fields of", "members of", "api of", "public api"
+            "fields of", "members of", "api of", "public api", "configured",
+            "configuration", "parsing and", "fragmented", "customized for"
     };
 
     // ── Common Words to Exclude from Symbol Detection ─────────
@@ -118,14 +126,19 @@ public class QueryIntentClassifier {
 
         String lower = query.toLowerCase(Locale.ROOT).trim();
 
-        // Priority 1: Explicit method call syntax — "explain findAll()"
+        // Priority 1: Relationship signals (take precedence even over method parens: e.g. "callers of getChildNodes()")
+        if (matchesAny(lower, RELATIONSHIP_SIGNALS)) {
+            log.info("Intent classified as RELATIONSHIP for query: '{}'", query);
+            return QueryIntent.RELATIONSHIP;
+        }
+
+        // Priority 2: Explicit method call syntax — "explain findAll()"
         if (METHOD_PARENS_PATTERN.matcher(query).find()) {
             log.info("Intent classified as METHOD (method-call syntax detected) for query: '{}'", query);
             return QueryIntent.METHOD;
         }
 
-        // Priority 2: Multi-word phrase signals (checked before single-word to avoid conflicts)
-
+        // Priority 3: Workflow multi-step signals
         if (matchesAny(lower, WORKFLOW_SIGNALS)) {
             log.info("Intent classified as WORKFLOW for query: '{}'", query);
             return QueryIntent.WORKFLOW;
@@ -141,23 +154,23 @@ public class QueryIntentClassifier {
             return QueryIntent.PACKAGE;
         }
 
-        if (matchesAny(lower, RELATIONSHIP_SIGNALS)) {
-            log.info("Intent classified as RELATIONSHIP for query: '{}'", query);
-            return QueryIntent.RELATIONSHIP;
-        }
-
         if (matchesAny(lower, DESIGN_SIGNALS)) {
             log.info("Intent classified as DESIGN for query: '{}'", query);
             return QueryIntent.DESIGN;
         }
 
-        // Priority 3: Search/locate patterns — "where is BackupJob?"
+        // Priority 4: Search/locate patterns — resolve to CLASS or METHOD if code identifier present
         if (matchesAny(lower, SEARCH_SIGNALS)) {
+            Optional<QueryIntent> codeIdentifier = classifyByIdentifier(query);
+            if (codeIdentifier.isPresent()) {
+                log.info("Intent classified as {} (search targeting identifier) for query: '{}'", codeIdentifier.get(), query);
+                return codeIdentifier.get();
+            }
             log.info("Intent classified as SEARCH for query: '{}'", query);
             return QueryIntent.SEARCH;
         }
 
-        // Priority 4: Explicit method/class keywords
+        // Priority 5: Explicit method/class keywords
         if (matchesAny(lower, METHOD_SIGNALS)) {
             log.info("Intent classified as METHOD (keyword match) for query: '{}'", query);
             return QueryIntent.METHOD;
@@ -168,7 +181,7 @@ public class QueryIntentClassifier {
             return QueryIntent.CLASS;
         }
 
-        // Priority 5: Code identifier heuristics — "Explain Node" → CLASS
+        // Priority 6: Code identifier heuristics — "Explain Node" → CLASS
         Optional<QueryIntent> identifierIntent = classifyByIdentifier(query);
         if (identifierIntent.isPresent()) {
             log.info("Intent classified as {} (identifier heuristic) for query: '{}'",
@@ -176,7 +189,7 @@ public class QueryIntentClassifier {
             return identifierIntent.get();
         }
 
-        // Priority 6: Broad architecture/overview signals
+        // Priority 7: Broad architecture/overview signals
         if (lower.contains("overview") || lower.contains("summary") || lower.contains("summarize")) {
             log.info("Intent classified as ARCHITECTURE (overview keyword) for query: '{}'", query);
             return QueryIntent.ARCHITECTURE;

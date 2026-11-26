@@ -32,7 +32,9 @@ public class SymbolExtractor {
 
     /**
      * Extracts the most prominent Java symbol from a user query.
-     * Priority: PascalCase class name > method with parens > camelCase method name.
+     * Priority: method with parens > PascalCase class name > camelCase method name.
+     * Method with parens is prioritized first to prevent enclosing class names (e.g. "Node" in
+     * "Explain remove() method in Node") from shadowing explicit method invocations.
      *
      * @param query the user's natural-language query
      * @return the extracted symbol name, or empty if no symbol is detected
@@ -42,7 +44,18 @@ public class SymbolExtractor {
             return Optional.empty();
         }
 
-        // 1. Try to extract a PascalCase class/interface/enum name first
+        // 1. Try to extract a method with parens first (e.g., "remove()", "replace()", "clone()")
+        // Explicit parentheses denote an unambiguous method invocation that takes precedence over container classes.
+        Matcher methodParensMatcher = METHOD_WITH_PARENS_PATTERN.matcher(query);
+        if (methodParensMatcher.find()) {
+            String method = methodParensMatcher.group(1);
+            if (!isCommonWord(method)) {
+                log.debug("Extracted method symbol with parens '{}' from query: '{}'", method, query);
+                return Optional.of(method);
+            }
+        }
+
+        // 2. Try to extract a PascalCase class/interface/enum name
         Matcher classMatcher = CLASS_NAME_PATTERN.matcher(query);
         while (classMatcher.find()) {
             String candidate = classMatcher.group(1);
@@ -50,14 +63,6 @@ public class SymbolExtractor {
                 log.debug("Extracted class symbol '{}' from query: '{}'", candidate, query);
                 return Optional.of(candidate);
             }
-        }
-
-        // 2. Try to extract a method with parens (e.g., "doFragment()")
-        Matcher methodParensMatcher = METHOD_WITH_PARENS_PATTERN.matcher(query);
-        if (methodParensMatcher.find()) {
-            String method = methodParensMatcher.group(1);
-            log.debug("Extracted method symbol with parens '{}' from query: '{}'", method, query);
-            return Optional.of(method);
         }
 
         // 3. Try to extract a standalone camelCase method name (e.g., "doFragment", "indexProject")
@@ -83,7 +88,7 @@ public class SymbolExtractor {
                  "Does", "Can", "Could", "Would", "Should",
                  "The", "This", "That", "Are", "Was", "Were",
                  "Has", "Have", "Had", "Will", "Did",
-                 "Explain", "Describe", "Show", "List", "Find", "Give",
+                 "Explain", "Describe", "Show", "List", "Find", "Give", "Trace",
                  "Java", "Spring", "Class", "Method", "Type",
                  "File", "Line", "Code", "Project", "Repository" -> true;
             default -> false;

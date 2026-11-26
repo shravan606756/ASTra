@@ -116,5 +116,75 @@ class BenchmarkTableFormatterTest {
         // Empty chunks
         TableRenderer emptyTable = BenchmarkTableFormatter.formatChunksTable(new ArrayList<>(), false);
         assertTrue(emptyTable.render().contains("No chunks retrieved"));
+
+        // Chunks with null element in list
+        List<RetrievedChunkDTO> chunksWithNull = new ArrayList<>();
+        chunksWithNull.add(null);
+        chunksWithNull.add(chunk1);
+        TableRenderer tableWithNull = BenchmarkTableFormatter.formatChunksTable(chunksWithNull, true);
+        assertNotNull(tableWithNull);
+        assertTrue(tableWithNull.render().contains("JavaParser"));
+    }
+
+    @Test
+    @DisplayName("truncatePath handles exact out-of-bounds boundary condition where fileName.length() == maxLen - 4")
+    void testTruncatePathExactBoundaryCondition() {
+        // Filename length 44: LargeRepoStreamingMemoryCalibrationTest.java
+        String fileName44 = "LargeRepoStreamingMemoryCalibrationTest.java";
+        assertEquals(44, fileName44.length());
+        String fullPath = "javaparser-core/src/main/java/com/github/javaparser/ast/visitor/" + fileName44;
+
+        // When maxLen = 48, fileName.length() == maxLen - 4 (44 == 48 - 4).
+        // In the prior buggy implementation, this caused fileName.substring(44 - (48 - 3)) = fileName.substring(-1),
+        // throwing StringIndexOutOfBoundsException: Range [-1, 44) out of bounds for length 44.
+        assertDoesNotThrow(() -> {
+            String result = BenchmarkTableFormatter.truncatePath(fullPath, 48);
+            assertNotNull(result);
+            assertTrue(result.length() <= 48, "Result length must be <= 48 but was " + result.length() + ": " + result);
+            assertTrue(result.endsWith(fileName44), "Result must retain filename: " + result);
+        });
+
+        // Test boundary values around maxLen: 45 (maxLen - 3), 46 (maxLen - 2), 47 (maxLen - 1), 48 (maxLen), 49 (maxLen + 1)
+        for (int maxLen = 44; maxLen <= 52; maxLen++) {
+            final int len = maxLen;
+            assertDoesNotThrow(() -> {
+                String res = BenchmarkTableFormatter.truncatePath(fullPath, len);
+                assertTrue(res.length() <= len, "Failed for maxLen " + len + ": length " + res.length() + " > " + len);
+            });
+        }
+    }
+
+    @Test
+    @DisplayName("truncatePath handles paths without delimiters (single filename)")
+    void testTruncatePathWithoutDelimiters() {
+        String singleFile = "GenericVisitorWithDefaultsPrintVisitor.java"; // length 44
+        String truncated = BenchmarkTableFormatter.truncatePath(singleFile, 20);
+        assertEquals(20, truncated.length());
+        assertTrue(truncated.startsWith("..."));
+
+        assertEquals(singleFile, BenchmarkTableFormatter.truncatePath(singleFile, 50));
+        assertEquals("", BenchmarkTableFormatter.truncatePath(singleFile, 0));
+        assertEquals("Ge", BenchmarkTableFormatter.truncatePath(singleFile, 2));
+        assertEquals("Gen", BenchmarkTableFormatter.truncatePath(singleFile, 3));
+    }
+
+    @Test
+    @DisplayName("cleanRepoPath safely handles missing delimiters, empty slashes, and whitespace")
+    void testCleanRepoPathEdgeCases() {
+        assertEquals("-", BenchmarkTableFormatter.cleanRepoPath(""));
+        assertEquals("-", BenchmarkTableFormatter.cleanRepoPath("   "));
+        assertEquals("-", BenchmarkTableFormatter.cleanRepoPath("///"));
+        assertEquals("-", BenchmarkTableFormatter.cleanRepoPath("\\\\\\"));
+        assertEquals("file.txt", BenchmarkTableFormatter.cleanRepoPath("///file.txt"));
+    }
+
+    @Test
+    @DisplayName("truncateSymbol handles small and edge case maxLen safely")
+    void testTruncateSymbolEdgeCases() {
+        assertEquals("", BenchmarkTableFormatter.truncateSymbol("testSymbol", 0));
+        assertEquals("t", BenchmarkTableFormatter.truncateSymbol("testSymbol", 1));
+        assertEquals("te", BenchmarkTableFormatter.truncateSymbol("testSymbol", 2));
+        assertEquals("...", BenchmarkTableFormatter.truncateSymbol("testSymbol", 3));
+        assertEquals("t...", BenchmarkTableFormatter.truncateSymbol("testSymbol", 4));
     }
 }

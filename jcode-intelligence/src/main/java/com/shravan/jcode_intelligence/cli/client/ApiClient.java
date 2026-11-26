@@ -23,15 +23,23 @@ public class ApiClient {
     private final Gson gson;
     private final Duration requestTimeout;
     private final Duration indexTimeout;
+    private final Duration benchmarkTimeout;
+    private final Duration generationBenchmarkTimeout;
 
     public ApiClient(String baseUrl) {
+        this(baseUrl, Duration.ofSeconds(30), Duration.ofMinutes(25), Duration.ofMinutes(10), Duration.ofMinutes(30));
+    }
+
+    public ApiClient(String baseUrl, Duration requestTimeout, Duration indexTimeout, Duration benchmarkTimeout, Duration generationBenchmarkTimeout) {
         this.baseUrl = baseUrl.replaceAll("/$", "");
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
         this.gson = new GsonBuilder().create();
-        this.requestTimeout = Duration.ofSeconds(30);
-        this.indexTimeout = Duration.ofMinutes(25);
+        this.requestTimeout = (requestTimeout != null) ? requestTimeout : Duration.ofSeconds(30);
+        this.indexTimeout = (indexTimeout != null) ? indexTimeout : Duration.ofMinutes(25);
+        this.benchmarkTimeout = (benchmarkTimeout != null) ? benchmarkTimeout : Duration.ofMinutes(10);
+        this.generationBenchmarkTimeout = (generationBenchmarkTimeout != null) ? generationBenchmarkTimeout : Duration.ofMinutes(30);
     }
 
     /**
@@ -49,7 +57,7 @@ public class ApiClient {
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
+
             if (response.statusCode() == 200) {
                 HealthResponse health = gson.fromJson(response.body(), HealthResponse.class);
                 return "UP".equalsIgnoreCase(health.status);
@@ -65,7 +73,7 @@ public class ApiClient {
             }
             throw new ApiException("Failed to communicate with backend: " + e.getMessage(), e);
         } catch (JsonSyntaxException e) {
-             throw new ApiException("Failed to parse backend response.", e);
+            throw new ApiException("Failed to parse backend response.", e);
         }
     }
 
@@ -79,6 +87,7 @@ public class ApiClient {
 
     /**
      * Removes all indexed vectors for the given repository ID.
+     * 
      * @return true if removed, false if not found.
      */
     public boolean removeRepository(String repositoryId) {
@@ -90,30 +99,40 @@ public class ApiClient {
      */
     @SuppressWarnings("unchecked")
     public com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId) {
-        return get("/api/v1/repositories/" + repositoryId + "/stats", com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO.class);
+        return get("/api/v1/repositories/" + repositoryId + "/stats",
+                com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO.class);
     }
 
     /**
      * Triggers backend indexing for a repository.
      */
-    public com.shravan.jcode_intelligence.dto.response.IndexResponse index(com.shravan.jcode_intelligence.dto.request.IndexRequest request) {
-        return post("/api/v1/index", request, com.shravan.jcode_intelligence.dto.response.IndexResponse.class, indexTimeout);
+    public com.shravan.jcode_intelligence.dto.response.IndexResponse index(
+            com.shravan.jcode_intelligence.dto.request.IndexRequest request) {
+        return post("/api/v1/index", request, com.shravan.jcode_intelligence.dto.response.IndexResponse.class,
+                indexTimeout);
     }
 
     /**
      * Sends a chat query to the backend.
      */
-    public com.shravan.jcode_intelligence.dto.response.ChatResponse ask(com.shravan.jcode_intelligence.dto.request.ChatRequest request) {
+    public com.shravan.jcode_intelligence.dto.response.ChatResponse ask(
+            com.shravan.jcode_intelligence.dto.request.ChatRequest request) {
         return post("/api/v1/chat", request, com.shravan.jcode_intelligence.dto.response.ChatResponse.class);
     }
 
     /**
-     * Requests a retrieval evaluation benchmark with a ten-minute timeout.
+     * Requests a retrieval evaluation benchmark with configurable timeout based on generation evaluation.
      *
-     * @throws ApiException if the backend returns an error or communication or response parsing fails
+     * @throws ApiException if the backend returns an error or communication or
+     *                      response parsing fails
      */
-    public com.shravan.jcode_intelligence.dto.response.BenchmarkResponse runBenchmark(com.shravan.jcode_intelligence.dto.request.BenchmarkRequest request) {
-        return post("/api/v1/benchmark/run", request, com.shravan.jcode_intelligence.dto.response.BenchmarkResponse.class, Duration.ofMinutes(10));
+    public com.shravan.jcode_intelligence.dto.response.BenchmarkResponse runBenchmark(
+            com.shravan.jcode_intelligence.dto.request.BenchmarkRequest request) {
+        Duration timeout = (request != null && request.isEvaluateGeneration())
+                ? generationBenchmarkTimeout
+                : benchmarkTimeout;
+        return post("/api/v1/benchmark/run", request,
+                com.shravan.jcode_intelligence.dto.response.BenchmarkResponse.class, timeout);
     }
 
     /**
@@ -212,9 +231,11 @@ public class ApiClient {
 
     private void handleErrorResponse(HttpResponse<String> response) {
         if (response.statusCode() >= 400 && response.statusCode() < 500) {
-            throw new ApiException("Client Error (" + response.statusCode() + "): " + response.body(), response.statusCode());
+            throw new ApiException("Client Error (" + response.statusCode() + "): " + response.body(),
+                    response.statusCode());
         } else if (response.statusCode() >= 500) {
-            throw new ApiException("Server Error (" + response.statusCode() + "): " + response.body(), response.statusCode());
+            throw new ApiException("Server Error (" + response.statusCode() + "): " + response.body(),
+                    response.statusCode());
         }
     }
 

@@ -14,15 +14,18 @@ import java.util.regex.Pattern;
  */
 public class BenchmarkTableFormatter {
 
-    private static final Pattern TEMP_REPO_PATTERN = Pattern.compile("(?i)(?:astra-repo-[^/\\\\]+|Temp[/\\\\]astra-[^/\\\\]+)[/\\\\](.*)");
-    private static final Pattern GENERIC_TEMP_PATTERN = Pattern.compile("(?i)(?:AppData[/\\\\]Local[/\\\\]Temp|/tmp)[/\\\\][^/\\\\]+[/\\\\](.*)");
+    private static final Pattern TEMP_REPO_PATTERN = Pattern
+            .compile("(?i)(?:astra-repo-[^/\\\\]+|Temp[/\\\\]astra-[^/\\\\]+)[/\\\\](.*)");
+    private static final Pattern GENERIC_TEMP_PATTERN = Pattern
+            .compile("(?i)(?:AppData[/\\\\]Local[/\\\\]Temp|/tmp)[/\\\\][^/\\\\]+[/\\\\](.*)");
 
     public static final int DEFAULT_MAX_FILE_WIDTH = 46;
     public static final int DEFAULT_MAX_SYMBOL_WIDTH = 22;
     public static final int DEFAULT_MAX_TYPE_WIDTH = 12;
 
     /**
-     * Normalizes slashes and removes recognized temporary extraction prefixes and leading
+     * Normalizes slashes and removes recognized temporary extraction prefixes and
+     * leading
      * slashes. Returns {@code "-"} for a null or blank input.
      */
     public static String cleanRepoPath(String rawPath) {
@@ -32,7 +35,8 @@ public class BenchmarkTableFormatter {
 
         String path = rawPath.replace('\\', '/').trim();
 
-        // 1. Strip temporary repository extraction directories like .../astra-repo-12345/...
+        // 1. Strip temporary repository extraction directories like
+        // .../astra-repo-12345/...
         Matcher matcher = TEMP_REPO_PATTERN.matcher(path);
         if (matcher.find()) {
             path = matcher.group(1);
@@ -48,14 +52,13 @@ public class BenchmarkTableFormatter {
             path = path.substring(1);
         }
 
-        return path;
+        return path.isBlank() ? "-" : path;
     }
 
     /**
-     * Cleans and truncates a path to fit within {@code maxLen}, retaining the end of
+     * Cleans and truncates a path to fit within {@code maxLen}, retaining the end
+     * of
      * the filename and as many innermost parent directories as fit.
-     *
-     * @throws StringIndexOutOfBoundsException if truncation is needed and maxLen is less than 3
      */
     public static String truncatePath(String rawPath, int maxLen) {
         if (maxLen <= 0) {
@@ -65,18 +68,24 @@ public class BenchmarkTableFormatter {
         if (clean.length() <= maxLen) {
             return clean;
         }
-        if (maxLen < 3) {
-            return clean.substring(0, maxLen);
+        if (maxLen <= 3) {
+            return clean.substring(0, Math.min(clean.length(), maxLen));
         }
 
         String[] parts = clean.split("/");
         if (parts.length <= 1) {
-            return (clean.length() > maxLen) ? "..." + clean.substring(clean.length() - maxLen + 3) : clean;
+            int start = Math.max(0, clean.length() - (maxLen - 3));
+            return "..." + clean.substring(start);
         }
 
         String fileName = parts[parts.length - 1];
-        if (fileName.length() >= maxLen - 4) {
-            return "..." + fileName.substring(fileName.length() - (maxLen - 3));
+        if (fileName.length() > maxLen - 3) {
+            int start = Math.max(0, fileName.length() - (maxLen - 3));
+            return "..." + fileName.substring(start);
+        }
+
+        if (fileName.length() == maxLen - 3) {
+            return "..." + fileName;
         }
 
         StringBuilder right = new StringBuilder("/" + fileName);
@@ -95,8 +104,6 @@ public class BenchmarkTableFormatter {
     /**
      * Trims and truncates a symbol with an ellipsis if it exceeds {@code maxLen}.
      * Returns {@code "-"} for a null or blank symbol.
-     *
-     * @throws StringIndexOutOfBoundsException if truncation is needed and maxLen is less than 3
      */
     public static String truncateSymbol(String symbol, int maxLen) {
         if (maxLen <= 0) {
@@ -110,7 +117,10 @@ public class BenchmarkTableFormatter {
             return symbol;
         }
         if (maxLen < 3) {
-            return symbol.substring(0, maxLen);
+            return symbol.substring(0, Math.min(symbol.length(), maxLen));
+        }
+        if (maxLen == 3) {
+            return "...";
         }
         return symbol.substring(0, maxLen - 3) + "...";
     }
@@ -124,16 +134,19 @@ public class BenchmarkTableFormatter {
         if (termWidth <= 0) {
             termWidth = 100;
         }
-        // Subtract 2 characters margin for terminal window borders/safety, supporting down to 40 columns
+        // Subtract 2 characters margin for terminal window borders/safety, supporting
+        // down to 40 columns
         int effectiveWidth = Math.max(40, Math.min(termWidth - 2, 120));
 
-        boolean showRelevance = hasGroundTruth && chunks != null && chunks.stream().anyMatch(c -> c.getRelevant() != null);
+        boolean showRelevance = hasGroundTruth && chunks != null
+                && chunks.stream().anyMatch(c -> c != null && c.getRelevant() != null);
         int maxFileWidth;
         int maxSymbolWidth;
         int maxTypeWidth = 7;
 
         if (showRelevance) {
-            // Fixed chars: 19 (borders/spaces) + 4 (Rank) + 7 (Type) + 4 (Rel?) + 5 (Grade) = 39
+            // Fixed chars: 19 (borders/spaces) + 4 (Rank) + 7 (Type) + 4 (Rel?) + 5 (Grade)
+            // = 39
             int available = Math.max(10, effectiveWidth - 39);
             maxFileWidth = (int) (available * 0.62);
             maxSymbolWidth = Math.max(3, available - maxFileWidth);
@@ -148,15 +161,16 @@ public class BenchmarkTableFormatter {
     }
 
     /**
-     * Builds an aligned TableRenderer for retrieved chunks with configurable column widths.
+     * Builds an aligned TableRenderer for retrieved chunks with configurable column
+     * widths.
      */
     public static TableRenderer formatChunksTable(List<RetrievedChunkDTO> chunks, boolean hasGroundTruth,
-                                                  int maxFileWidth, int maxSymbolWidth, int maxTypeWidth) {
+            int maxFileWidth, int maxSymbolWidth, int maxTypeWidth) {
         if (chunks == null || chunks.isEmpty()) {
             return new TableRenderer("No chunks retrieved");
         }
 
-        boolean showRelevance = hasGroundTruth && chunks.stream().anyMatch(c -> c.getRelevant() != null);
+        boolean showRelevance = hasGroundTruth && chunks.stream().anyMatch(c -> c != null && c.getRelevant() != null);
 
         TableRenderer table;
         if (showRelevance) {
@@ -166,10 +180,31 @@ public class BenchmarkTableFormatter {
         }
 
         for (RetrievedChunkDTO chunk : chunks) {
+            if (chunk == null) {
+                continue;
+            }
             String rank = String.valueOf(chunk.getRank());
-            String file = truncatePath(chunk.getFilePath(), maxFileWidth);
-            String symbol = truncateSymbol(chunk.getElementName() != null ? chunk.getElementName() : chunk.getClassName(), maxSymbolWidth);
-            String type = truncateSymbol(chunk.getType(), maxTypeWidth);
+            String file;
+            try {
+                file = truncatePath(chunk.getFilePath(), maxFileWidth);
+            } catch (Exception e) {
+                file = cleanRepoPath(chunk.getFilePath());
+            }
+
+            String rawSymbol = chunk.getElementName() != null ? chunk.getElementName() : chunk.getClassName();
+            String symbol;
+            try {
+                symbol = truncateSymbol(rawSymbol, maxSymbolWidth);
+            } catch (Exception e) {
+                symbol = rawSymbol != null && !rawSymbol.isBlank() ? rawSymbol : "-";
+            }
+
+            String type;
+            try {
+                type = truncateSymbol(chunk.getType(), maxTypeWidth);
+            } catch (Exception e) {
+                type = chunk.getType() != null && !chunk.getType().isBlank() ? chunk.getType() : "-";
+            }
 
             if (showRelevance) {
                 String relevant = Boolean.TRUE.equals(chunk.getRelevant()) ? "YES" : "NO";

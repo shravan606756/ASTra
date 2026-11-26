@@ -145,6 +145,34 @@ class PromptBuilderTest {
         assertEquals(contextResult.promptText(), legacyText);
     }
 
+    @Test
+    @DisplayName("Opt-in citations flag true selects citation template requesting inline citations")
+    void testBuildPromptContext_optInCitations() {
+        Document doc = new Document("class Foo {}", Map.of("type", "CLASS", "className", "Foo"));
+
+        PromptContextResult result = promptBuilder.buildPromptContext(
+                "Explain Foo", List.of(doc), "repo-1", QueryIntent.CLASS, true);
+
+        assertNotNull(result);
+        assertNotNull(result.promptText());
+        assertTrue(result.promptText().contains("[cite: path/File.java:start-end#Symbol]"),
+                "Citation template must request [cite: path/File.java:start-end#Symbol]");
+    }
+
+    @Test
+    @DisplayName("Default buildPromptContext overload defaults to includeCitations=false preserving intent template")
+    void testBuildPromptContext_defaultPreservesIntentTemplate() {
+        Document doc = new Document("void doWork() {}", Map.of("type", "METHOD", "elementName", "doWork"));
+
+        PromptContextResult result = promptBuilder.buildPromptContext(
+                "Explain doWork", List.of(doc), "repo-1", QueryIntent.METHOD);
+
+        assertNotNull(result);
+        assertNotNull(result.promptText());
+        assertFalse(result.promptText().contains("[cite: path/File.java:start-end#Symbol]"),
+                "Default chat must not include citation template instructions");
+    }
+
     private static class StubJdbcTemplate extends JdbcTemplate {
         @Override
         @SuppressWarnings("unchecked")

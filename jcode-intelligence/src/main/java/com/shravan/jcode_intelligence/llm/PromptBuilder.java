@@ -76,7 +76,29 @@ public class PromptBuilder {
      */
     public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments,
                                                   String repositoryId, QueryIntent intent) {
-        String templateName = router.route(intent);
+        return buildPromptContext(query, contextDocuments, repositoryId, intent, false);
+    }
+
+    /**
+     * Builds a prompt context result containing the assembled prompt string,
+     * the budgeted documents, and all omitted documents, with an opt-in citation flag.
+     * When {@code includeCitations} is true, the citation template requesting
+     * {@code [cite: path/File.java:start-end#Symbol]} is used.
+     *
+     * @param query            the user query; null is rendered as an empty string
+     * @param contextDocuments candidate documents in priority order; null means no context;
+     *                         entries must be non-null
+     * @param repositoryId     target repository; null or blank uses the first budgeted
+     *                         document's repository metadata, then defaults to "default"
+     * @param intent           the classified query intent
+     * @param includeCitations whether to request citation annotations
+     * @return the prompt context result aligning prompt text with supplied context
+     * @throws NullPointerException if intent is null or a candidate document is null
+     */
+    public PromptContextResult buildPromptContext(String query, List<Document> contextDocuments,
+                                                  String repositoryId, QueryIntent intent,
+                                                  boolean includeCitations) {
+        String templateName = includeCitations ? "citation.st" : router.route(intent);
         String rawTemplate = templateLoader.getTemplate(templateName);
 
         BudgetResult budgetResult = applyContextBudget(contextDocuments);

@@ -1,7 +1,7 @@
 {
   "suiteName": "default",
-  "description": "Curated 50-question ground-truth benchmark dataset covering 7 core retrieval categories for Java codebases.",
-  "version": "1.0.0",
+  "description": "Curated 50-question ground-truth benchmark dataset with validated line annotations pinned to JavaParser revision javaparser-parent-3.28.2 (commit d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68).",
+  "version": "1.1.0",
   "defaultRepositoryId": "javaparser",
   "queries": [
     {
@@ -20,7 +20,10 @@
         }
       ],
       "referenceAnswer": "LexicalPreservingPrinter is implemented in the com.github.javaparser.printer.lexicalpreservation package.",
-      "expectedCitations": ["LexicalPreservingPrinter.java"]
+      "expectedCitations": [
+        "LexicalPreservingPrinter.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q02",
@@ -33,12 +36,15 @@
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "Node",
           "startLine": 60,
-          "endLine": 500,
+          "endLine": 1302,
           "relevance": 3
         }
       ],
       "referenceAnswer": "Node is the abstract base class for all nodes in the JavaParser Abstract Syntax Tree.",
-      "expectedCitations": ["Node.java"]
+      "expectedCitations": [
+        "Node.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q03",
@@ -56,7 +62,10 @@
         }
       ],
       "referenceAnswer": "CompilationUnit represents a complete Java source file.",
-      "expectedCitations": ["CompilationUnit.java"]
+      "expectedCitations": [
+        "CompilationUnit.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q04",
@@ -74,7 +83,10 @@
         }
       ],
       "referenceAnswer": "MethodDeclaration is located in com.github.javaparser.ast.body representing method signatures and bodies.",
-      "expectedCitations": ["MethodDeclaration.java"]
+      "expectedCitations": [
+        "MethodDeclaration.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q05",
@@ -92,7 +104,10 @@
         }
       ],
       "referenceAnswer": "Represents the declaration of a Java class or interface in the AST.",
-      "expectedCitations": ["ClassOrInterfaceDeclaration.java"]
+      "expectedCitations": [
+        "ClassOrInterfaceDeclaration.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q06",
@@ -110,7 +125,10 @@
         }
       ],
       "referenceAnswer": "NodeList is an observable, parent-aware collection of AST nodes.",
-      "expectedCitations": ["NodeList.java"]
+      "expectedCitations": [
+        "NodeList.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q07",
@@ -128,7 +146,10 @@
         }
       ],
       "referenceAnswer": "JavaParserFacade is the primary entry point for type solving.",
-      "expectedCitations": ["JavaParserFacade.java"]
+      "expectedCitations": [
+        "JavaParserFacade.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q08",
@@ -146,7 +167,10 @@
         }
       ],
       "referenceAnswer": "ModifierVisitor is an AST visitor that allows mutating or replacing nodes during traversal.",
-      "expectedCitations": ["ModifierVisitor.java"]
+      "expectedCitations": [
+        "ModifierVisitor.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q09",
@@ -158,20 +182,23 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "findAll",
-          "startLine": 310,
-          "endLine": 330,
+          "startLine": 980,
+          "endLine": 990,
           "relevance": 3
         },
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "Node",
           "startLine": 60,
-          "endLine": 500,
+          "endLine": 1302,
           "relevance": 1
         }
       ],
       "referenceAnswer": "findAll recursively traverses the subtree collecting all nodes assignable to the specified class.",
-      "expectedCitations": ["Node.java#findAll"]
+      "expectedCitations": [
+        "Node.java#findAll"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q10",
@@ -196,7 +223,10 @@
         }
       ],
       "referenceAnswer": "parse initiates lexing and LL(k) parsing on the provided input source.",
-      "expectedCitations": ["JavaParser.java#parse"]
+      "expectedCitations": [
+        "JavaParser.java#parse"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q11",
@@ -208,13 +238,16 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "findFirst",
-          "startLine": 335,
-          "endLine": 355,
+          "startLine": 990,
+          "endLine": 1005,
           "relevance": 3
         }
       ],
       "referenceAnswer": "findFirst finds the first node of the given type encountered in breadth-first or depth-first traversal.",
-      "expectedCitations": ["Node.java#findFirst"]
+      "expectedCitations": [
+        "Node.java#findFirst"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q12",
@@ -226,13 +259,16 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "getParentNode",
-          "startLine": 180,
-          "endLine": 195,
+          "startLine": 390,
+          "endLine": 395,
           "relevance": 3
         }
       ],
       "referenceAnswer": "getParentNode returns an Optional containing the parent node reference if attached.",
-      "expectedCitations": ["Node.java#getParentNode"]
+      "expectedCitations": [
+        "Node.java#getParentNode"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q13",
@@ -244,13 +280,16 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "remove",
-          "startLine": 240,
-          "endLine": 270,
+          "startLine": 625,
+          "endLine": 750,
           "relevance": 3
         }
       ],
       "referenceAnswer": "remove detaches the node from its parent AST hierarchy.",
-      "expectedCitations": ["Node.java#remove"]
+      "expectedCitations": [
+        "Node.java#remove"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q14",
@@ -262,13 +301,16 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "replace",
-          "startLine": 275,
-          "endLine": 305,
+          "startLine": 638,
+          "endLine": 800,
           "relevance": 3
         }
       ],
       "referenceAnswer": "replace swaps the target node with a replacement node within its parent.",
-      "expectedCitations": ["Node.java#replace"]
+      "expectedCitations": [
+        "Node.java#replace"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q15",
@@ -280,13 +322,16 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "clone",
-          "startLine": 410,
-          "endLine": 435,
+          "startLine": 755,
+          "endLine": 776,
           "relevance": 3
         }
       ],
       "referenceAnswer": "clone performs a deep copy of the node and all child descendants.",
-      "expectedCitations": ["Node.java#clone"]
+      "expectedCitations": [
+        "Node.java#clone"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q16",
@@ -298,13 +343,16 @@
         {
           "filePath": "com/github/javaparser/ast/Node.java",
           "symbol": "walk",
-          "startLine": 360,
-          "endLine": 385,
+          "startLine": 915,
+          "endLine": 971,
           "relevance": 3
         }
       ],
       "referenceAnswer": "walk traverses the AST yielding a Stream of child and descendant nodes.",
-      "expectedCitations": ["Node.java#walk"]
+      "expectedCitations": [
+        "Node.java#walk"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q17",
@@ -330,7 +378,11 @@
         }
       ],
       "referenceAnswer": "JavaParser instantiates GeneratedJavaParser, streams tokens, constructs the AST, and encapsulates it in a ParseResult.",
-      "expectedCitations": ["JavaParser.java", "ParseResult.java"]
+      "expectedCitations": [
+        "JavaParser.java",
+        "ParseResult.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q18",
@@ -356,7 +408,11 @@
         }
       ],
       "referenceAnswer": "setup attaches an AstObserver to track node mutations; print synthesizes original formatting with modified tokens.",
-      "expectedCitations": ["LexicalPreservingPrinter.java", "ConcreteSyntaxModel.java"]
+      "expectedCitations": [
+        "LexicalPreservingPrinter.java",
+        "ConcreteSyntaxModel.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q19",
@@ -377,7 +433,11 @@
         }
       ],
       "referenceAnswer": "JavaParserFacade resolves scope, method declaration candidates, and performs type inference on arguments.",
-      "expectedCitations": ["JavaParserFacade.java", "MethodCallExpr.java"]
+      "expectedCitations": [
+        "JavaParserFacade.java",
+        "MethodCallExpr.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q20",
@@ -398,7 +458,11 @@
         }
       ],
       "referenceAnswer": "Each node accept() dispatches to the corresponding visit() method which recurses over child nodes.",
-      "expectedCitations": ["VoidVisitorAdapter.java", "Node.java"]
+      "expectedCitations": [
+        "VoidVisitorAdapter.java",
+        "Node.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q21",
@@ -419,7 +483,11 @@
         }
       ],
       "referenceAnswer": "Comments are collected during tokenization and assigned to nearest AST nodes using position attribution heuristics.",
-      "expectedCitations": ["CommentsCollection.java", "Node.java"]
+      "expectedCitations": [
+        "CommentsCollection.java",
+        "Node.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q22",
@@ -440,7 +508,10 @@
         }
       ],
       "referenceAnswer": "CompilationUnit delegates to DefaultPrettyPrinterVisitor which formats tokens according to PrettyPrinterConfiguration.",
-      "expectedCitations": ["DefaultPrettyPrinter.java"]
+      "expectedCitations": [
+        "DefaultPrettyPrinter.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q23",
@@ -461,7 +532,10 @@
         }
       ],
       "referenceAnswer": "SourceRoot traverses folder paths and invokes JavaParser concurrently or serially across Java source files.",
-      "expectedCitations": ["SourceRoot.java"]
+      "expectedCitations": [
+        "SourceRoot.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q24",
@@ -492,7 +566,13 @@
         }
       ],
       "referenceAnswer": "Almost all AST elements including BodyDeclaration, Expression, and Statement extend Node.",
-      "expectedCitations": ["Node.java", "BodyDeclaration.java", "Expression.java", "Statement.java"]
+      "expectedCitations": [
+        "Node.java",
+        "BodyDeclaration.java",
+        "Expression.java",
+        "Statement.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q25",
@@ -518,7 +598,10 @@
         }
       ],
       "referenceAnswer": "ClassOrInterfaceDeclaration, BlockStmt, and MethodDeclaration use NodeList to hold collections of child nodes.",
-      "expectedCitations": ["NodeList.java"]
+      "expectedCitations": [
+        "NodeList.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q26",
@@ -539,7 +622,11 @@
         }
       ],
       "referenceAnswer": "The Node class implements Visitable, allowing all AST nodes to participate in the visitor pattern.",
-      "expectedCitations": ["Visitable.java", "Node.java"]
+      "expectedCitations": [
+        "Visitable.java",
+        "Node.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q27",
@@ -560,7 +647,11 @@
         }
       ],
       "referenceAnswer": "JavaParser and SourceRoot inject and query ParserConfiguration settings.",
-      "expectedCitations": ["ParserConfiguration.java", "JavaParser.java"]
+      "expectedCitations": [
+        "ParserConfiguration.java",
+        "JavaParser.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q28",
@@ -581,7 +672,10 @@
         }
       ],
       "referenceAnswer": "The walk() method and AST navigators call getChildNodes() for hierarchy traversal.",
-      "expectedCitations": ["Node.java#getChildNodes"]
+      "expectedCitations": [
+        "Node.java#getChildNodes"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q29",
@@ -602,7 +696,10 @@
         }
       ],
       "referenceAnswer": "BodyDeclaration implements NodeWithAnnotations and extends Node.",
-      "expectedCitations": ["BodyDeclaration.java"]
+      "expectedCitations": [
+        "BodyDeclaration.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q30",
@@ -623,7 +720,11 @@
         }
       ],
       "referenceAnswer": "GenericVisitorAdapter and custom query visitors implement GenericVisitor.",
-      "expectedCitations": ["GenericVisitor.java", "GenericVisitorAdapter.java"]
+      "expectedCitations": [
+        "GenericVisitor.java",
+        "GenericVisitorAdapter.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q31",
@@ -644,7 +745,10 @@
         }
       ],
       "referenceAnswer": "ParseProblemException is thrown when a syntax or tokenization problem aborts parsing.",
-      "expectedCitations": ["ParseProblemException.java"]
+      "expectedCitations": [
+        "ParseProblemException.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q32",
@@ -665,7 +769,11 @@
         }
       ],
       "referenceAnswer": "Problems are accumulated in ParseResult rather than throwing directly, enabling resilient parsing.",
-      "expectedCitations": ["Problem.java", "ParseResult.java"]
+      "expectedCitations": [
+        "Problem.java",
+        "ParseResult.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q33",
@@ -681,7 +789,10 @@
         }
       ],
       "referenceAnswer": "findFirst returns Optional.empty() rather than throwing NoSuchElementException when no match is found.",
-      "expectedCitations": ["Node.java#findFirst"]
+      "expectedCitations": [
+        "Node.java#findFirst"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q34",
@@ -697,7 +808,10 @@
         }
       ],
       "referenceAnswer": "Thrown when a type, method, or field symbol cannot be resolved against the classpath.",
-      "expectedCitations": ["UnsolvedSymbolException.java"]
+      "expectedCitations": [
+        "UnsolvedSymbolException.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q35",
@@ -718,7 +832,10 @@
         }
       ],
       "referenceAnswer": "File read operations catch IOException and rethrow or return a ParseResult with file IO problems.",
-      "expectedCitations": ["StaticJavaParser.java"]
+      "expectedCitations": [
+        "StaticJavaParser.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q36",
@@ -734,7 +851,10 @@
         }
       ],
       "referenceAnswer": "Thrown when trying to set up lexical preservation on a node that already has observers attached.",
-      "expectedCitations": ["LexicalPreservingPrinter.java"]
+      "expectedCitations": [
+        "LexicalPreservingPrinter.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q37",
@@ -750,7 +870,10 @@
         }
       ],
       "referenceAnswer": "The generated parser attempts error recovery by skipping invalid tokens up to a synchronization point.",
-      "expectedCitations": ["GeneratedJavaParser.java"]
+      "expectedCitations": [
+        "GeneratedJavaParser.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q38",
@@ -771,7 +894,11 @@
         }
       ],
       "referenceAnswer": "TypeSolver queries registered source and JAR solvers sequentially until the qualified type is resolved.",
-      "expectedCitations": ["TypeSolver.java", "CombinedTypeSolver.java"]
+      "expectedCitations": [
+        "TypeSolver.java",
+        "CombinedTypeSolver.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q39",
@@ -792,7 +919,11 @@
         }
       ],
       "referenceAnswer": "Arguments are traversed and their types are inferred by evaluating expressions against the type solver context.",
-      "expectedCitations": ["MethodCallExpr.java", "JavaParserFacade.java"]
+      "expectedCitations": [
+        "MethodCallExpr.java",
+        "JavaParserFacade.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q40",
@@ -813,7 +944,11 @@
         }
       ],
       "referenceAnswer": "Range encapsulates begin and end Position objects representing 1-based line and column coordinates.",
-      "expectedCitations": ["Range.java", "Position.java"]
+      "expectedCitations": [
+        "Range.java",
+        "Position.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q41",
@@ -834,7 +969,10 @@
         }
       ],
       "referenceAnswer": "Evaluates coordinate containment via Range.contains() and verifies tree ancestor relationships.",
-      "expectedCitations": ["Node.java#contains"]
+      "expectedCitations": [
+        "Node.java#contains"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q42",
@@ -850,7 +988,10 @@
         }
       ],
       "referenceAnswer": "addImport checks for existing import declarations and inserts new imports preserving standard Java conventions.",
-      "expectedCitations": ["CompilationUnit.java#addImport"]
+      "expectedCitations": [
+        "CompilationUnit.java#addImport"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q43",
@@ -871,7 +1012,10 @@
         }
       ],
       "referenceAnswer": "VariableDeclarationExpr holds a NodeList of VariableDeclarator objects sharing common modifiers and types.",
-      "expectedCitations": ["VariableDeclarator.java"]
+      "expectedCitations": [
+        "VariableDeclarator.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q44",
@@ -892,7 +1036,10 @@
         }
       ],
       "referenceAnswer": "Javadoc parses raw comment blocks into descriptions and structured block tags (@param, @return, @throws).",
-      "expectedCitations": ["Javadoc.java"]
+      "expectedCitations": [
+        "Javadoc.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q45",
@@ -913,7 +1060,10 @@
         }
       ],
       "referenceAnswer": "ParserConfiguration controls Java language level, lexical preservation, symbol solving, and tab width.",
-      "expectedCitations": ["ParserConfiguration.java"]
+      "expectedCitations": [
+        "ParserConfiguration.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q46",
@@ -934,7 +1084,10 @@
         }
       ],
       "referenceAnswer": "StaticJavaParser holds a global singleton ParserConfiguration applied to all static parse calls.",
-      "expectedCitations": ["StaticJavaParser.java"]
+      "expectedCitations": [
+        "StaticJavaParser.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q47",
@@ -955,7 +1108,10 @@
         }
       ],
       "referenceAnswer": "Instantiates CombinedTypeSolver and registers ReflectionTypeSolver and JarTypeSolver instances.",
-      "expectedCitations": ["CombinedTypeSolver.java"]
+      "expectedCitations": [
+        "CombinedTypeSolver.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q48",
@@ -976,7 +1132,10 @@
         }
       ],
       "referenceAnswer": "Configures tab vs space indentation, line endings, and comment preservation flags.",
-      "expectedCitations": ["PrettyPrinterConfiguration.java"]
+      "expectedCitations": [
+        "PrettyPrinterConfiguration.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q49",
@@ -992,7 +1151,10 @@
         }
       ],
       "referenceAnswer": "SourceRoot binds to a root Path directory and configures parsing options for all nested compilation units.",
-      "expectedCitations": ["SourceRoot.java"]
+      "expectedCitations": [
+        "SourceRoot.java"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     },
     {
       "queryId": "Q50",
@@ -1008,8 +1170,11 @@
         }
       ],
       "referenceAnswer": "Call setLexicalPreservationEnabled(true) on ParserConfiguration before invoking parser.",
-      "expectedCitations": ["ParserConfiguration.java#setLexicalPreservationEnabled"]
+      "expectedCitations": [
+        "ParserConfiguration.java#setLexicalPreservationEnabled"
+      ],
+      "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
     }
-  ]
+  ],
+  "sourceRevision": "javaparser-parent-3.28.2@d8c5f6e80b435b6dfaa79148db9d6d34bbf37c68"
 }
-

@@ -15,6 +15,7 @@ public class BenchmarkQueryDefinition {
     private String expectedIntent;
     private List<RelevantChunkDefinition> relevantChunks = new ArrayList<>();
     private String referenceAnswer;
+    private String sourceRevision;
     private List<String> expectedCitations = new ArrayList<>();
 
     public BenchmarkQueryDefinition() {
@@ -87,6 +88,14 @@ public class BenchmarkQueryDefinition {
 
     public void setReferenceAnswer(String referenceAnswer) {
         this.referenceAnswer = referenceAnswer;
+    }
+
+    public String getSourceRevision() {
+        return sourceRevision;
+    }
+
+    public void setSourceRevision(String sourceRevision) {
+        this.sourceRevision = sourceRevision;
     }
 
     public List<String> getExpectedCitations() {

@@ -60,6 +60,9 @@ public class BenchmarkDatasetProvider {
                         if (filename != null && filename.endsWith(".json")) {
                             String baseName = filename.substring(0, filename.length() - 5).toLowerCase(Locale.ROOT);
                             loadedSuites.putIfAbsent(baseName, suite);
+                            if ("default-benchmark".equals(baseName)) {
+                                loadedSuites.putIfAbsent("default", suite);
+                            }
                         }
                         log.info("Loaded benchmark suite '{}' with {} queries from {}",
                                 suite.getSuiteName(), suite.getQueries().size(), resource.getFilename());

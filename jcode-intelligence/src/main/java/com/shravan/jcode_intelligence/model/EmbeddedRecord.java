@@ -1,5 +1,7 @@
 package com.shravan.jcode_intelligence.model;
 
+import com.shravan.jcode_intelligence.util.DocumentIdGenerator;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Map;
@@ -61,14 +63,7 @@ public record EmbeddedRecord(
      * @return deterministic UUID string
      */
     public static String generateDeterministicId(String repositoryId, String chunkId, String content) {
-        String repo = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "default";
-        String seed;
-        if (chunkId != null && !chunkId.isBlank()) {
-            seed = repo + ":" + chunkId;
-        } else {
-            seed = repo + ":" + (content != null ? content : "");
-        }
-        return UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8)).toString();
+        return DocumentIdGenerator.generateDeterministicId(repositoryId, chunkId, content);
     }
 }
 

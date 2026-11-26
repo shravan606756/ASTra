@@ -13,6 +13,7 @@ import com.shravan.jcode_intelligence.parser.PackageSummaryGenerator;
 import com.shravan.jcode_intelligence.service.BatchEmbeddingHelper;
 import com.shravan.jcode_intelligence.service.EmbeddingQueue;
 import com.shravan.jcode_intelligence.service.RepositoryManagementService;
+import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -60,6 +61,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * renamed in the repository,
  * its previous vector embeddings remain in PostgreSQL unless pruned
  * out-of-band.</li>
+ * <li><strong>Stale-Row Asymmetry with Sparse Index:</strong> While dense vector storage
+ * in PostgreSQL retains stale rows from deleted or renamed files across streaming runs
+ * (due to non-destructive upserts), the sparse Lucene index stages an isolated generation
+ * and atomically updates {@code CURRENT}, immediately pruning deleted entities. This introduces
+ * an expected asymmetry: sparse BM25 represents the exact snapshot of the latest run, whereas
+ * dense PostgreSQL vectors accumulate across runs until an out-of-band sweep or full re-index.</li>
  * <li><strong>No Write Fencing on Failure:</strong> If a pipeline failure
  * occurs after batches have
  * been staged to the {@link EmbeddingQueue}, in-flight persistence writer
@@ -109,6 +116,7 @@ public class StreamingIndexingService {
     private final RepositoryManagementService repositoryManagementService;
     private final BatchEmbeddingHelper batchEmbeddingHelper;
     private final MemoryClassificationConfig memoryClassificationConfig;
+    private final LuceneGenerationStore luceneGenerationStore;
 
     @Autowired
     public StreamingIndexingService(
@@ -122,7 +130,8 @@ public class StreamingIndexingService {
             @Autowired(required = false) ObjectProvider<EmbeddingModel> embeddingModelProvider,
             RepositoryManagementService repositoryManagementService,
             @Autowired(required = false) BatchEmbeddingHelper batchEmbeddingHelper,
-            @Autowired(required = false) MemoryClassificationConfig memoryClassificationConfig) {
+            @Autowired(required = false) MemoryClassificationConfig memoryClassificationConfig,
+            @Autowired(required = false) LuceneGenerationStore luceneGenerationStore) {
         this.parser = Objects.requireNonNull(parser, "parser must not be null");
         this.converter = Objects.requireNonNull(converter, "converter must not be null");
         this.budgetValidator = Objects.requireNonNull(budgetValidator, "budgetValidator must not be null");
@@ -135,6 +144,24 @@ public class StreamingIndexingService {
         this.repositoryManagementService = repositoryManagementService;
         this.batchEmbeddingHelper = batchEmbeddingHelper;
         this.memoryClassificationConfig = memoryClassificationConfig;
+        this.luceneGenerationStore = luceneGenerationStore;
+    }
+
+    public StreamingIndexingService(
+            JavaProjectParser parser,
+            DocumentConverter converter,
+            EmbeddingBudgetValidator budgetValidator,
+            PackageSummaryGenerator packageSummaryGenerator,
+            LargeRepoIndexingConfig largeRepoConfig,
+            ChunkingConfig chunkingConfig,
+            EmbeddingQueue embeddingQueue,
+            ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            RepositoryManagementService repositoryManagementService,
+            BatchEmbeddingHelper batchEmbeddingHelper,
+            MemoryClassificationConfig memoryClassificationConfig) {
+        this(parser, converter, budgetValidator, packageSummaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, embeddingModelProvider,
+                repositoryManagementService, batchEmbeddingHelper, memoryClassificationConfig, null);
     }
 
     public StreamingIndexingService(
@@ -150,7 +177,7 @@ public class StreamingIndexingService {
             BatchEmbeddingHelper batchEmbeddingHelper) {
         this(parser, converter, budgetValidator, packageSummaryGenerator,
                 largeRepoConfig, chunkingConfig, embeddingQueue, embeddingModelProvider,
-                repositoryManagementService, batchEmbeddingHelper, null);
+                repositoryManagementService, batchEmbeddingHelper, null, null);
     }
 
     /**
@@ -182,6 +209,19 @@ public class StreamingIndexingService {
         int threshold = computeDynamicPassBatchSize();
 
         String jobId = "job-streaming-" + repoId + "-" + System.currentTimeMillis();
+
+        LuceneGenerationStore.StagingSession sparseSession = null;
+        if (luceneGenerationStore != null) {
+            try {
+                sparseSession = luceneGenerationStore.stageGeneration(repoId);
+                log.info("[LARGE REPO - STREAMING] Initiated sparse index staging session '{}' for repository '{}'",
+                        sparseSession.getGenerationName(), repoId);
+            } catch (Exception e) {
+                log.error("[STREAMING SPARSE STAGING ERROR] Failed to stage sparse generation for repository '{}': {}",
+                        repoId, e.getMessage(), e);
+                throw new RuntimeException("Failed to stage sparse index generation for repository " + repoId, e);
+            }
+        }
 
         // Register job with worker and sub-batch hints and an unbounded total hint
         embeddingQueue.registerJob(jobId, repoId, configuredWorkers, maxSubBatchSize, Integer.MAX_VALUE);
@@ -230,7 +270,7 @@ public class StreamingIndexingService {
                                 passCounter);
                         flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                                 inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
-                                passCounter);
+                                passCounter, sparseSession);
                     }
                 }
             }
@@ -256,7 +296,7 @@ public class StreamingIndexingService {
                         chunkBuffer.size());
                 flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                         inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
-                        passCounter);
+                        passCounter, sparseSession);
             }
 
             // Reclaim all permits to ensure all in-flight worker tasks have finished execution
@@ -274,6 +314,22 @@ public class StreamingIndexingService {
             embeddingQueue.completeJob(jobId);
             embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
 
+            // Publish sparse generation after the persistence wait
+            if (sparseSession != null && luceneGenerationStore != null) {
+                try {
+                    luceneGenerationStore.publishGeneration(sparseSession);
+                    log.info("[STREAMING SPARSE PUBLISH COMPLETE] Published sparse generation '{}' for repository '{}'",
+                            sparseSession.getGenerationName(), repoId);
+                    sparseSession = null;
+                } catch (Exception e) {
+                    log.error("[STREAMING SPARSE PUBLISH ERROR] Failed to publish sparse generation for repository '{}': {}",
+                            repoId, e.getMessage(), e);
+                    luceneGenerationStore.discardGeneration(sparseSession);
+                    sparseSession = null;
+                    throw new RuntimeException("Failed to publish sparse generation for repository " + repoId, e);
+                }
+            }
+
             long duration = System.currentTimeMillis() - startTime;
             IndexingStatistics stats = statsAccumulator.build(duration);
             log.info("\n{}", stats);
@@ -288,6 +344,14 @@ public class StreamingIndexingService {
 
             return totalSubmittedDocs.get();
         } catch (Throwable t) {
+            if (sparseSession != null && luceneGenerationStore != null) {
+                try {
+                    luceneGenerationStore.discardGeneration(sparseSession);
+                } catch (Exception discardEx) {
+                    log.debug("Error discarding sparse session on failure for {}: {}", repoId, discardEx.getMessage());
+                }
+                sparseSession = null;
+            }
             firstFailureRef.compareAndSet(null, t);
             embeddingQueue.failJob(jobId, firstFailureRef.get());
 
@@ -350,7 +414,8 @@ public class StreamingIndexingService {
             BatchEmbeddingHelper helper,
             AtomicInteger totalSubmittedDocs,
             AtomicInteger totalBatchesDispatched,
-            int passNumber
+            int passNumber,
+            LuceneGenerationStore.StagingSession sparseSession
     ) {
         if (slice == null || slice.isEmpty()) {
             return;
@@ -364,6 +429,15 @@ public class StreamingIndexingService {
         // Convert and validate each flush
         List<Document> docs = converter.convert(slice);
         budgetValidator.validateAndAudit(docs, slice);
+
+        // Stage validated converted documents into sparse index before dispatch
+        if (sparseSession != null) {
+            try {
+                sparseSession.writeDocuments(docs);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to stage sparse documents for pass " + passNumber, e);
+            }
+        }
 
         int docCount = docs.size();
         int subBatchesInPass = (docCount + maxSubBatchSize - 1) / maxSubBatchSize;

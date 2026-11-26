@@ -1,0 +1,565 @@
+package com.shravan.jcode_intelligence.sparse.store;
+
+import com.shravan.jcode_intelligence.config.RetrievalConfig;
+import com.shravan.jcode_intelligence.sparse.analyzer.JavaSourceAnalyzer;
+import com.shravan.jcode_intelligence.sparse.mapper.LuceneDocumentMapper;
+import com.shravan.jcode_intelligence.sparse.query.LuceneQueryBuilder;
+import jakarta.annotation.PreDestroy;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.MultiReader;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.similarities.BM25Similarity;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * Per-repository generation store for Lucene BM25 sparse retrieval.
+ *
+ * <p>Supports:
+ * <ul>
+ *   <li>Isolated per-repository generation staging in dedicated folders</li>
+ *   <li>Atomic pointer swap via {@code CURRENT} file update</li>
+ *   <li>Staging discard and repository index deletion</li>
+ *   <li>Point-in-time searching with lazy index opening and cached readers</li>
+ *   <li>Unscoped cross-repository searching with merged top-K results</li>
+ *   <li>Automatic orphan generation cleanup</li>
+ *   <li>Graceful handling of disabled or missing indexes</li>
+ *   <li>Clean shutdown hook closing all readers, writers, and directories</li>
+ * </ul>
+ */
+@Component
+public class LuceneGenerationStore implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(LuceneGenerationStore.class);
+
+    private final RetrievalConfig config;
+    private final LuceneDocumentMapper mapper;
+    private final LuceneQueryBuilder queryBuilder;
+
+    private final ConcurrentMap<String, SearcherHolder> searcherCache = new ConcurrentHashMap<>();
+    private final Set<StagingSession> activeStagingSessions = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+
+    public LuceneGenerationStore() {
+        this(new RetrievalConfig(), new LuceneDocumentMapper(), new LuceneQueryBuilder());
+    }
+
+    @Autowired(required = false)
+    public LuceneGenerationStore(RetrievalConfig config, LuceneDocumentMapper mapper, LuceneQueryBuilder queryBuilder) {
+        this.config = config != null ? config : new RetrievalConfig();
+        this.mapper = mapper != null ? mapper : new LuceneDocumentMapper();
+        this.queryBuilder = queryBuilder != null ? queryBuilder : new LuceneQueryBuilder(this.config);
+    }
+
+    /**
+     * Staging context for indexing a new generation.
+     */
+    public static class StagingSession implements AutoCloseable {
+        private final String repositoryId;
+        private final String generationName;
+        private final Path stagingDir;
+        private final Directory directory;
+        private final IndexWriter indexWriter;
+        private final LuceneDocumentMapper mapper;
+        private final AtomicBoolean isClosed = new AtomicBoolean(false);
+        private final AtomicInteger stagedDocsCount = new AtomicInteger(0);
+
+        public StagingSession(String repositoryId, String generationName, Path stagingDir,
+                              Directory directory, IndexWriter indexWriter, LuceneDocumentMapper mapper) {
+            this.repositoryId = repositoryId;
+            this.generationName = generationName;
+            this.stagingDir = stagingDir;
+            this.directory = directory;
+            this.indexWriter = indexWriter;
+            this.mapper = mapper;
+        }
+
+        public String getRepositoryId() {
+            return repositoryId;
+        }
+
+        public String getGenerationName() {
+            return generationName;
+        }
+
+        public Path getStagingDir() {
+            return stagingDir;
+        }
+
+        public Directory getDirectory() {
+            return directory;
+        }
+
+        public IndexWriter getIndexWriter() {
+            return indexWriter;
+        }
+
+        public void writeDocuments(List<Document> documents) throws IOException {
+            if (isClosed.get()) {
+                throw new IllegalStateException("StagingSession is already closed");
+            }
+            if (documents == null || documents.isEmpty()) {
+                return;
+            }
+            List<org.apache.lucene.document.Document> luceneDocs = new ArrayList<>(documents.size());
+            for (Document doc : documents) {
+                luceneDocs.add(mapper.toLuceneDocument(doc));
+            }
+            indexWriter.addDocuments(luceneDocs);
+            stagedDocsCount.addAndGet(luceneDocs.size());
+        }
+
+        public int getStagedDocsCount() {
+            return stagedDocsCount.get();
+        }
+
+        @Override
+        public void close() {
+            if (isClosed.compareAndSet(false, true)) {
+                try {
+                    if (indexWriter.isOpen()) {
+                        indexWriter.close();
+                    }
+                } catch (Exception e) {
+                    log.debug("Exception closing IndexWriter for session {}: {}", generationName, e.getMessage());
+                }
+                try {
+                    directory.close();
+                } catch (Exception e) {
+                    log.debug("Exception closing Directory for session {}: {}", generationName, e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Begins staging a new index generation for the given repository.
+     */
+    public StagingSession stageGeneration(String repositoryId) throws IOException {
+        ensureOpen();
+        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
+        Files.createDirectories(repoDir);
+
+        String genName = "gen_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().replace("-", "");
+        Path stagingDir = repoDir.resolve(genName);
+        Files.createDirectories(stagingDir);
+
+        Directory directory = FSDirectory.open(stagingDir);
+        IndexWriterConfig iwc = new IndexWriterConfig(JavaSourceAnalyzer.createIndexAnalyzer());
+        iwc.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+        iwc.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+
+        IndexWriter writer = new IndexWriter(directory, iwc);
+        StagingSession session = new StagingSession(safeRepoId, genName, stagingDir, directory, writer, mapper);
+        activeStagingSessions.add(session);
+        return session;
+    }
+
+    /**
+     * Commits the staging session and atomically publishes it as the CURRENT generation for the repository.
+     */
+    public void publishGeneration(StagingSession session) throws IOException {
+        ensureOpen();
+        activeStagingSessions.remove(session);
+
+        try {
+            session.getIndexWriter().commit();
+        } finally {
+            session.close();
+        }
+
+        Path repoDir = session.getStagingDir().getParent();
+        Path currentTmp = repoDir.resolve("CURRENT.tmp");
+        Path currentFile = repoDir.resolve("CURRENT");
+
+        Files.writeString(currentTmp, session.getGenerationName(), StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+
+        try {
+            Files.move(currentTmp, currentFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(currentTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        // Invalidate or refresh cached searcher for this repository
+        evictAndCloseSearcher(session.getRepositoryId());
+
+        // Clean up orphan (older non-current) generations
+        cleanupOrphans(repoDir, session.getGenerationName());
+    }
+
+    /**
+     * Discards an uncommitted staging session and removes its directory.
+     */
+    public void discardGeneration(StagingSession session) {
+        if (session == null) {
+            return;
+        }
+        activeStagingSessions.remove(session);
+        try {
+            if (session.getIndexWriter().isOpen()) {
+                session.getIndexWriter().rollback();
+            }
+        } catch (Exception e) {
+            log.debug("Rollback error on discard for {}: {}", session.getGenerationName(), e.getMessage());
+        } finally {
+            session.close();
+        }
+
+        deleteRecursively(session.getStagingDir());
+    }
+
+    /**
+     * Deletes the entire index and directory structure for a repository.
+     */
+    public void deleteRepositoryIndex(String repositoryId) {
+        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        evictAndCloseSearcher(safeRepoId);
+
+        Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
+        if (Files.exists(repoDir)) {
+            deleteRecursively(repoDir);
+        }
+    }
+
+    /**
+     * Executes a point-in-time BM25 search against the active generation of a repository.
+     */
+    public List<Document> search(String repositoryId, String queryStr, int topK) {
+        if (!config.isSparseEnabled() || closed.get()) {
+            return Collections.emptyList();
+        }
+        if (queryStr == null || queryStr.isBlank() || topK <= 0) {
+            return Collections.emptyList();
+        }
+
+        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        SearcherHolder holder = acquireSearcher(safeRepoId);
+        if (holder == null) {
+            return Collections.emptyList();
+        }
+
+        try {
+            Query query = queryBuilder.buildQuery(queryStr, safeRepoId);
+            TopDocs topDocs = holder.searcher.search(query, topK);
+            List<Document> results = new ArrayList<>(topDocs.scoreDocs.length);
+            for (ScoreDoc sd : topDocs.scoreDocs) {
+                org.apache.lucene.document.Document luceneDoc = holder.searcher.storedFields().document(sd.doc);
+                results.add(mapper.toSpringAiDocument(luceneDoc, sd.score));
+            }
+            return results;
+        } catch (IOException e) {
+            log.error("Error executing Lucene search for repo {}: {}", safeRepoId, e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Executes an unscoped search across all active repository generations, merging top results.
+     */
+    public List<Document> searchUnscoped(String queryStr, int topK) {
+        if (!config.isSparseEnabled() || closed.get()) {
+            return Collections.emptyList();
+        }
+        if (queryStr == null || queryStr.isBlank() || topK <= 0) {
+            return Collections.emptyList();
+        }
+
+        Path baseDir = Path.of(config.getIndexDir());
+        if (!Files.isDirectory(baseDir)) {
+            return Collections.emptyList();
+        }
+
+        List<DirectoryReader> activeReaders = new ArrayList<>();
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(baseDir)) {
+            for (Path repoPath : stream) {
+                if (Files.isDirectory(repoPath) && Files.exists(repoPath.resolve("CURRENT"))) {
+                    String repoName = repoPath.getFileName().toString();
+                    SearcherHolder holder = acquireSearcher(repoName);
+                    if (holder != null && holder.reader.numDocs() > 0) {
+                        activeReaders.add(holder.reader);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            log.warn("Error scanning repositories for unscoped search: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+
+        if (activeReaders.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        try {
+            MultiReader multiReader = new MultiReader(activeReaders.toArray(new DirectoryReader[0]), false);
+            IndexSearcher multiSearcher = new IndexSearcher(multiReader);
+            multiSearcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+
+            Query query = queryBuilder.buildQuery(queryStr, null);
+            TopDocs topDocs = multiSearcher.search(query, topK);
+
+            List<Document> results = new ArrayList<>(topDocs.scoreDocs.length);
+            for (ScoreDoc sd : topDocs.scoreDocs) {
+                org.apache.lucene.document.Document luceneDoc = multiSearcher.storedFields().document(sd.doc);
+                results.add(mapper.toSpringAiDocument(luceneDoc, sd.score));
+            }
+            return results;
+        } catch (IOException e) {
+            log.error("Error executing unscoped Lucene search: {}", e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Checks if an active published generation exists for the specified repository.
+     */
+    public boolean hasIndex(String repositoryId) {
+        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId.trim();
+        Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
+        Path currentFile = repoDir.resolve("CURRENT");
+        if (!Files.exists(currentFile)) {
+            return false;
+        }
+        try {
+            String currentGen = Files.readString(currentFile, StandardCharsets.UTF_8).trim();
+            return Files.isDirectory(repoDir.resolve(currentGen));
+        } catch (IOException e) {
+            log.debug("Failed to verify index existence for repo {}: {}", safeRepoId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Returns the number of indexed documents in the active generation of the repository,
+     * or 0 if no active generation exists.
+     */
+    public int getDocumentCount(String repositoryId) {
+        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId.trim();
+        SearcherHolder holder = acquireSearcher(safeRepoId);
+        if (holder == null) {
+            return 0;
+        }
+        return holder.reader.numDocs();
+    }
+
+    /**
+     * Lists all repositories that have an active published generation.
+     */
+    public List<String> listRepositories() {
+        Path baseDir = Path.of(config.getIndexDir());
+        if (!Files.isDirectory(baseDir)) {
+            return Collections.emptyList();
+        }
+        List<String> repos = new ArrayList<>();
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(baseDir)) {
+            for (Path repoPath : stream) {
+                if (Files.isDirectory(repoPath) && Files.exists(repoPath.resolve("CURRENT"))) {
+                    repos.add(repoPath.getFileName().toString());
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Error listing repository directories: {}", e.getMessage());
+        }
+        return repos;
+    }
+
+    /**
+     * Lazily acquires or refreshes a cached point-in-time SearcherHolder for a repository.
+     */
+    private SearcherHolder acquireSearcher(String repositoryId) {
+        Path repoDir = Path.of(config.getIndexDir()).resolve(repositoryId);
+        Path currentFile = repoDir.resolve("CURRENT");
+        if (!Files.exists(currentFile)) {
+            return null;
+        }
+
+        String currentGen;
+        try {
+            currentGen = Files.readString(currentFile, StandardCharsets.UTF_8).trim();
+        } catch (IOException e) {
+            log.debug("Failed to read CURRENT pointer for repo {}: {}", repositoryId, e.getMessage());
+            return null;
+        }
+
+        Path genDir = repoDir.resolve(currentGen);
+        if (!Files.isDirectory(genDir)) {
+            return null;
+        }
+
+        SearcherHolder existing = searcherCache.get(repositoryId);
+        if (existing != null && existing.genName.equals(currentGen)) {
+            try {
+                DirectoryReader newReader = DirectoryReader.openIfChanged(existing.reader);
+                if (newReader == null) {
+                    return existing;
+                }
+                IndexSearcher newSearcher = new IndexSearcher(newReader);
+                newSearcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+                SearcherHolder refreshed = new SearcherHolder(currentGen, existing.directory, newReader, newSearcher);
+                searcherCache.put(repositoryId, refreshed);
+                try {
+                    existing.reader.close();
+                } catch (Exception ignored) {
+                }
+                return refreshed;
+            } catch (IOException e) {
+                log.debug("Error checking openIfChanged for {}: {}", repositoryId, e.getMessage());
+            }
+        }
+
+        synchronized (searcherCache) {
+            existing = searcherCache.get(repositoryId);
+            if (existing != null && existing.genName.equals(currentGen)) {
+                return existing;
+            }
+
+            if (existing != null) {
+                existing.close();
+            }
+
+            try {
+                Directory dir = FSDirectory.open(genDir);
+                DirectoryReader reader = DirectoryReader.open(dir);
+                IndexSearcher searcher = new IndexSearcher(reader);
+                searcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+                SearcherHolder created = new SearcherHolder(currentGen, dir, reader, searcher);
+                searcherCache.put(repositoryId, created);
+                return created;
+            } catch (IOException e) {
+                log.error("Failed to open IndexSearcher for repo {} generation {}: {}",
+                        repositoryId, currentGen, e.getMessage());
+                return null;
+            }
+        }
+    }
+
+    private void evictAndCloseSearcher(String repositoryId) {
+        SearcherHolder holder = searcherCache.remove(repositoryId);
+        if (holder != null) {
+            holder.close();
+        }
+    }
+
+    private void cleanupOrphans(Path repoDir, String currentGenName) {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(repoDir)) {
+            for (Path entry : stream) {
+                if (Files.isDirectory(entry)) {
+                    String name = entry.getFileName().toString();
+                    if (name.startsWith("gen_") && !name.equals(currentGenName)) {
+                        deleteRecursively(entry);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Orphan cleanup exception for {}: {}", repoDir, e.getMessage());
+        }
+    }
+
+    private void deleteRecursively(Path root) {
+        if (!Files.exists(root)) {
+            return;
+        }
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    try {
+                        Files.delete(file);
+                    } catch (IOException ignored) {
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+                    try {
+                        Files.delete(dir);
+                    } catch (IOException ignored) {
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException e) {
+            log.debug("Directory cleanup error for {}: {}", root, e.getMessage());
+        }
+    }
+
+    private void ensureOpen() {
+        if (closed.get()) {
+            throw new IllegalStateException("LuceneGenerationStore has been closed");
+        }
+    }
+
+    @PreDestroy
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            for (SearcherHolder holder : searcherCache.values()) {
+                holder.close();
+            }
+            searcherCache.clear();
+
+            for (StagingSession session : activeStagingSessions) {
+                discardGeneration(session);
+            }
+            activeStagingSessions.clear();
+        }
+    }
+
+    private static class SearcherHolder {
+        final String genName;
+        final Directory directory;
+        final DirectoryReader reader;
+        final IndexSearcher searcher;
+
+        SearcherHolder(String genName, Directory directory, DirectoryReader reader, IndexSearcher searcher) {
+            this.genName = genName;
+            this.directory = directory;
+            this.reader = reader;
+            this.searcher = searcher;
+        }
+
+        void close() {
+            try {
+                reader.close();
+            } catch (Exception ignored) {
+            }
+            try {
+                directory.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+}

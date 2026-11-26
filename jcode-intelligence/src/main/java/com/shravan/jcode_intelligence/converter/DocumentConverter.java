@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.converter;
 
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import com.shravan.jcode_intelligence.util.DocumentIdGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -88,7 +89,10 @@ public class DocumentConverter {
         }
 
         String content = chunk.getContent() != null ? chunk.getContent() : "";
-        return new Document(content, metadata);
+        String repoId = (chunk.getRepositoryId() == null || chunk.getRepositoryId().isBlank())
+                ? "default" : chunk.getRepositoryId();
+        String docId = DocumentIdGenerator.generateDeterministicId(repoId, chunk.getId(), content);
+        return new Document(docId, content, metadata);
     }
 
     public List<Document> convert(List<CodeChunk> chunks) {

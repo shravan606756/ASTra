@@ -20,6 +20,7 @@ import com.shravan.jcode_intelligence.service.classification.PipelineSelection;
 import com.shravan.jcode_intelligence.service.classification.RepositoryClassificationResult;
 import com.shravan.jcode_intelligence.service.classification.RepositoryClassifier;
 import com.shravan.jcode_intelligence.service.streaming.StreamingIndexingService;
+import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -83,10 +84,11 @@ public class IndexingServiceImpl implements IndexingService {
     private final RepositoryClassifier classifier;
     private final IndexingPipelineSelector selector;
     private final StreamingIndexingService streamingIndexingService;
+    private final LuceneGenerationStore luceneGenerationStore;
 
     /**
      * Primary constructor with all dependencies including classification, queue persistence,
-     * and optional streaming service.
+     * optional streaming service, and optional sparse Lucene generation store.
      *
      * <p>The {@link StreamingIndexingService} dependency is marked {@link Nullable} so Spring
      * treats it as optional and permits null arguments passed by delegating constructors (e.g.
@@ -109,7 +111,8 @@ public class IndexingServiceImpl implements IndexingService {
             @Autowired(required = false) ObjectProvider<EmbeddingModel> embeddingModelProvider,
             @Autowired(required = false) RepositoryClassifier classifier,
             @Autowired(required = false) IndexingPipelineSelector selector,
-            @Nullable StreamingIndexingService streamingIndexingService
+            @Nullable StreamingIndexingService streamingIndexingService,
+            @Autowired(required = false) LuceneGenerationStore luceneGenerationStore
     ) {
         this.parser = parser;
         this.converter = converter;
@@ -127,6 +130,35 @@ public class IndexingServiceImpl implements IndexingService {
         this.classifier = classifier;
         this.selector = selector;
         this.streamingIndexingService = streamingIndexingService;
+        this.luceneGenerationStore = luceneGenerationStore;
+    }
+
+    /**
+     * 16-argument constructor delegating with null sparse store.
+     */
+    public IndexingServiceImpl(
+            JavaProjectParser parser,
+            DocumentConverter converter,
+            VectorStore vectorStore,
+            GitService gitService,
+            JdbcTemplate jdbcTemplate,
+            PackageSummaryGenerator packageSummaryGenerator,
+            IndexingStatisticsCalculator statisticsCalculator,
+            EmbeddingBudgetValidator budgetValidator,
+            ChunkingConfig chunkingConfig,
+            com.shravan.jcode_intelligence.service.RepositoryManagementService repositoryManagementService,
+            RepositoryConcurrencyManager concurrencyManager,
+            EmbeddingQueue embeddingQueue,
+            ObjectProvider<EmbeddingModel> embeddingModelProvider,
+            RepositoryClassifier classifier,
+            IndexingPipelineSelector selector,
+            StreamingIndexingService streamingIndexingService
+    ) {
+        this(parser, converter, vectorStore, gitService, jdbcTemplate,
+                packageSummaryGenerator, statisticsCalculator, budgetValidator,
+                chunkingConfig, repositoryManagementService, concurrencyManager,
+                embeddingQueue, embeddingModelProvider, classifier, selector,
+                streamingIndexingService, null);
     }
 
     /**
@@ -310,143 +342,197 @@ public class IndexingServiceImpl implements IndexingService {
         budgetValidator.validateAndAudit(documents, allChunks);
         log.info("[STEP 4 COMPLETE] All {} document(s) passed pre-embedding budget validation", documents.size());
 
-        // [STEP 5] Delete existing vectors for this repository
-        log.info("[STEP 5] Cleaning up existing vector records for repository: {}", safeRepoId);
-        deleteExistingRepositoryVectors(safeRepoId);
-
-        // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
-        int totalDocs = documents.size();
-        int configuredBatchSize = Math.max(1, chunkingConfig.getBatchSize());
-        int queueCapacity = (embeddingQueue != null) ? embeddingQueue.getCapacity() : Integer.MAX_VALUE;
-        int batchSize = Math.max(1, Math.min(configuredBatchSize, queueCapacity));
-        int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
-
-        int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
-        int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
-
-        long embeddingStartTime = System.currentTimeMillis();
-        AtomicInteger completedDocs = new AtomicInteger(0);
-
-        EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
-
-        if (embeddingQueue != null && embeddingModel != null) {
-            String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
-            embeddingQueue.registerJob(jobId, safeRepoId, workerCount, batchSize, totalDocs);
-            log.info(
-                    "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
-                    totalDocs, totalBatches, batchSize, workerCount, jobId);
-
-            Semaphore semaphore = new Semaphore(workerCount);
-            AtomicReference<Throwable> firstFailureRef = new AtomicReference<>();
-            ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-            BatchEmbeddingHelper embeddingHelper = new BatchEmbeddingHelper(embeddingQueue, embeddingModel);
+        // Stage validated converted documents into sparse index before dense deletion
+        LuceneGenerationStore.StagingSession sparseSession = null;
+        if (luceneGenerationStore != null) {
             try {
-                List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
-                for (int i = 0; i < totalDocs; i += batchSize) {
-                    if (firstFailureRef.get() != null) {
-                        break;
-                    }
-
-                    int startIdx = i;
-                    int endIdx = Math.min(i + batchSize, totalDocs);
-                    List<Document> batch = documents.subList(startIdx, endIdx);
-                    int batchNum = (startIdx / batchSize) + 1;
-
-                    try {
-                        semaphore.acquire();
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);
-                    }
-
-                    if (firstFailureRef.get() != null) {
-                        semaphore.release();
-                        break;
-                    }
-
-                    try {
-                        futures.add(CompletableFuture.runAsync(() -> {
-                            try {
-                                log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
-                                        batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
-
-                                long batchStart = System.currentTimeMillis();
-
-                                embeddingHelper.embedAndStage(safeRepoId, jobId, batch);
-
-                                long batchDuration = System.currentTimeMillis() - batchStart;
-                                int doneDocs = completedDocs.addAndGet(batch.size());
-                                double pct = ((double) doneDocs / totalDocs) * 100.0;
-                                log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
-                                        batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                        String.format("%.1f%%", pct));
-                            } catch (Throwable t) {
-                                firstFailureRef.compareAndSet(null, t);
-                                throw t;
-                            } finally {
-                                semaphore.release();
-                            }
-                        }, executor));
-                    } catch (Throwable submitEx) {
-                        semaphore.release();
-                        firstFailureRef.compareAndSet(null, submitEx);
-                        throw submitEx;
-                    }
+                log.info("[SPARSE STAGING] Staging {} validated document(s) for repository '{}'...", documents.size(), safeRepoId);
+                sparseSession = luceneGenerationStore.stageGeneration(safeRepoId);
+                sparseSession.writeDocuments(documents);
+                log.info("[SPARSE STAGING COMPLETE] Successfully staged {} document(s) in generation '{}'",
+                        documents.size(), sparseSession.getGenerationName());
+            } catch (Exception e) {
+                log.error("[SPARSE STAGING ERROR] Failed to stage sparse generation for repository '{}': {}",
+                        safeRepoId, e.getMessage(), e);
+                if (sparseSession != null) {
+                    luceneGenerationStore.discardGeneration(sparseSession);
+                    sparseSession = null;
                 }
-
-                awaitAllOrCancelOnFailure(futures);
-
-                embeddingQueue.completeJob(jobId);
-                embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
-            } catch (Throwable t) {
-                embeddingQueue.failJob(jobId, t);
-                shutdownAndAwaitTermination(executor);
-                embeddingQueue.cleanupJob(jobId);
-                throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
-            } finally {
-                shutdownAndAwaitTermination(executor);
-            }
-        } else {
-            log.info(
-                    "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
-                    totalDocs, totalBatches, batchSize, workerCount);
-
-            ExecutorService executor = Executors.newFixedThreadPool(workerCount);
-            try {
-                List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
-
-                for (int i = 0; i < totalDocs; i += batchSize) {
-                    int startIdx = i;
-                    int endIdx = Math.min(i + batchSize, totalDocs);
-                    List<Document> batch = documents.subList(startIdx, endIdx);
-                    int batchNum = (startIdx / batchSize) + 1;
-
-                    futures.add(CompletableFuture.runAsync(() -> {
-                        log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
-                                batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
-
-                        long batchStart = System.currentTimeMillis();
-                        vectorStore.add(batch);
-                        long batchDuration = System.currentTimeMillis() - batchStart;
-
-                        int doneDocs = completedDocs.addAndGet(batch.size());
-                        double pct = ((double) doneDocs / totalDocs) * 100.0;
-                        log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
-                                batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
-                                String.format("%.1f%%", pct));
-                    }, executor));
-                }
-
-                awaitAllOrCancelOnFailure(futures);
-            } finally {
-                shutdownAndAwaitTermination(executor);
+                throw new RuntimeException("Failed to stage sparse index generation for repository " + safeRepoId, e);
             }
         }
 
-        long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
-        log.info(
-                "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
-                totalDocs, totalBatches, embeddingDuration, workerCount);
+        try {
+            // [STEP 5] Delete existing vectors for this repository
+            log.info("[STEP 5] Cleaning up existing vector records for repository: {}", safeRepoId);
+            deleteExistingRepositoryVectors(safeRepoId);
+
+            // [STEP 6] Embedding generation & vector storage (Queue-based staging or parallel batch fallback)
+            int totalDocs = documents.size();
+            int configuredBatchSize = Math.max(1, chunkingConfig.getBatchSize());
+            int queueCapacity = (embeddingQueue != null) ? embeddingQueue.getCapacity() : Integer.MAX_VALUE;
+            int batchSize = Math.max(1, Math.min(configuredBatchSize, queueCapacity));
+            int totalBatches = (int) Math.ceil((double) totalDocs / batchSize);
+
+            int configuredMaxWorkers = Math.max(1, chunkingConfig.getMaxParallelWorkers());
+            int workerCount = Math.max(1, Math.min(totalBatches, configuredMaxWorkers));
+
+            long embeddingStartTime = System.currentTimeMillis();
+            AtomicInteger completedDocs = new AtomicInteger(0);
+
+            EmbeddingModel embeddingModel = (embeddingModelProvider != null) ? embeddingModelProvider.getIfAvailable() : null;
+
+            if (embeddingQueue != null && embeddingModel != null) {
+                String jobId = "job-" + safeRepoId + "-" + System.currentTimeMillis();
+                embeddingQueue.registerJob(jobId, safeRepoId, workerCount, batchSize, totalDocs);
+                log.info(
+                        "[STEP 6] Starting adaptive parallel batch embedding & queue staging for {} document(s) in {} batch(es) (batch size: {}, workers: {}, jobId: {})...",
+                        totalDocs, totalBatches, batchSize, workerCount, jobId);
+
+                Semaphore semaphore = new Semaphore(workerCount);
+                AtomicReference<Throwable> firstFailureRef = new AtomicReference<>();
+                ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+                BatchEmbeddingHelper embeddingHelper = new BatchEmbeddingHelper(embeddingQueue, embeddingModel);
+                try {
+                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
+                    for (int i = 0; i < totalDocs; i += batchSize) {
+                        if (firstFailureRef.get() != null) {
+                            break;
+                        }
+
+                        int startIdx = i;
+                        int endIdx = Math.min(i + batchSize, totalDocs);
+                        List<Document> batch = documents.subList(startIdx, endIdx);
+                        int batchNum = (startIdx / batchSize) + 1;
+
+                        try {
+                            semaphore.acquire();
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException("Interrupted while awaiting embedding worker permit for batch " + batchNum, ie);
+                        }
+
+                        if (firstFailureRef.get() != null) {
+                            semaphore.release();
+                            break;
+                        }
+
+                        try {
+                            futures.add(CompletableFuture.runAsync(() -> {
+                                try {
+                                    log.info("[BATCH {}/{}] Requesting embeddings & staging to queue for documents {}-{} of {}...",
+                                            batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
+                                    long batchStart = System.currentTimeMillis();
+
+                                    embeddingHelper.embedAndStage(safeRepoId, jobId, batch);
+
+                                    long batchDuration = System.currentTimeMillis() - batchStart;
+                                    int doneDocs = completedDocs.addAndGet(batch.size());
+                                    double pct = ((double) doneDocs / totalDocs) * 100.0;
+                                    log.info("[BATCH {}/{} COMPLETE] Embedded & staged {} vector(s) to queue in {} ms | Progress: {}/{} ({})",
+                                            batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                            String.format("%.1f%%", pct));
+                                } catch (Throwable t) {
+                                    firstFailureRef.compareAndSet(null, t);
+                                    throw t;
+                                } finally {
+                                    semaphore.release();
+                                }
+                            }, executor));
+                        } catch (Throwable submitEx) {
+                            semaphore.release();
+                            firstFailureRef.compareAndSet(null, submitEx);
+                            throw submitEx;
+                        }
+                    }
+
+                    awaitAllOrCancelOnFailure(futures);
+
+                    embeddingQueue.completeJob(jobId);
+                    embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
+                } catch (Throwable t) {
+                    embeddingQueue.failJob(jobId, t);
+                    shutdownAndAwaitTermination(executor);
+                    embeddingQueue.cleanupJob(jobId);
+                    throw new RuntimeException("Embedding generation and queue staging failed during STEP 6", t);
+                } finally {
+                    shutdownAndAwaitTermination(executor);
+                }
+            } else {
+                log.info(
+                        "[STEP 6] Starting adaptive parallel batch vector store insertion for {} document(s) in {} batch(es) (batch size: {}, workers: {})...",
+                        totalDocs, totalBatches, batchSize, workerCount);
+
+                ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+                try {
+                    List<CompletableFuture<Void>> futures = new ArrayList<>(totalBatches);
+
+                    for (int i = 0; i < totalDocs; i += batchSize) {
+                        int startIdx = i;
+                        int endIdx = Math.min(i + batchSize, totalDocs);
+                        List<Document> batch = documents.subList(startIdx, endIdx);
+                        int batchNum = (startIdx / batchSize) + 1;
+
+                        futures.add(CompletableFuture.runAsync(() -> {
+                            log.info("[BATCH {}/{}] Requesting embeddings & vector storage for documents {}-{} of {}...",
+                                    batchNum, totalBatches, startIdx + 1, endIdx, totalDocs);
+
+                            long batchStart = System.currentTimeMillis();
+                            vectorStore.add(batch);
+                            long batchDuration = System.currentTimeMillis() - batchStart;
+
+                            int doneDocs = completedDocs.addAndGet(batch.size());
+                            double pct = ((double) doneDocs / totalDocs) * 100.0;
+                            log.info("[BATCH {}/{} COMPLETE] Embedded & stored {} vector(s) in {} ms | Progress: {}/{} ({})",
+                                    batchNum, totalBatches, batch.size(), batchDuration, doneDocs, totalDocs,
+                                    String.format("%.1f%%", pct));
+                        }, executor));
+                    }
+
+                    awaitAllOrCancelOnFailure(futures);
+                } finally {
+                    shutdownAndAwaitTermination(executor);
+                }
+            }
+
+            long embeddingDuration = System.currentTimeMillis() - embeddingStartTime;
+            log.info(
+                    "[STEP 6 COMPLETE] Successfully embedded & indexed {} document(s) across {} batch(es) in {} ms using {} worker(s)",
+                    totalDocs, totalBatches, embeddingDuration, workerCount);
+
+            // Publish sparse generation after queue persistence or all fallback writes and before statistics
+            if (sparseSession != null && luceneGenerationStore != null) {
+                try {
+                    luceneGenerationStore.publishGeneration(sparseSession);
+                    log.info("[SPARSE PUBLISH COMPLETE] Published sparse generation '{}' for repository '{}'",
+                            sparseSession.getGenerationName(), safeRepoId);
+
+                    int sparseCount = luceneGenerationStore.getDocumentCount(safeRepoId);
+                    if (sparseCount != documents.size()) {
+                        log.warn("[SPARSE COUNT MISMATCH] Published sparse index document count ({}) does not match input document count ({}) for repository '{}'",
+                                sparseCount, documents.size(), safeRepoId);
+                    }
+                    sparseSession = null;
+                } catch (Exception e) {
+                    log.error("[SPARSE PUBLISH ERROR] Failed to publish sparse generation for repository '{}': {}",
+                            safeRepoId, e.getMessage(), e);
+                    luceneGenerationStore.discardGeneration(sparseSession);
+                    sparseSession = null;
+                    throw new RuntimeException("Failed to publish sparse generation for repository " + safeRepoId, e);
+                }
+            }
+        } catch (Throwable t) {
+            if (sparseSession != null && luceneGenerationStore != null) {
+                try {
+                    luceneGenerationStore.discardGeneration(sparseSession);
+                } catch (Exception discardEx) {
+                    log.debug("Error discarding sparse session on failure for {}: {}", safeRepoId, discardEx.getMessage());
+                }
+                sparseSession = null;
+            }
+            throw t;
+        }
 
         long duration = System.currentTimeMillis() - startTime;
 

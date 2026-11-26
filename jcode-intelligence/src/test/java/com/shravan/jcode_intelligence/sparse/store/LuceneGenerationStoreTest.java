@@ -13,8 +13,10 @@ import org.springframework.ai.document.Document;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -196,5 +198,96 @@ class LuceneGenerationStoreTest {
         Path repoDir = tempDir.resolve("sparse-index").resolve(repoId);
         assertFalse(Files.exists(repoDir));
         assertTrue(store.search(repoId, "sample", 5).isEmpty());
+    }
+
+    @Test
+    @DisplayName("Overlapping index jobs do not delete active staging directories during orphan cleanup")
+    void testOverlappingIndexJobsStagingDirectoryNotCleanedUp() throws IOException {
+        String repoId = "overlap-repo";
+
+        // Initial published generation (gen0)
+        LuceneGenerationStore.StagingSession gen0 = store.stageGeneration(repoId);
+        gen0.writeDocuments(List.of(new Document("d0", "initial content gen 0", Map.of("repositoryId", repoId))));
+        store.publishGeneration(gen0);
+        Path gen0Dir = gen0.getStagingDir();
+        assertTrue(Files.exists(gen0Dir), "Gen0 should exist after initial publish");
+
+        // Job 1 stages gen1
+        LuceneGenerationStore.StagingSession gen1 = store.stageGeneration(repoId);
+        gen1.writeDocuments(List.of(new Document("d1", "job one content gen 1", Map.of("repositoryId", repoId))));
+        Path gen1Dir = gen1.getStagingDir();
+        assertTrue(Files.exists(gen1Dir));
+
+        // Job 2 stages gen2 concurrently while gen1 is still uncommitted
+        LuceneGenerationStore.StagingSession gen2 = store.stageGeneration(repoId);
+        gen2.writeDocuments(List.of(new Document("d2", "job two content gen 2", Map.of("repositoryId", repoId))));
+        Path gen2Dir = gen2.getStagingDir();
+        assertTrue(Files.exists(gen2Dir));
+
+        // Job 1 publishes gen1 -> triggers orphan cleanup
+        store.publishGeneration(gen1);
+
+        // Verify: gen0 was an unreferenced old generation, so it should be cleaned up
+        assertFalse(Files.exists(gen0Dir), "Unreferenced gen0 directory should be cleaned up as an orphan");
+
+        // Crucial regression verification: gen2 is an ongoing staging session and MUST NOT be deleted
+        assertTrue(Files.exists(gen2Dir), "Active staging directory gen2 must NOT be deleted by gen1 orphan cleanup");
+
+        // Job 2 completes and publishes gen2 successfully without errors
+        assertDoesNotThrow(() -> store.publishGeneration(gen2));
+
+        // Verify gen2 is now CURRENT and searchable
+        Path currentFile = tempDir.resolve("sparse-index").resolve(repoId).resolve("CURRENT");
+        assertEquals(gen2.getGenerationName(), Files.readString(currentFile).trim());
+
+        // gen1 is now orphaned and should be cleaned up
+        assertFalse(Files.exists(gen1Dir), "Previous generation gen1 should be cleaned up once gen2 is published");
+
+        // Search returns gen2 content
+        List<Document> results = store.search(repoId, "job two", 5);
+        assertEquals(1, results.size());
+        assertEquals("d2", results.get(0).getId());
+    }
+
+    @Test
+    @DisplayName("Concurrent overlapping index jobs stage and publish without file conflicts or orphan races")
+    void testConcurrentOverlappingStagingAndPublish() throws Exception {
+        String repoId = "concurrent-repo";
+        int numThreads = 6;
+        ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Future<String>> futures = new ArrayList<>();
+
+        for (int i = 0; i < numThreads; i++) {
+            final int index = i;
+            futures.add(executor.submit(() -> {
+                startLatch.await();
+                LuceneGenerationStore.StagingSession session = store.stageGeneration(repoId);
+                String docId = "doc-" + index;
+                session.writeDocuments(List.of(new Document(docId, "concurrent text " + index,
+                        Map.of("repositoryId", repoId, "docId", docId))));
+                store.publishGeneration(session);
+                return session.getGenerationName();
+            }));
+        }
+
+        startLatch.countDown();
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS), "Executor did not finish in time");
+
+        List<String> finishedGens = new ArrayList<>();
+        for (Future<String> future : futures) {
+            finishedGens.add(future.get());
+        }
+
+        // Verify CURRENT is one of the finished generations
+        Path currentFile = tempDir.resolve("sparse-index").resolve(repoId).resolve("CURRENT");
+        assertTrue(Files.exists(currentFile));
+        String currentGen = Files.readString(currentFile).trim();
+        assertTrue(finishedGens.contains(currentGen));
+
+        // Verify search operates smoothly on current index
+        List<Document> searchResults = store.search(repoId, "concurrent", 10);
+        assertFalse(searchResults.isEmpty());
     }
 }

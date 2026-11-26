@@ -42,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * Per-repository generation store for Lucene BM25 sparse retrieval.
@@ -53,7 +54,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>Staging discard and repository index deletion</li>
  *   <li>Point-in-time searching with lazy index opening and cached readers</li>
  *   <li>Unscoped cross-repository searching with merged top-K results</li>
- *   <li>Automatic orphan generation cleanup</li>
+ *   <li>Automatic orphan generation cleanup excluding active staging sessions</li>
  *   <li>Graceful handling of disabled or missing indexes</li>
  *   <li>Clean shutdown hook closing all readers, writers, and directories</li>
  * </ul>
@@ -69,7 +70,13 @@ public class LuceneGenerationStore implements AutoCloseable {
 
     private final ConcurrentMap<String, SearcherHolder> searcherCache = new ConcurrentHashMap<>();
     private final Set<StagingSession> activeStagingSessions = ConcurrentHashMap.newKeySet();
+    private final ConcurrentMap<String, Object> repoLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
+
+    private Object getRepoLock(String repositoryId) {
+        String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
+        return repoLocks.computeIfAbsent(safeRepoId, k -> new Object());
+    }
 
     public LuceneGenerationStore() {
         this(new RetrievalConfig(), new LuceneDocumentMapper(), new LuceneQueryBuilder());
@@ -169,22 +176,25 @@ public class LuceneGenerationStore implements AutoCloseable {
     public StagingSession stageGeneration(String repositoryId) throws IOException {
         ensureOpen();
         String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
-        Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
-        Files.createDirectories(repoDir);
 
-        String genName = "gen_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().replace("-", "");
-        Path stagingDir = repoDir.resolve(genName);
-        Files.createDirectories(stagingDir);
+        synchronized (getRepoLock(safeRepoId)) {
+            Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
+            Files.createDirectories(repoDir);
 
-        Directory directory = FSDirectory.open(stagingDir);
-        IndexWriterConfig iwc = new IndexWriterConfig(JavaSourceAnalyzer.createIndexAnalyzer());
-        iwc.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
-        iwc.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+            String genName = "gen_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().replace("-", "");
+            Path stagingDir = repoDir.resolve(genName);
+            Files.createDirectories(stagingDir);
 
-        IndexWriter writer = new IndexWriter(directory, iwc);
-        StagingSession session = new StagingSession(safeRepoId, genName, stagingDir, directory, writer, mapper);
-        activeStagingSessions.add(session);
-        return session;
+            Directory directory = FSDirectory.open(stagingDir);
+            IndexWriterConfig iwc = new IndexWriterConfig(JavaSourceAnalyzer.createIndexAnalyzer());
+            iwc.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+            iwc.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+
+            IndexWriter writer = new IndexWriter(directory, iwc);
+            StagingSession session = new StagingSession(safeRepoId, genName, stagingDir, directory, writer, mapper);
+            activeStagingSessions.add(session);
+            return session;
+        }
     }
 
     /**
@@ -192,7 +202,6 @@ public class LuceneGenerationStore implements AutoCloseable {
      */
     public void publishGeneration(StagingSession session) throws IOException {
         ensureOpen();
-        activeStagingSessions.remove(session);
 
         try {
             session.getIndexWriter().commit();
@@ -200,24 +209,29 @@ public class LuceneGenerationStore implements AutoCloseable {
             session.close();
         }
 
-        Path repoDir = session.getStagingDir().getParent();
-        Path currentTmp = repoDir.resolve("CURRENT.tmp");
-        Path currentFile = repoDir.resolve("CURRENT");
+        String safeRepoId = session.getRepositoryId();
+        synchronized (getRepoLock(safeRepoId)) {
+            activeStagingSessions.remove(session);
 
-        Files.writeString(currentTmp, session.getGenerationName(), StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            Path repoDir = session.getStagingDir().getParent();
+            Path currentTmp = repoDir.resolve("CURRENT.tmp");
+            Path currentFile = repoDir.resolve("CURRENT");
 
-        try {
-            Files.move(currentTmp, currentFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(currentTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(currentTmp, session.getGenerationName(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+
+            try {
+                Files.move(currentTmp, currentFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(currentTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            // Invalidate or refresh cached searcher for this repository
+            evictAndCloseSearcher(safeRepoId);
+
+            // Clean up orphan (older non-current) generations, excluding active staging directories
+            cleanupOrphans(repoDir, session.getGenerationName());
         }
-
-        // Invalidate or refresh cached searcher for this repository
-        evictAndCloseSearcher(session.getRepositoryId());
-
-        // Clean up orphan (older non-current) generations
-        cleanupOrphans(repoDir, session.getGenerationName());
     }
 
     /**
@@ -227,7 +241,7 @@ public class LuceneGenerationStore implements AutoCloseable {
         if (session == null) {
             return;
         }
-        activeStagingSessions.remove(session);
+        String safeRepoId = session.getRepositoryId();
         try {
             if (session.getIndexWriter().isOpen()) {
                 session.getIndexWriter().rollback();
@@ -238,7 +252,10 @@ public class LuceneGenerationStore implements AutoCloseable {
             session.close();
         }
 
-        deleteRecursively(session.getStagingDir());
+        synchronized (getRepoLock(safeRepoId)) {
+            activeStagingSessions.remove(session);
+            deleteRecursively(session.getStagingDir());
+        }
     }
 
     /**
@@ -246,11 +263,19 @@ public class LuceneGenerationStore implements AutoCloseable {
      */
     public void deleteRepositoryIndex(String repositoryId) {
         String safeRepoId = (repositoryId == null || repositoryId.isBlank()) ? "default" : repositoryId;
-        evictAndCloseSearcher(safeRepoId);
+        synchronized (getRepoLock(safeRepoId)) {
+            evictAndCloseSearcher(safeRepoId);
 
-        Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
-        if (Files.exists(repoDir)) {
-            deleteRecursively(repoDir);
+            for (StagingSession session : new ArrayList<>(activeStagingSessions)) {
+                if (safeRepoId.equals(session.getRepositoryId())) {
+                    discardGeneration(session);
+                }
+            }
+
+            Path repoDir = Path.of(config.getIndexDir()).resolve(safeRepoId);
+            if (Files.exists(repoDir)) {
+                deleteRecursively(repoDir);
+            }
         }
     }
 
@@ -473,17 +498,33 @@ public class LuceneGenerationStore implements AutoCloseable {
     }
 
     private void cleanupOrphans(Path repoDir, String currentGenName) {
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(repoDir)) {
-            for (Path entry : stream) {
-                if (Files.isDirectory(entry)) {
-                    String name = entry.getFileName().toString();
-                    if (name.startsWith("gen_") && !name.equals(currentGenName)) {
-                        deleteRecursively(entry);
+        String safeRepoId = (repoDir != null && repoDir.getFileName() != null)
+                ? repoDir.getFileName().toString() : "default";
+
+        synchronized (getRepoLock(safeRepoId)) {
+            Set<String> activeGens = activeStagingSessions.stream()
+                    .map(StagingSession::getGenerationName)
+                    .collect(Collectors.toSet());
+
+            Set<Path> activeDirs = activeStagingSessions.stream()
+                    .map(s -> s.getStagingDir().toAbsolutePath().normalize())
+                    .collect(Collectors.toSet());
+
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(repoDir)) {
+                for (Path entry : stream) {
+                    if (Files.isDirectory(entry)) {
+                        String name = entry.getFileName().toString();
+                        if (name.startsWith("gen_")
+                                && !name.equals(currentGenName)
+                                && !activeGens.contains(name)
+                                && !activeDirs.contains(entry.toAbsolutePath().normalize())) {
+                            deleteRecursively(entry);
+                        }
                     }
                 }
+            } catch (IOException e) {
+                log.debug("Orphan cleanup exception for {}: {}", repoDir, e.getMessage());
             }
-        } catch (IOException e) {
-            log.debug("Orphan cleanup exception for {}: {}", repoDir, e.getMessage());
         }
     }
 

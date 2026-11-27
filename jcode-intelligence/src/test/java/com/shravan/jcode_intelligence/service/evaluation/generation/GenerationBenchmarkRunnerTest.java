@@ -14,6 +14,7 @@ import com.shravan.jcode_intelligence.model.benchmark.BenchmarkQueryDefinition;
 import com.shravan.jcode_intelligence.service.evaluation.citation.CitationMetricsCalculator;
 import com.shravan.jcode_intelligence.service.evaluation.citation.CitationParser;
 import com.shravan.jcode_intelligence.service.evaluation.citation.CitationValidator;
+import com.shravan.jcode_intelligence.service.evaluation.citation.RevisionStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -157,5 +158,90 @@ class GenerationBenchmarkRunnerTest {
         // QR verification
         assertEquals("SUCCESS", qr1.getGenerationResult().getStatus());
         assertEquals("FAILED", qr2.getGenerationResult().getStatus());
+    }
+
+    @Test
+    @DisplayName("Dirty checkout produces null citation scores and preserves DIRTY revision status in aggregate summary")
+    void testDirtyCheckoutSkipsCitationScoresAndPreservesDirtyStatus() {
+        LLMClient mockLlm = new LLMClient(null) {
+            private int counter = 0;
+            @Override
+            public LLMResponse generateWithUsage(String prompt, ChatOptions options) {
+                counter++;
+                if (counter == 1) {
+                    return new LLMResponse("Sample answer with citation [cite: src/Sample.java:1-5].", 100, 50, 200L, "mock-model");
+                } else {
+                    String judgeJson = """
+                            {
+                              "claims": [
+                                { "claim": "Fact 1", "verdict": "SUPPORTED" }
+                              ],
+                              "relevancyRating": 5,
+                              "correctnessRating": 5,
+                              "citationVerdicts": [
+                                { "citationIndex": 0, "verdict": "SUPPORTED", "rationale": "Valid" }
+                              ]
+                            }
+                            """;
+                    return new LLMResponse(judgeJson, 150, 40, 150L, "mock-judge");
+                }
+            }
+        };
+
+        CitationValidator dirtyValidator = new CitationValidator() {
+            @Override
+            public RevisionStatus checkRevision(java.nio.file.Path repositoryRoot, String expectedRevision) {
+                return RevisionStatus.DIRTY;
+            }
+
+            @Override
+            public List<com.shravan.jcode_intelligence.service.evaluation.citation.CitationValidationResult> validateAll(
+                    List<com.shravan.jcode_intelligence.service.evaluation.citation.Citation> citations,
+                    String repositoryRoot,
+                    String expectedRevision
+            ) {
+                return citations.stream()
+                        .map(c -> com.shravan.jcode_intelligence.service.evaluation.citation.CitationValidationResult.skipped(
+                                c, RevisionStatus.DIRTY, "Validation skipped: repository revision is DIRTY"))
+                        .toList();
+            }
+        };
+
+        GenerationEvaluator evaluator = new GenerationEvaluator(mockLlm, new LlmRetryHelper(1, 0, 1.0, 0, 0), templateLoader);
+        GenerationBenchmarkRunner runner = new GenerationBenchmarkRunner(
+                promptBuilder, mockLlm, new LlmRetryHelper(1, 0, 1.0, 0, 0),
+                new CitationParser(), dirtyValidator, new CitationMetricsCalculator(),
+                evaluator,
+                5
+        );
+
+        BenchmarkQueryDefinition bq = new BenchmarkQueryDefinition(
+                "Q1", "Query 1", "Category", "repo", "CLASS", List.of(), "Ref answer 1", List.of("src/Sample.java")
+        );
+        QueryBenchmarkResultDTO qr = new QueryBenchmarkResultDTO();
+        qr.setQueryId("Q1");
+        qr.setStatus("SUCCESS");
+
+        List<GenerationBenchmarkRunner.RetainedBenchmarkQuery> retained = List.of(
+                new GenerationBenchmarkRunner.RetainedBenchmarkQuery(bq, qr, List.of(createTestDoc()), QueryIntent.SEARCH, "repo")
+        );
+
+        BenchmarkRequest request = new BenchmarkRequest("repo");
+        request.setEvaluateGeneration(true);
+        request.setSourceRoot("/fake/path");
+
+        BenchmarkGenerationSummaryDTO summary = runner.runGenerationEvaluation(retained, request, "main");
+
+        assertNotNull(summary);
+        // Per-query DTO verification
+        assertNotNull(qr.getCitationValidation());
+        assertNull(qr.getCitationValidation().getCitationCorrectness(), "Per-query citation correctness must be null on dirty checkout");
+        assertNull(qr.getCitationValidation().getExpectedSourceRecall(), "Per-query expected source recall must be null on dirty checkout");
+        assertEquals("DIRTY", qr.getCitationValidation().getRevisionStatus());
+
+        // Aggregate summary verification: unevaluated scores must be null, not 0.0
+        assertNull(summary.getAverageCitationCorrectness(), "Aggregate average citation correctness must be null on dirty checkout");
+        assertNull(summary.getAverageExpectedSourceRecall(), "Aggregate average expected source recall must be null on dirty checkout");
+        assertEquals("DIRTY", summary.getRevisionStatus(), "Summary revision status must be DIRTY");
     }
 }

@@ -186,19 +186,21 @@ public class GenerationBenchmarkRunner {
             List<Citation> parsedCitations = citationParser.parseCitations(answerText);
 
             // 4. Validate citations against checkout and compute deterministic citation metrics
+            RevisionStatus revStatus = RevisionStatus.UNAVAILABLE;
+            if (sourceRoot != null && !sourceRoot.isBlank()) {
+                revStatus = citationValidator.checkRevision(Paths.get(sourceRoot), effectiveRevision);
+            }
+
             List<CitationValidationResult> validationResults = citationValidator.validateAll(
                     parsedCitations, sourceRoot, effectiveRevision
             );
-            CitationMetrics citationMetrics = citationMetricsCalculator.calculateMetrics(
-                    validationResults, bq.getExpectedCitations()
-            );
-
-            RevisionStatus revStatus = RevisionStatus.UNAVAILABLE;
             if (validationResults != null && !validationResults.isEmpty()) {
                 revStatus = validationResults.get(0).revisionStatus();
-            } else if (sourceRoot != null && !sourceRoot.isBlank()) {
-                revStatus = citationValidator.checkRevision(Paths.get(sourceRoot), effectiveRevision);
             }
+
+            CitationMetrics citationMetrics = citationMetricsCalculator.calculateMetrics(
+                    validationResults, bq.getExpectedCitations(), revStatus
+            );
 
             CitationValidationDTO citationDto = new CitationValidationDTO();
             citationDto.setTotalCitations(citationMetrics.totalCitations());
@@ -363,9 +365,18 @@ public class GenerationBenchmarkRunner {
                     sumExpectedRecall += cite.getExpectedSourceRecall();
                     countExpectedRecall++;
                 }
-                if (resolvedRevisionStatus == null && cite.getRevisionStatus() != null) {
-                    resolvedRevisionStatus = cite.getRevisionStatus();
+                if (cite.getRevisionStatus() != null) {
+                    if (resolvedRevisionStatus == null || "DIRTY".equalsIgnoreCase(cite.getRevisionStatus())) {
+                        resolvedRevisionStatus = cite.getRevisionStatus();
+                    }
                 }
+            }
+        }
+
+        if (resolvedRevisionStatus == null && sourceRoot != null && !sourceRoot.isBlank()) {
+            RevisionStatus status = citationValidator.checkRevision(Paths.get(sourceRoot), suiteSourceRevision);
+            if (status != null) {
+                resolvedRevisionStatus = status.name();
             }
         }
 

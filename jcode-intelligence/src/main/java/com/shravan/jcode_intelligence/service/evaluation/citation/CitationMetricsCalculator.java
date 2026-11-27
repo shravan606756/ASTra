@@ -44,6 +44,33 @@ public class CitationMetricsCalculator {
      * @return citation metrics with safe null denominators
      */
     public CitationMetrics calculateMetrics(List<CitationValidationResult> validationResults, List<String> expectedSources) {
+        return calculateMetrics(validationResults, expectedSources, null);
+    }
+
+    /**
+     * Calculates citation metrics from validation results, expected benchmark sources, and repository revision status.
+     * When validation was skipped (e.g. DIRTY, MISMATCHED, or UNAVAILABLE checkout, or skipped validation verdicts),
+     * precision and recall are returned as null rather than counting skipped citations as false zero failures.
+     *
+     * @param validationResults list of validation results for all parsed citations (including malformed)
+     * @param expectedSources   expected benchmark sources (e.g. file names or relative paths)
+     * @param revisionStatus    checkout revision status (nullable)
+     * @return citation metrics with null precision and recall when validation was skipped
+     */
+    public CitationMetrics calculateMetrics(
+            List<CitationValidationResult> validationResults,
+            List<String> expectedSources,
+            RevisionStatus revisionStatus
+    ) {
+        boolean validationSkipped = false;
+        if (revisionStatus != null) {
+            validationSkipped = (revisionStatus == RevisionStatus.DIRTY
+                    || revisionStatus == RevisionStatus.MISMATCHED
+                    || revisionStatus == RevisionStatus.UNAVAILABLE);
+        } else if (validationResults != null && !validationResults.isEmpty()) {
+            validationSkipped = validationResults.stream().allMatch(CitationValidationResult::isSkipped);
+        }
+
         int totalCitations = (validationResults != null) ? validationResults.size() : 0;
         int validSyntaxCount = 0;
         int structurallyValidCount = 0;
@@ -65,14 +92,14 @@ public class CitationMetricsCalculator {
             }
         }
 
-        Double precision = (totalCitations > 0)
+        Double precision = (!validationSkipped && totalCitations > 0)
                 ? (double) structurallyValidCount / totalCitations
                 : null;
 
         int totalExpected = (expectedSources != null) ? expectedSources.size() : 0;
         int matchedExpected = 0;
 
-        if (totalExpected > 0) {
+        if (!validationSkipped && totalExpected > 0) {
             for (String expected : expectedSources) {
                 if (expected == null || expected.isBlank()) {
                     continue;
@@ -89,7 +116,7 @@ public class CitationMetricsCalculator {
             }
         }
 
-        Double recall = (totalExpected > 0)
+        Double recall = (!validationSkipped && totalExpected > 0)
                 ? (double) matchedExpected / totalExpected
                 : null;
 

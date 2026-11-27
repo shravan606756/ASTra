@@ -103,4 +103,55 @@ class CitationMetricsCalculatorTest {
         assertEquals(0, metrics.totalCitations());
         assertEquals(0, metrics.totalExpectedSources());
     }
+
+    @Test
+    @DisplayName("Skipped validation results return null precision and null recall rather than false zero scores")
+    void testSkippedValidationResults_returnsNullPrecisionAndNullRecall() {
+        Citation c1 = Citation.valid("[cite: Service.java:1-5]", "Service.java", 1, 5);
+        CitationValidationResult r1 = CitationValidationResult.skipped(
+                c1, RevisionStatus.DIRTY, "Validation skipped: repository revision is DIRTY"
+        );
+
+        Citation c2 = Citation.valid("[cite: Dao.java:10-20]", "Dao.java", 10, 20);
+        CitationValidationResult r2 = CitationValidationResult.skipped(
+                c2, RevisionStatus.DIRTY, "Validation skipped: repository revision is DIRTY"
+        );
+
+        List<String> expected = List.of("Service.java", "Dao.java");
+        CitationMetrics metrics = calculator.calculateMetrics(List.of(r1, r2), expected);
+
+        assertEquals(2, metrics.totalCitations());
+        assertEquals(2, metrics.validSyntaxCitations());
+        assertEquals(0, metrics.structurallyValidCitations());
+        assertNull(metrics.precision(), "Precision must be null when validation was skipped");
+        assertNull(metrics.recall(), "Recall must be null when validation was skipped");
+        assertEquals(2, metrics.totalExpectedSources());
+        assertEquals(0, metrics.matchedExpectedSources());
+    }
+
+    @Test
+    @DisplayName("DIRTY revision status returns null precision and recall even with non-empty expected sources")
+    void testDirtyRevisionStatus_returnsNullPrecisionAndNullRecall() {
+        Citation c = Citation.valid("[cite: Service.java:1-5]", "Service.java", 1, 5);
+        CitationValidationResult r = CitationValidationResult.skipped(
+                c, RevisionStatus.DIRTY, "dirty checkout"
+        );
+
+        List<String> expected = List.of("Service.java");
+        CitationMetrics metrics = calculator.calculateMetrics(List.of(r), expected, RevisionStatus.DIRTY);
+
+        assertNull(metrics.precision(), "Precision must be null on DIRTY revision");
+        assertNull(metrics.recall(), "Recall must be null on DIRTY revision");
+    }
+
+    @Test
+    @DisplayName("DIRTY revision status with zero citations returns null recall rather than 0.0")
+    void testDirtyRevisionStatusZeroCitations_returnsNullRecall() {
+        List<String> expected = List.of("Service.java");
+        CitationMetrics metrics = calculator.calculateMetrics(List.of(), expected, RevisionStatus.DIRTY);
+
+        assertEquals(0, metrics.totalCitations());
+        assertNull(metrics.precision(), "Precision must be null with zero citations");
+        assertNull(metrics.recall(), "Recall must be null when checkout is DIRTY even with expected sources");
+    }
 }

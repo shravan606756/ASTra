@@ -322,10 +322,23 @@ public class StreamingIndexingService {
                             sparseSession.getGenerationName(), repoId);
                     sparseSession = null;
                 } catch (Exception e) {
-                    log.error("[STREAMING SPARSE PUBLISH ERROR] Failed to publish sparse generation for repository '{}': {}",
+                    log.error("[INDEX INCONSISTENCY] Failed to publish sparse generation for repository '{}' after streaming persistence; stores diverged: {}",
                             repoId, e.getMessage(), e);
                     luceneGenerationStore.discardGeneration(sparseSession);
                     sparseSession = null;
+                    if (repositoryManagementService != null) {
+                        try {
+                            repositoryManagementService.deleteRepositoryVectors(repoId);
+                        } catch (Exception delEx) {
+                            log.error("Failed to clean up dense vectors for '{}' on sparse publish failure: {}", repoId, delEx.getMessage());
+                        }
+                        try {
+                            repositoryManagementService.markRepositoryInconsistent(repoId,
+                                    "Sparse publish failed after streaming persistence: " + e.getMessage());
+                        } catch (Exception markEx) {
+                            log.error("Failed to mark repository '{}' inconsistent: {}", repoId, markEx.getMessage());
+                        }
+                    }
                     throw new RuntimeException("Failed to publish sparse generation for repository " + repoId, e);
                 }
             }
@@ -344,6 +357,7 @@ public class StreamingIndexingService {
 
             return totalSubmittedDocs.get();
         } catch (Throwable t) {
+            log.error("[INDEX INCONSISTENCY] Large repository streaming failed for '{}'; stores may diverge: {}", repoId, t.getMessage());
             if (sparseSession != null && luceneGenerationStore != null) {
                 try {
                     luceneGenerationStore.discardGeneration(sparseSession);
@@ -351,6 +365,18 @@ public class StreamingIndexingService {
                     log.debug("Error discarding sparse session on failure for {}: {}", repoId, discardEx.getMessage());
                 }
                 sparseSession = null;
+            }
+            if (repositoryManagementService != null) {
+                try {
+                    repositoryManagementService.deleteRepositoryVectors(repoId);
+                } catch (Exception delEx) {
+                    log.error("Failed to clean up dense vectors for '{}' on streaming failure: {}", repoId, delEx.getMessage());
+                }
+                try {
+                    repositoryManagementService.markRepositoryInconsistent(repoId, "Streaming indexing failed: " + t.getMessage());
+                } catch (Exception markEx) {
+                    log.error("Failed to mark repository '{}' inconsistent: {}", repoId, markEx.getMessage());
+                }
             }
             firstFailureRef.compareAndSet(null, t);
             embeddingQueue.failJob(jobId, firstFailureRef.get());

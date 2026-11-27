@@ -162,22 +162,52 @@ public class GenerationEvaluator {
         int citeStart = (citation.startLine() != null) ? citation.startLine() : 1;
         int citeEnd = (citation.endLine() != null) ? citation.endLine() : citeStart;
 
+        // 1. First, check for exact normalized repository-relative path match
+        List<Document> exactMatches = new ArrayList<>();
         for (Document doc : suppliedDocuments) {
             String docPath = getDocFilePath(doc);
-            if (docPath != null && pathMatches(citePath, docPath)) {
-                Integer docStart = getDocLine(doc, "startLine");
-                Integer docEnd = getDocLine(doc, "endLine");
-
-                if (docStart == null || docEnd == null) {
-                    // Synthetic or package summary without line ranges -> path match suffices
-                    return doc;
-                } else if (Math.max(citeStart, docStart) <= Math.min(citeEnd, docEnd)) {
-                    // Line range overlap
-                    return doc;
+            if (docPath != null && normalizePath(docPath).equals(citePath)) {
+                if (matchesLineRange(doc, citeStart, citeEnd)) {
+                    exactMatches.add(doc);
                 }
             }
         }
-        return null;
+        if (!exactMatches.isEmpty()) {
+            return exactMatches.get(0);
+        }
+
+        // 2. If no exact match, check suffix/basename matches
+        List<Document> candidateMatches = new ArrayList<>();
+        Set<String> matchedFilePaths = new LinkedHashSet<>();
+        for (Document doc : suppliedDocuments) {
+            String docPath = getDocFilePath(doc);
+            if (docPath != null && pathMatches(citePath, docPath)) {
+                if (matchesLineRange(doc, citeStart, citeEnd)) {
+                    candidateMatches.add(doc);
+                    matchedFilePaths.add(normalizePath(docPath));
+                }
+            }
+        }
+
+        // Reject ambiguous basename matches matching multiple distinct files
+        if (matchedFilePaths.size() > 1) {
+            log.warn("Ambiguous citation '{}' matches {} distinct supplied files: {}",
+                    citation.filePath(), matchedFilePaths.size(), matchedFilePaths);
+            return null;
+        }
+
+        return candidateMatches.isEmpty() ? null : candidateMatches.get(0);
+    }
+
+    private boolean matchesLineRange(Document doc, int citeStart, int citeEnd) {
+        Integer docStart = getDocLine(doc, "startLine");
+        Integer docEnd = getDocLine(doc, "endLine");
+
+        if (docStart == null || docEnd == null) {
+            // Synthetic or package summary without line ranges -> path match suffices
+            return true;
+        }
+        return Math.max(citeStart, docStart) <= Math.min(citeEnd, docEnd);
     }
 
     public String extractSentence(String text, String marker) {
@@ -416,6 +446,9 @@ public class GenerationEvaluator {
         String p = path.replace('\\', '/').trim();
         while (p.startsWith("./")) {
             p = p.substring(2);
+        }
+        while (p.startsWith("/")) {
+            p = p.substring(1);
         }
         return p.toLowerCase(Locale.ROOT);
     }

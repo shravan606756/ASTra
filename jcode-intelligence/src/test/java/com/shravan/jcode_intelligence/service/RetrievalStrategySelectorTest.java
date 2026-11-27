@@ -396,6 +396,58 @@ class RetrievalStrategySelectorTest {
     }
 
     @Test
+    @DisplayName("Package intent retrieval executes strategy-selected candidates (DENSE, SPARSE, HYBRID) and combines with structural elements")
+    void testPackageIntent_Dense_Sparse_Hybrid_routesStrategyAndCombinesStructural() {
+        Document vectorDoc = new Document("v1", "vector content", Map.of("chunkId", "V_PKG", "filePath", "src/V1.java", "type", "CLASS"));
+        Document sparseDoc = new Document("s1", "sparse content", Map.of("chunkId", "S_PKG", "filePath", "src/S1.java", "type", "CLASS"));
+        Document fieldDoc = new Document("f1", "field content", Map.of("chunkId", "F1", "filePath", "src/F1.java", "type", "FIELD"));
+
+        TestVectorStore vs = new TestVectorStore();
+        RetrievalConfig rConfig = new RetrievalConfig();
+        TestLuceneStore ls = new TestLuceneStore(rConfig);
+
+        Document pkgDoc = new Document("pkg", "package summary", Map.of("chunkId", "P1", "filePath", "package-info.java", "type", "PACKAGE"));
+        TestJdbcTemplate jdbc = new TestJdbcTemplate();
+        jdbc.defaultPackageResponse = List.of(pkgDoc);
+
+        RetrievalStrategySelector stratSelector = new RetrievalStrategySelector(
+                vs, jdbc, symbolExtractor, config, archBuilder,
+                new ObjectMapper(), null, ls, new ReciprocalRankFusion(rConfig), rConfig
+        );
+
+        // 1. DENSE strategy with PACKAGE intent
+        vs.defaultSearchResults = List.of(vectorDoc, fieldDoc);
+        List<Document> denseResults = stratSelector.retrieve("user auth package", QueryIntent.PACKAGE, "repo-1", RetrievalStrategy.DENSE);
+        assertEquals(1, vs.callCount, "Vector store must be called in DENSE mode for PACKAGE intent");
+        assertEquals(0, ls.callCount, "Lucene store must not be called in DENSE mode");
+        assertTrue(denseResults.stream().anyMatch(d -> "P1".equals(d.getMetadata().get("chunkId"))), "Structural PACKAGE chunk must be included");
+        assertTrue(denseResults.stream().anyMatch(d -> "V_PKG".equals(d.getMetadata().get("chunkId"))), "Dense candidate must be included");
+        assertFalse(denseResults.stream().anyMatch(d -> "F1".equals(d.getMetadata().get("chunkId"))), "FIELD candidate must be excluded from PACKAGE intent");
+
+        // 2. SPARSE strategy with PACKAGE intent
+        vs.callCount = 0;
+        ls.callCount = 0;
+        ls.defaultSearchResults = List.of(sparseDoc);
+        List<Document> sparseResults = stratSelector.retrieve("user auth package", QueryIntent.PACKAGE, "repo-1", RetrievalStrategy.SPARSE);
+        assertEquals(0, vs.callCount, "Vector store must not be called in SPARSE mode");
+        assertEquals(1, ls.callCount, "Lucene store must be called in SPARSE mode for PACKAGE intent");
+        assertTrue(sparseResults.stream().anyMatch(d -> "P1".equals(d.getMetadata().get("chunkId"))));
+        assertTrue(sparseResults.stream().anyMatch(d -> "S_PKG".equals(d.getMetadata().get("chunkId"))));
+
+        // 3. HYBRID strategy with PACKAGE intent
+        vs.callCount = 0;
+        ls.callCount = 0;
+        vs.defaultSearchResults = List.of(vectorDoc);
+        ls.defaultSearchResults = List.of(sparseDoc);
+        List<Document> hybridResults = stratSelector.retrieve("user auth package", QueryIntent.PACKAGE, "repo-1", RetrievalStrategy.HYBRID);
+        assertEquals(1, vs.callCount, "Vector store must be called in HYBRID mode");
+        assertEquals(1, ls.callCount, "Lucene store must be called in HYBRID mode");
+        assertTrue(hybridResults.stream().anyMatch(d -> "P1".equals(d.getMetadata().get("chunkId"))));
+        assertTrue(hybridResults.stream().anyMatch(d -> "V_PKG".equals(d.getMetadata().get("chunkId"))));
+        assertTrue(hybridResults.stream().anyMatch(d -> "S_PKG".equals(d.getMetadata().get("chunkId"))));
+    }
+
+    @Test
     @DisplayName("Hybrid search handles branch failures independently without failing request")
     void testIndependentBranchFailureHandling() {
         Document vectorDoc = new Document("v1", "vector content", Map.of("chunkId", "V1", "filePath", "src/V1.java", "type", "CLASS"));
@@ -717,6 +769,7 @@ class RetrievalStrategySelectorTest {
         List<Document> defaultMethodResponse = List.of();
         List<Document> defaultClassResponse = List.of();
         List<Document> defaultPackageResponse = List.of();
+        List<Document> defaultTypeResponse = List.of();
 
         @Override
         @SuppressWarnings("unchecked")
@@ -734,6 +787,12 @@ class RetrievalStrategySelectorTest {
                             results.add((T) doc);
                         }
                     }
+                }
+            } else if (sql.contains("metadata->>'type' = ?")) {
+                if (args != null && args.length > 0 && "PACKAGE".equals(args[0]) && !defaultPackageResponse.isEmpty()) {
+                    results.addAll((List<T>) defaultPackageResponse);
+                } else {
+                    results.addAll((List<T>) defaultTypeResponse);
                 }
             } else if (sql.contains("metadata->>'packageName' = ?")) {
                 results.addAll((List<T>) defaultPackageResponse);

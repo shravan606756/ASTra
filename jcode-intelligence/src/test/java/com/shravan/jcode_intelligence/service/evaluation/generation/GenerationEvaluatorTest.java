@@ -327,4 +327,43 @@ class GenerationEvaluatorTest {
         assertFalse(result.isSuccess());
         assertNull(result.faithfulness());
     }
+
+    @Test
+    @DisplayName("Ambiguous basename citation matching two supplied files with overlapping lines is rejected")
+    void testAmbiguousBasenameCitation_withTwoSuppliedFilesAndOverlappingLines_isRejected() {
+        Document docA = new Document(
+                "public class Service { void doA() {} }",
+                Map.of("filePath", "src/main/com/example/a/Service.java", "startLine", 10, "endLine", 50)
+        );
+        Document docB = new Document(
+                "public class Service { void doB() {} }",
+                Map.of("filePath", "src/main/com/example/b/Service.java", "startLine", 20, "endLine", 60)
+        );
+
+        CitationParser parser = new CitationParser();
+        // Basename citation overlapping both docA (lines 10-50) and docB (lines 20-60)
+        com.shravan.jcode_intelligence.service.evaluation.citation.Citation ambiguousCitation =
+                parser.parseCitations("[cite: Service.java:25-35#execute]").get(0);
+
+        Document resolved = evaluator.resolveCitationToDocument(ambiguousCitation, List.of(docA, docB));
+        assertNull(resolved, "Ambiguous basename citation matching multiple distinct files must be rejected and return null");
+
+        // When unambiguous exact normalized repository-relative path is provided, it must resolve successfully
+        com.shravan.jcode_intelligence.service.evaluation.citation.Citation exactCitationB =
+                parser.parseCitations("[cite: src/main/com/example/b/Service.java:25-35#execute]").get(0);
+        Document resolvedExactB = evaluator.resolveCitationToDocument(exactCitationB, List.of(docA, docB));
+        assertNotNull(resolvedExactB, "Exact normalized repository-relative citation path must resolve cleanly");
+        assertEquals("src/main/com/example/b/Service.java", resolvedExactB.getMetadata().get("filePath"));
+
+        // When only one file in supplied docs has the basename, it resolves without ambiguity
+        Document docC = new Document(
+                "public class OtherService { void run() {} }",
+                Map.of("filePath", "src/main/com/example/c/OtherService.java", "startLine", 10, "endLine", 40)
+        );
+        com.shravan.jcode_intelligence.service.evaluation.citation.Citation uniqueCitation =
+                parser.parseCitations("[cite: OtherService.java:15-25]").get(0);
+        Document resolvedUnique = evaluator.resolveCitationToDocument(uniqueCitation, List.of(docA, docB, docC));
+        assertNotNull(resolvedUnique);
+        assertEquals("src/main/com/example/c/OtherService.java", resolvedUnique.getMetadata().get("filePath"));
+    }
 }

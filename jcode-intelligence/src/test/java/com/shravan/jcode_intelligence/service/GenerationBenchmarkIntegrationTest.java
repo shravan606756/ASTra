@@ -176,6 +176,60 @@ class GenerationBenchmarkIntegrationTest {
     }
 
     @Test
+    @DisplayName("Disabled evaluation property suppresses generation evaluation even when request flag is true")
+    void testEvaluationDisabledProperty_suppressesGenerationCalls() {
+        AtomicInteger llmInvocations = new AtomicInteger(0);
+        LLMClient mockLlm = new LLMClient(null) {
+            @Override
+            public LLMResponse generateWithUsage(String prompt, ChatOptions options) {
+                llmInvocations.incrementAndGet();
+                return new LLMResponse("Mock answer [cite: file.java:10-20].", 10, 10, 5L, "mock-model");
+            }
+        };
+
+        GenerationBenchmarkRunner runner = new GenerationBenchmarkRunner(
+                promptBuilder, mockLlm, new LlmRetryHelper(1, 0, 1.0, 0, 0),
+                new CitationParser(), new CitationValidator(), new CitationMetricsCalculator(),
+                new GenerationEvaluator(mockLlm, new LlmRetryHelper(1, 0, 1.0, 0, 0), templateLoader),
+                10
+        );
+
+        // Explicitly set evaluationEnabled = false
+        RetrievalBenchmark benchmark = new RetrievalBenchmark(
+                new FixedDocumentsRetrievalService(List.of(createSampleDoc())),
+                intentClassifier,
+                datasetProvider,
+                retrievalEvaluator,
+                runner,
+                false
+        );
+
+        assertFalse(benchmark.isEvaluationEnabled());
+
+        BenchmarkRequest request = new BenchmarkRequest("javaparser", List.of("Where is LexicalPreservingPrinter implemented?"));
+        request.setEvaluateGeneration(true); // Request wants generation evaluation
+
+        BenchmarkResponse response = benchmark.runBenchmark(request);
+
+        assertEquals(0, llmInvocations.get(), "Zero LLM calls must be made when astra.evaluation.enabled is false");
+        assertNotNull(response.getSummary());
+        assertNull(response.getSummary().getGenerationSummary(), "generationSummary must be null when evaluation is disabled via property");
+
+        for (QueryBenchmarkResultDTO qr : response.getResults()) {
+            assertNull(qr.getGenerationResult(), "generationResult must be null when evaluation is disabled via property");
+            assertNull(qr.getCitationValidation(), "citationValidation must be null");
+        }
+
+        // Now enable evaluation and verify it runs
+        benchmark.setEvaluationEnabled(true);
+        assertTrue(benchmark.isEvaluationEnabled());
+
+        BenchmarkResponse enabledResponse = benchmark.runBenchmark(request);
+        assertTrue(llmInvocations.get() > 0, "LLM calls must be made when astra.evaluation.enabled is true");
+        assertNotNull(enabledResponse.getSummary().getGenerationSummary(), "generationSummary must be present when evaluation is enabled");
+    }
+
+    @Test
     @DisplayName("Evaluates 50 queries with stubbed generation and judge in batches")
     void test50QueryStubbedGenerationBenchmark() {
         LLMClient stubLlm = new LLMClient(null) {

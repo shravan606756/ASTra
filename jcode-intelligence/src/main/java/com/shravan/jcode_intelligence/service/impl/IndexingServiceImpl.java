@@ -515,14 +515,31 @@ public class IndexingServiceImpl implements IndexingService {
                     }
                     sparseSession = null;
                 } catch (Exception e) {
-                    log.error("[SPARSE PUBLISH ERROR] Failed to publish sparse generation for repository '{}': {}",
+                    log.error("[INDEX INCONSISTENCY] Failed to publish sparse generation for repository '{}' after dense data was indexed; stores diverged: {}",
                             safeRepoId, e.getMessage(), e);
                     luceneGenerationStore.discardGeneration(sparseSession);
                     sparseSession = null;
+                    // Remove newly written dense rows so stores do not diverge with new dense live against old sparse
+                    try {
+                        deleteExistingRepositoryVectors(safeRepoId);
+                    } catch (Exception delEx) {
+                        log.error("Failed to clean up dense vectors after sparse publication failure for repository '{}': {}",
+                                safeRepoId, delEx.getMessage());
+                    }
+                    if (repositoryManagementService != null) {
+                        try {
+                            repositoryManagementService.markRepositoryInconsistent(safeRepoId,
+                                    "Sparse publish failed after dense storage: " + e.getMessage());
+                        } catch (Exception markEx) {
+                            log.error("Failed to mark repository '{}' inconsistent: {}", safeRepoId, markEx.getMessage());
+                        }
+                    }
                     throw new RuntimeException("Failed to publish sparse generation for repository " + safeRepoId, e);
                 }
             }
         } catch (Throwable t) {
+            log.error("[INDEX INCONSISTENCY] Indexing run failed for repository '{}' after sparse staging; stores may diverge: {}",
+                    safeRepoId, t.getMessage());
             if (sparseSession != null && luceneGenerationStore != null) {
                 try {
                     luceneGenerationStore.discardGeneration(sparseSession);
@@ -530,6 +547,20 @@ public class IndexingServiceImpl implements IndexingService {
                     log.debug("Error discarding sparse session on failure for {}: {}", safeRepoId, discardEx.getMessage());
                 }
                 sparseSession = null;
+            }
+            // Remove partially written dense rows on failure
+            try {
+                deleteExistingRepositoryVectors(safeRepoId);
+            } catch (Exception cleanupEx) {
+                log.error("Failed to clean up dense vectors on indexing failure for '{}': {}", safeRepoId, cleanupEx.getMessage());
+            }
+            if (repositoryManagementService != null) {
+                try {
+                    repositoryManagementService.markRepositoryInconsistent(safeRepoId,
+                            "Indexing failed after sparse staging: " + t.getMessage());
+                } catch (Exception statusEx) {
+                    log.error("Failed to persist inconsistent repository status for '{}': {}", safeRepoId, statusEx.getMessage());
+                }
             }
             throw t;
         }
@@ -548,13 +579,14 @@ public class IndexingServiceImpl implements IndexingService {
     }
 
     private void deleteExistingRepositoryVectors(String repositoryId) {
+        log.info("Deleting existing vectors for repositoryId: {} via SQL", repositoryId);
+        String sql = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
         try {
-            log.info("Deleting existing vectors for repositoryId: {} via SQL", repositoryId);
-            String sql = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
             int rowsDeleted = jdbcTemplate.update(sql, repositoryId);
             log.info("Deleted {} existing vector record(s) for repositoryId: {}", rowsDeleted, repositoryId);
         } catch (Exception e) {
             log.error("Failed to delete existing vectors for repositoryId {}: {}", repositoryId, e.getMessage(), e);
+            throw new RuntimeException("Failed to delete existing vectors for repository " + repositoryId, e);
         }
     }
 

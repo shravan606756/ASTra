@@ -58,6 +58,7 @@ public class RetrievalBenchmark {
     private final String historyDir;
     private final RetrievalConfig retrievalConfig;
     private final GenerationBenchmarkRunner generationBenchmarkRunner;
+    private boolean evaluationEnabled;
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
@@ -70,7 +71,8 @@ public class RetrievalBenchmark {
             @Autowired(required = false) ObjectMapper objectMapper,
             @Value("${astra.benchmark.history-dir:target/benchmark-runs/}") String historyDir,
             @Autowired(required = false) RetrievalConfig retrievalConfig,
-            @Autowired(required = false) GenerationBenchmarkRunner generationBenchmarkRunner) {
+            @Autowired(required = false) GenerationBenchmarkRunner generationBenchmarkRunner,
+            @Value("${astra.evaluation.enabled:false}") boolean evaluationEnabled) {
         this.retrievalService = retrievalService;
         this.intentClassifier = intentClassifier;
         this.datasetProvider = (datasetProvider != null) ? datasetProvider : new BenchmarkDatasetProvider(objectMapper);
@@ -81,6 +83,20 @@ public class RetrievalBenchmark {
         this.historyDir = historyDir;
         this.retrievalConfig = retrievalConfig;
         this.generationBenchmarkRunner = generationBenchmarkRunner;
+        this.evaluationEnabled = evaluationEnabled;
+    }
+
+    public RetrievalBenchmark(RetrievalService retrievalService,
+            QueryIntentClassifier intentClassifier,
+            BenchmarkDatasetProvider datasetProvider,
+            RetrievalEvaluator evaluator,
+            RepositoryManagementService repositoryManagementService,
+            ObjectMapper objectMapper,
+            String historyDir,
+            RetrievalConfig retrievalConfig,
+            GenerationBenchmarkRunner generationBenchmarkRunner) {
+        this(retrievalService, intentClassifier, datasetProvider, evaluator, repositoryManagementService, objectMapper,
+                historyDir, retrievalConfig, generationBenchmarkRunner, false);
     }
 
     public RetrievalBenchmark(RetrievalService retrievalService,
@@ -101,7 +117,25 @@ public class RetrievalBenchmark {
             RetrievalEvaluator evaluator,
             GenerationBenchmarkRunner generationBenchmarkRunner) {
         this(retrievalService, intentClassifier, datasetProvider, evaluator, null, null, "target/benchmark-runs/",
-                null, generationBenchmarkRunner);
+                null, generationBenchmarkRunner, true);
+    }
+
+    public RetrievalBenchmark(RetrievalService retrievalService,
+            QueryIntentClassifier intentClassifier,
+            BenchmarkDatasetProvider datasetProvider,
+            RetrievalEvaluator evaluator,
+            GenerationBenchmarkRunner generationBenchmarkRunner,
+            boolean evaluationEnabled) {
+        this(retrievalService, intentClassifier, datasetProvider, evaluator, null, null, "target/benchmark-runs/",
+                null, generationBenchmarkRunner, evaluationEnabled);
+    }
+
+    public boolean isEvaluationEnabled() {
+        return evaluationEnabled;
+    }
+
+    public void setEvaluationEnabled(boolean evaluationEnabled) {
+        this.evaluationEnabled = evaluationEnabled;
     }
 
     public RetrievalBenchmark(RetrievalService retrievalService,
@@ -201,9 +235,9 @@ public class RetrievalBenchmark {
             }
 
             int effectiveTopK = (request.getTopK() > 0) ? request.getTopK() : 5;
-            boolean evaluateGen = request.isEvaluateGeneration() && (generationBenchmarkRunner != null);
-            log.info("Starting retrieval benchmark (mode={}, suite='{}', evaluateGen={}) with {} queries against repo '{}' at topK={}",
-                    isCustom ? "CUSTOM_QUESTIONS" : "DATASET", suiteName, evaluateGen, queries.size(), resolvedRepo, effectiveTopK);
+            boolean evaluateGen = evaluationEnabled && request.isEvaluateGeneration() && (generationBenchmarkRunner != null);
+            log.info("Starting retrieval benchmark (mode={}, suite='{}', evaluateGen={}, evaluationEnabled={}) with {} queries against repo '{}' at topK={}",
+                    isCustom ? "CUSTOM_QUESTIONS" : "DATASET", suiteName, evaluateGen, evaluationEnabled, queries.size(), resolvedRepo, effectiveTopK);
 
             List<QueryBenchmarkResultDTO> results = new ArrayList<>();
             List<GenerationBenchmarkRunner.RetainedBenchmarkQuery> retainedQueries = new ArrayList<>();

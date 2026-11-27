@@ -58,10 +58,16 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
                         fragments INT,
                         largest_class VARCHAR,
                         largest_method VARCHAR,
-                        indexing_time_ms BIGINT
+                        indexing_time_ms BIGINT,
+                        status VARCHAR DEFAULT 'CONSISTENT'
                     )
                 """;
         jdbcTemplate.execute(createTableSql);
+        try {
+            jdbcTemplate.execute("ALTER TABLE repository_statistics ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'CONSISTENT'");
+        } catch (Exception ignored) {
+            // For in-memory or databases where column already exists
+        }
     }
 
     @Override
@@ -136,8 +142,8 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
         String sql = """
                     INSERT INTO repository_statistics (
                         repository_id, total_chunks, packages, classes, interfaces, enums, records, fields, constructors, methods, fragments,
-                        largest_class, largest_method, indexing_time_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        largest_class, largest_method, indexing_time_ms, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONSISTENT')
                     ON CONFLICT (repository_id) DO UPDATE SET
                         total_chunks = EXCLUDED.total_chunks,
                         packages = EXCLUDED.packages,
@@ -151,7 +157,8 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
                         fragments = EXCLUDED.fragments,
                         largest_class = EXCLUDED.largest_class,
                         largest_method = EXCLUDED.largest_method,
-                        indexing_time_ms = EXCLUDED.indexing_time_ms
+                        indexing_time_ms = EXCLUDED.indexing_time_ms,
+                        status = 'CONSISTENT'
                 """;
 
         jdbcTemplate.update(sql,
@@ -181,6 +188,14 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
 
         return jdbcTemplate.query(sql, rs -> {
             if (rs.next()) {
+                String status = "CONSISTENT";
+                try {
+                    String colVal = rs.getString("status");
+                    if (colVal != null && !colVal.isBlank()) {
+                        status = colVal;
+                    }
+                } catch (Exception ignored) {}
+
                 return new com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO(
                         rs.getInt("packages"),
                         rs.getInt("classes"),
@@ -194,9 +209,39 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
                         rs.getInt("total_chunks"),
                         rs.getString("largest_class"),
                         rs.getString("largest_method"),
-                        rs.getLong("indexing_time_ms"));
+                        rs.getLong("indexing_time_ms"),
+                        status);
             }
             return new com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO();
         }, safeRepoId);
+    }
+
+    @Override
+    public void markRepositoryInconsistent(String repositoryId, String reason) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            return;
+        }
+        String safeRepoId = repositoryId.trim();
+        log.warn("[REPOSITORY INCONSISTENT] Marking repository '{}' as INCONSISTENT: {}", safeRepoId, reason);
+        String sql = """
+                INSERT INTO repository_statistics (repository_id, status)
+                VALUES (?, 'INCONSISTENT')
+                ON CONFLICT (repository_id) DO UPDATE SET status = 'INCONSISTENT'
+                """;
+        try {
+            jdbcTemplate.update(sql, safeRepoId);
+        } catch (Exception e) {
+            log.error("Failed to mark repository '{}' as INCONSISTENT: {}", safeRepoId, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public int deleteRepositoryVectors(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            return 0;
+        }
+        String safeRepoId = repositoryId.trim();
+        String sql = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
+        return jdbcTemplate.update(sql, safeRepoId);
     }
 }

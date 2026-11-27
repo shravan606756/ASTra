@@ -184,7 +184,7 @@ public class RetrievalStrategySelector {
         return switch (intent) {
             case METHOD -> retrieveForMethod(query, rawTopK, repositoryId, effectiveStrategy);
             case CLASS -> retrieveForClass(query, rawTopK, repositoryId, effectiveStrategy);
-            case PACKAGE -> retrieveForPackage(query, rawTopK, repositoryId);
+            case PACKAGE -> retrieveForPackage(query, rawTopK, repositoryId, effectiveStrategy);
             case ARCHITECTURE -> retrieveForArchitecture(query, rawTopK, repositoryId, effectiveStrategy);
             case WORKFLOW -> retrieveForWorkflow(query, rawTopK, repositoryId, effectiveStrategy);
             case RELATIONSHIP -> retrieveForRelationship(query, rawTopK, repositoryId, effectiveStrategy);
@@ -396,20 +396,47 @@ public class RetrievalStrategySelector {
 
     /**
      * PACKAGE: Retrieve ALL PACKAGE chunks for the repository + top CLASS summaries.
-     * Do NOT rely solely on vectors for package overview.
+     * Combines structural package and class elements with strategy-selected candidates
+     * according to the effective strategy (DENSE, SPARSE, or HYBRID).
      */
-    private List<Document> retrieveForPackage(String query, int rawTopK, String repositoryId) {
+    private List<Document> retrieveForPackage(String query, int rawTopK, String repositoryId, RetrievalStrategy strategy) {
+        CompletableFuture<List<Document>> structuralFuture = CompletableFuture.supplyAsync(
+                () -> {
+                    List<Document> structural = new ArrayList<>();
+                    // 1. ALL package summaries for the repository
+                    structural.addAll(lookupByType("PACKAGE", repositoryId));
+
+                    // 2. Top-level class summaries
+                    structural.addAll(lookupTopLevelClasses(repositoryId));
+
+                    // 3. Interfaces and records
+                    structural.addAll(lookupByType("INTERFACE", repositoryId));
+                    structural.addAll(lookupByType("RECORD", repositoryId));
+                    return structural;
+                },
+                retrievalExecutor
+        );
+
+        CompletableFuture<List<Document>> candidateFuture = (query != null && !query.isBlank())
+                ? fetchCandidatesAsync(query, rawTopK, repositoryId, strategy, QueryIntent.PACKAGE)
+                : CompletableFuture.completedFuture(List.of());
+
         List<Document> results = new ArrayList<>();
-
-        // 1. ALL package summaries for the repository
-        results.addAll(lookupByType("PACKAGE", repositoryId));
-
-        // 2. Top-level class summaries
-        results.addAll(lookupTopLevelClasses(repositoryId));
-
-        // 3. Interfaces and records
-        results.addAll(lookupByType("INTERFACE", repositoryId));
-        results.addAll(lookupByType("RECORD", repositoryId));
+        try {
+            results.addAll(structuralFuture.join());
+        } catch (Exception e) {
+            log.warn("Concurrent structural lookup failed in PACKAGE strategy: {}", e.getMessage());
+        }
+        try {
+            for (Document cdoc : candidateFuture.join()) {
+                String type = String.valueOf(cdoc.getMetadata().getOrDefault("type", ""));
+                if (!"FIELD".equalsIgnoreCase(type)) { // Exclude FIELD chunks from package overview
+                    results.add(cdoc);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Concurrent candidate search failed in PACKAGE strategy: {}", e.getMessage());
+        }
 
         return deduplicate(results);
     }

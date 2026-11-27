@@ -148,6 +148,71 @@ class IndexingServiceSparseIntegrationTest {
         verify(spyStore).discardGeneration(any(LuceneGenerationStore.StagingSession.class));
         verify(spyStore, never()).publishGeneration(any());
         assertFalse(spyStore.hasIndex(repoId), "Must not have active index after failure");
+        verify(repositoryManagementService).markRepositoryInconsistent(eq(repoId), anyString());
+        verify(jdbcTemplate, atLeast(2)).update(contains("DELETE FROM vector_store"), eq(repoId));
+    }
+
+    @Test
+    @DisplayName("Embedding failure after sparse staging discards sparse generation, removes dense rows, and marks repository inconsistent")
+    void testEmbeddingFailureAfterSparseStaging_cleansDenseAndMarksInconsistent() throws IOException {
+        String repoId = "embed-fail-repo";
+        Path projectRoot = tempDir.resolve("embed-fail-proj");
+
+        CodeChunk chunk = new CodeChunk();
+        chunk.setId("c1");
+        chunk.setContent("public void test() {}");
+
+        when(parser.parse(any(Path.class))).thenReturn(List.of(chunk));
+        when(packageSummaryGenerator.generatePackageSummaries(anyList())).thenReturn(List.of());
+        doThrow(new RuntimeException("Embedding model timeout")).when(vectorStore).add(anyList());
+
+        LuceneGenerationStore spyStore = spy(store);
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                parser, converter, vectorStore, gitService, jdbcTemplate,
+                packageSummaryGenerator, statisticsCalculator, budgetValidator,
+                chunkingConfig, repositoryManagementService, concurrencyManager,
+                null, null, null, null, null, spyStore
+        );
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> indexingService.indexProject(projectRoot.toString(), repoId));
+        assertTrue(ex.getMessage().contains("Embedding model timeout"));
+
+        verify(spyStore).stageGeneration(eq(repoId));
+        verify(spyStore).discardGeneration(any(LuceneGenerationStore.StagingSession.class));
+        verify(spyStore, never()).publishGeneration(any());
+        // Cleaned up partially written dense rows
+        verify(jdbcTemplate, atLeast(2)).update(contains("DELETE FROM vector_store"), eq(repoId));
+        // Marked repository inconsistent
+        verify(repositoryManagementService).markRepositoryInconsistent(eq(repoId), contains("Indexing failed"));
+    }
+
+    @Test
+    @DisplayName("deleteExistingRepositoryVectors propagates exception instead of swallowing it")
+    void testDeleteExistingRepositoryVectors_propagatesException() throws IOException {
+        String repoId = "delete-fail-repo";
+        Path projectRoot = tempDir.resolve("del-fail-proj");
+
+        CodeChunk chunk = new CodeChunk();
+        chunk.setId("c1");
+        chunk.setContent("public void test() {}");
+
+        when(parser.parse(any(Path.class))).thenReturn(List.of(chunk));
+        when(packageSummaryGenerator.generatePackageSummaries(anyList())).thenReturn(List.of());
+        when(jdbcTemplate.update(contains("DELETE FROM vector_store"), eq(repoId)))
+                .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("DB connection refused"));
+
+        IndexingServiceImpl indexingService = new IndexingServiceImpl(
+                parser, converter, vectorStore, gitService, jdbcTemplate,
+                packageSummaryGenerator, statisticsCalculator, budgetValidator,
+                chunkingConfig, repositoryManagementService, concurrencyManager,
+                null, null, null, null, null, store
+        );
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> indexingService.indexProject(projectRoot.toString(), repoId));
+        assertTrue(ex.getMessage().contains("Failed to delete existing vectors for repository " + repoId));
     }
 
     @Test

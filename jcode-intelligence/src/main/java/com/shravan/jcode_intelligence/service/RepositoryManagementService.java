@@ -28,4 +28,15 @@ public interface RepositoryManagementService {
      * Returns statistics about the indexed chunks for a repository.
      */
     com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId);
+
+    /**
+     * Marks a repository as inconsistent in repository_statistics when stores diverge or indexing fails.
+     */
+    void markRepositoryInconsistent(String repositoryId, String reason);
+
+    /**
+     * Deletes existing vector store records for the specified repository ID.
+     * @return count of deleted vector rows
+     */
+    int deleteRepositoryVectors(String repositoryId);
 }

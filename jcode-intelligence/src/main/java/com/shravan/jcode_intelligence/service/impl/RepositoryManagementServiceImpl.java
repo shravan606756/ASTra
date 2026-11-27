@@ -288,8 +288,11 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
             List<String> ids = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getString(1), safeRepoId);
             return new HashSet<>(ids);
         } catch (Exception e) {
-            log.warn("Failed to retrieve existing vector IDs for repository '{}': {}", safeRepoId, e.getMessage());
-            return Collections.emptySet();
+            log.error("Failed to retrieve existing vector IDs for repository '{}': {}", safeRepoId, e.getMessage(), e);
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException("Failed to retrieve existing vector IDs for repository " + safeRepoId, e);
         }
     }
 }

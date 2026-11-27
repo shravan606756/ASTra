@@ -62,6 +62,7 @@ public class EmbeddingQueue {
     private volatile FlushReason lastFlushReason = FlushReason.EMPTY_IDLE;
 
     private final ConcurrentHashMap<String, JobTracker> activeJobs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Set<String>> completedJobPersistedIds = new ConcurrentHashMap<>();
     private final Set<String> failedJobs = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, Throwable> failedJobCauses = new ConcurrentHashMap<>();
     private final AtomicBoolean admissionClosed = new AtomicBoolean(false);
@@ -590,6 +591,10 @@ public class EmbeddingQueue {
         if (tracker != null) {
             return new java.util.HashSet<>(tracker.persistedRecordIds);
         }
+        Set<String> completedSnapshot = completedJobPersistedIds.get(jobId);
+        if (completedSnapshot != null) {
+            return new java.util.HashSet<>(completedSnapshot);
+        }
         return Collections.emptySet();
     }
 
@@ -600,12 +605,17 @@ public class EmbeddingQueue {
      *
      * @param jobId   indexing job identifier
      * @param timeout maximum duration to wait
+     * @return snapshot set of persisted record IDs
      * @throws Exception if the job fails, times out, or the wait is interrupted; a job's
      *                   exception cause is rethrown, while a non-exception cause is wrapped
      */
-    public void awaitJobCompletion(String jobId, Duration timeout) throws Exception {
+    public Set<String> awaitJobCompletion(String jobId, Duration timeout) throws Exception {
         JobTracker tracker = activeJobs.get(jobId);
         if (tracker == null) {
+            Set<String> completedSnapshot = completedJobPersistedIds.get(jobId);
+            if (completedSnapshot != null) {
+                return new java.util.HashSet<>(completedSnapshot);
+            }
             Throwable failure = failedJobCauses.remove(jobId);
             if (failure != null) {
                 failedJobs.remove(jobId);
@@ -614,10 +624,13 @@ public class EmbeddingQueue {
                 }
                 throw new RuntimeException(failure);
             }
-            return;
+            return Collections.emptySet();
         }
         try {
             tracker.completionFuture.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            Set<String> snapshot = new java.util.HashSet<>(tracker.persistedRecordIds);
+            completedJobPersistedIds.put(jobId, snapshot);
+            return snapshot;
         } catch (TimeoutException e) {
             failJob(jobId, new TimeoutException(String.format("Job %s timed out after %s", jobId, timeout)));
             throw e;
@@ -629,6 +642,7 @@ public class EmbeddingQueue {
             throw new RuntimeException(cause);
         } finally {
             if (tracker.completionFuture.isDone() && !tracker.isFailed()) {
+                completedJobPersistedIds.putIfAbsent(jobId, new java.util.HashSet<>(tracker.persistedRecordIds));
                 activeJobs.remove(jobId);
                 failedJobs.remove(jobId);
                 failedJobCauses.remove(jobId);
@@ -889,6 +903,7 @@ public class EmbeddingQueue {
             activeJobs.remove(jobId);
             failedJobs.remove(jobId);
             failedJobCauses.remove(jobId);
+            completedJobPersistedIds.remove(jobId);
         }
         lock.lock();
         try {
@@ -989,6 +1004,7 @@ public class EmbeddingQueue {
         // Do not clear failedJobs or failedJobCauses here so waiting callers in awaitJobCompletion
         // can observe failure before retirement
         activeJobs.clear();
+        completedJobPersistedIds.clear();
     }
 
     /**
@@ -1050,6 +1066,7 @@ public class EmbeddingQueue {
             if (persisted + failed >= total) {
                 if (!tracker.isFailed()) {
                     if (failed == 0) {
+                        completedJobPersistedIds.put(tracker.jobId, new java.util.HashSet<>(tracker.persistedRecordIds));
                         tracker.completionFuture.complete(null);
                         log.info("Job {} completed successfully (all {} records persisted)", tracker.jobId, persisted);
                     } else {

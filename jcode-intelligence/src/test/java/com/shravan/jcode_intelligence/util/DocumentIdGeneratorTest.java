@@ -129,4 +129,114 @@ class DocumentIdGeneratorTest {
 
         assertEquals(winId, unixId, "Normalized Windows and Unix paths must yield identical IDs");
     }
+
+    @Test
+    @DisplayName("Two classes in the same file with identical oversized method signatures and corresponding fragment indices get distinct IDs")
+    void testTwoClassesInSameFileWithIdenticalSignaturesAndFragmentIndices() {
+        String repo = "test-repo";
+        String filePath = "src/main/java/com/example/MultiClassSource.java";
+        String signature = "public void execute(String payload)";
+
+        // Class A fragment 0
+        com.shravan.jcode_intelligence.model.CodeChunk classAFrag0 = new com.shravan.jcode_intelligence.model.CodeChunk();
+        classAFrag0.setRepositoryId(repo);
+        classAFrag0.setFilePath(filePath);
+        classAFrag0.setParentChunkId("com.example.ClassA::CLASS");
+        classAFrag0.setId("com.example.ClassA::CLASS::METHOD_FRAGMENT::execute#fragment0");
+        classAFrag0.setMethodName("execute");
+        classAFrag0.setSignature(signature);
+        classAFrag0.setStartLine(10);
+        classAFrag0.setEndLine(25);
+        classAFrag0.setFragmentIndex(0);
+        classAFrag0.setContent("// Fragment 0 of ClassA.execute");
+
+        // Class B fragment 0
+        com.shravan.jcode_intelligence.model.CodeChunk classBFrag0 = new com.shravan.jcode_intelligence.model.CodeChunk();
+        classBFrag0.setRepositoryId(repo);
+        classBFrag0.setFilePath(filePath);
+        classBFrag0.setParentChunkId("com.example.ClassB::CLASS");
+        classBFrag0.setId("com.example.ClassB::CLASS::METHOD_FRAGMENT::execute#fragment0");
+        classBFrag0.setMethodName("execute");
+        classBFrag0.setSignature(signature);
+        classBFrag0.setStartLine(40);
+        classBFrag0.setEndLine(55);
+        classBFrag0.setFragmentIndex(0);
+        classBFrag0.setContent("// Fragment 0 of ClassB.execute");
+
+        String idA0 = DocumentIdGenerator.generateDeterministicId(classAFrag0);
+        String idB0 = DocumentIdGenerator.generateDeterministicId(classBFrag0);
+
+        assertNotEquals(idA0, idB0, "Corresponding fragments of identical methods in different classes of the same file must have distinct IDs");
+
+        // Class A fragment 1 and Class B fragment 1
+        com.shravan.jcode_intelligence.model.CodeChunk classAFrag1 = new com.shravan.jcode_intelligence.model.CodeChunk();
+        classAFrag1.setRepositoryId(repo);
+        classAFrag1.setFilePath(filePath);
+        classAFrag1.setParentChunkId("com.example.ClassA::CLASS");
+        classAFrag1.setId("com.example.ClassA::CLASS::METHOD_FRAGMENT::execute#fragment1");
+        classAFrag1.setMethodName("execute");
+        classAFrag1.setSignature(signature);
+        classAFrag1.setStartLine(26);
+        classAFrag1.setEndLine(35);
+        classAFrag1.setFragmentIndex(1);
+
+        com.shravan.jcode_intelligence.model.CodeChunk classBFrag1 = new com.shravan.jcode_intelligence.model.CodeChunk();
+        classBFrag1.setRepositoryId(repo);
+        classBFrag1.setFilePath(filePath);
+        classBFrag1.setParentChunkId("com.example.ClassB::CLASS");
+        classBFrag1.setId("com.example.ClassB::CLASS::METHOD_FRAGMENT::execute#fragment1");
+        classBFrag1.setMethodName("execute");
+        classBFrag1.setSignature(signature);
+        classBFrag1.setStartLine(56);
+        classBFrag1.setEndLine(65);
+        classBFrag1.setFragmentIndex(1);
+
+        String idA1 = DocumentIdGenerator.generateDeterministicId(classAFrag1);
+        String idB1 = DocumentIdGenerator.generateDeterministicId(classBFrag1);
+
+        assertNotEquals(idA1, idB1, "Fragment 1 of identical methods in different classes of the same file must have distinct IDs");
+        assertNotEquals(idA0, idA1, "Fragment 0 and fragment 1 of same class must have distinct IDs");
+        assertNotEquals(idB0, idB1, "Fragment 0 and fragment 1 of same class must have distinct IDs");
+
+        // Verify that even if explicit chunkId is null, distinct parent chunk IDs disambiguate same-signature fragments
+        com.shravan.jcode_intelligence.model.CodeChunk chunkAWithParentOnly = new com.shravan.jcode_intelligence.model.CodeChunk();
+        chunkAWithParentOnly.setRepositoryId(repo);
+        chunkAWithParentOnly.setFilePath(filePath);
+        chunkAWithParentOnly.setParentChunkId("com.example.ClassA::CLASS");
+        chunkAWithParentOnly.setMethodName("execute");
+        chunkAWithParentOnly.setSignature(signature);
+        chunkAWithParentOnly.setFragmentIndex(0);
+
+        com.shravan.jcode_intelligence.model.CodeChunk chunkBWithParentOnly = new com.shravan.jcode_intelligence.model.CodeChunk();
+        chunkBWithParentOnly.setRepositoryId(repo);
+        chunkBWithParentOnly.setFilePath(filePath);
+        chunkBWithParentOnly.setParentChunkId("com.example.ClassB::CLASS");
+        chunkBWithParentOnly.setMethodName("execute");
+        chunkBWithParentOnly.setSignature(signature);
+        chunkBWithParentOnly.setFragmentIndex(0);
+
+        String idAWithParent = DocumentIdGenerator.generateDeterministicId(chunkAWithParentOnly);
+        String idBWithParent = DocumentIdGenerator.generateDeterministicId(chunkBWithParentOnly);
+        assertNotEquals(idAWithParent, idBWithParent,
+                "Parent chunk IDs must distinguish same-signature fragments in different classes of the same file");
+
+        // Verify line shift invariance for signed chunks: shifting lines must not re-key signed chunks
+        com.shravan.jcode_intelligence.model.CodeChunk shiftedA = new com.shravan.jcode_intelligence.model.CodeChunk();
+        shiftedA.setRepositoryId(repo);
+        shiftedA.setFilePath(filePath);
+        shiftedA.setParentChunkId("com.example.ClassA::CLASS");
+        shiftedA.setId(classAFrag0.getId());
+        shiftedA.setMethodName("execute");
+        shiftedA.setSignature(signature);
+        shiftedA.setStartLine(classAFrag0.getStartLine() + 10);
+        shiftedA.setEndLine(classAFrag0.getEndLine() + 10);
+        shiftedA.setFragmentIndex(0);
+        assertEquals(idA0, DocumentIdGenerator.generateDeterministicId(shiftedA),
+                "Signed chunk IDs must remain invariant to line shifts to prevent re-keying when lines shift above");
+
+        // Unsigned chunks without chunkId rely on line numbers
+        String unsigned1 = DocumentIdGenerator.generateDeterministicId(repo, filePath, null, null, 10, 25, null, "content");
+        String unsigned2 = DocumentIdGenerator.generateDeterministicId(repo, filePath, null, null, 30, 45, null, "content");
+        assertNotEquals(unsigned1, unsigned2, "Unsigned chunks without chunkId must include line range in seed");
+    }
 }

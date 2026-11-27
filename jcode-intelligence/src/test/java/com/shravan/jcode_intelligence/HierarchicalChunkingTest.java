@@ -5,16 +5,19 @@ import com.github.javaparser.ParseResult;
 import com.github.javaparser.ast.CompilationUnit;
 import com.shravan.jcode_intelligence.config.ChunkingConfig;
 import com.shravan.jcode_intelligence.config.JavaParserConfig;
+import com.shravan.jcode_intelligence.converter.DocumentConverter;
 import com.shravan.jcode_intelligence.model.CodeChunk;
 import com.shravan.jcode_intelligence.model.IndexingStatistics;
 import com.shravan.jcode_intelligence.parser.*;
 import com.shravan.jcode_intelligence.parser.spi.ChunkBudgetEstimator;
+import com.shravan.jcode_intelligence.util.DocumentIdGenerator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -219,6 +222,151 @@ public class HierarchicalChunkingTest {
         CodeChunk secondFragment = fragments.get(1);
         assertTrue(secondFragment.isFragmented());
         assertTrue(secondFragment.getContent().contains("// Fragment 1 of method"));
+    }
+
+    @Test
+    void testTwoClassesInSameFileWithIdenticalOversizedMethodsProduceDistinctFragmentIds() {
+        ChunkingConfig tinyConfig = createConfig(50, 25);
+        ChunkBudgetEstimator tinyEstimator = new CharBasedBudgetEstimator(tinyConfig);
+        MetadataExtractor extractor = new MetadataExtractor();
+        ClassSummaryBuilder summaryBuilder = new ClassSummaryBuilder();
+        MethodFragmenter fragmenter = new MethodFragmenter(extractor, tinyEstimator);
+        ChunkGenerator gen = new ChunkGenerator(extractor, summaryBuilder, fragmenter, tinyEstimator);
+        AstVisitor visitor = new AstVisitor(gen);
+
+        String code = """
+                package com.example.service;
+
+                public class ServiceAlpha {
+                    public void execute() {
+                        String a = "step1";
+                        String b = "step2";
+                        String c = "step3";
+                        System.out.println(a + b + c);
+                    }
+                }
+
+                class ServiceBeta {
+                    public void execute() {
+                        String a = "step1";
+                        String b = "step2";
+                        String c = "step3";
+                        System.out.println(a + b + c);
+                    }
+                }
+                """;
+
+        List<CodeChunk> chunks = parseFromVisitor(code, visitor);
+
+        List<CodeChunk> fragments = chunks.stream()
+                .filter(c -> "METHOD_FRAGMENT".equals(c.getType()))
+                .toList();
+
+        assertFalse(fragments.isEmpty(), "Should produce fragments for oversized methods");
+
+        // Fragments from ServiceAlpha and ServiceBeta must have non-null, stable chunk IDs
+        for (CodeChunk frag : fragments) {
+            assertNotNull(frag.getId(), "Fragment chunk ID must not be null");
+            assertNotNull(frag.getParentChunkId(), "Fragment parentChunkId must not be null");
+            assertTrue(frag.getId().contains("METHOD_FRAGMENT"), "Fragment chunk ID must indicate fragment type");
+        }
+
+        List<CodeChunk> alphaFrags = fragments.stream()
+                .filter(c -> c.getParentChunkId().contains("ServiceAlpha"))
+                .toList();
+        List<CodeChunk> betaFrags = fragments.stream()
+                .filter(c -> c.getParentChunkId().contains("ServiceBeta"))
+                .toList();
+
+        assertFalse(alphaFrags.isEmpty(), "ServiceAlpha should have fragments");
+        assertFalse(betaFrags.isEmpty(), "ServiceBeta should have fragments");
+        assertEquals(alphaFrags.size(), betaFrags.size(), "Both identical methods should produce the same number of fragments");
+
+        // Convert chunks to documents (which invokes DocumentIdGenerator)
+        DocumentConverter converter = new DocumentConverter();
+        List<org.springframework.ai.document.Document> docs = converter.convert(fragments);
+
+        Set<String> docIds = docs.stream().map(org.springframework.ai.document.Document::getId).collect(Collectors.toSet());
+        assertEquals(docs.size(), docIds.size(), "All converted fragment document IDs must be unique across classes in the same file");
+
+        for (int i = 0; i < alphaFrags.size(); i++) {
+            CodeChunk aFrag = alphaFrags.get(i);
+            CodeChunk bFrag = betaFrags.get(i);
+
+            assertNotEquals(aFrag.getId(), bFrag.getId(),
+                    "Fragment chunk IDs must differ between ServiceAlpha and ServiceBeta at index " + i);
+
+            String aDocId = DocumentIdGenerator.generateDeterministicId(aFrag);
+            String bDocId = DocumentIdGenerator.generateDeterministicId(bFrag);
+
+            assertNotEquals(aDocId, bDocId,
+                    "Fragment document IDs must differ between ServiceAlpha and ServiceBeta for corresponding fragment index " + i);
+        }
+    }
+
+    @Test
+    void testTwoOversizedOverloadedMethodsInSameClassProduceDistinctChunkIds() {
+        ChunkingConfig tinyConfig = createConfig(50, 25);
+        ChunkBudgetEstimator tinyEstimator = new CharBasedBudgetEstimator(tinyConfig);
+        MetadataExtractor extractor = new MetadataExtractor();
+        ClassSummaryBuilder summaryBuilder = new ClassSummaryBuilder();
+        MethodFragmenter fragmenter = new MethodFragmenter(extractor, tinyEstimator);
+        ChunkGenerator gen = new ChunkGenerator(extractor, summaryBuilder, fragmenter, tinyEstimator);
+        AstVisitor visitor = new AstVisitor(gen);
+
+        String code = """
+                package com.example.service;
+
+                public class OverloadedService {
+                    public void process(String data) {
+                        String a = "step1";
+                        String b = "step2";
+                        String c = "step3";
+                        System.out.println(a + b + c + data);
+                    }
+
+                    public void process(int count) {
+                        String a = "step1";
+                        String b = "step2";
+                        String c = "step3";
+                        System.out.println(a + b + c + count);
+                    }
+                }
+                """;
+
+        List<CodeChunk> chunks = parseFromVisitor(code, visitor);
+
+        List<CodeChunk> fragments = chunks.stream()
+                .filter(c -> "METHOD_FRAGMENT".equals(c.getType()))
+                .toList();
+
+        assertFalse(fragments.isEmpty(), "Should produce fragments for overloaded methods");
+
+        List<CodeChunk> stringOverloadFrags = fragments.stream()
+                .filter(c -> c.getSignature() != null && c.getSignature().contains("String data"))
+                .toList();
+        List<CodeChunk> intOverloadFrags = fragments.stream()
+                .filter(c -> c.getSignature() != null && c.getSignature().contains("int count"))
+                .toList();
+
+        assertFalse(stringOverloadFrags.isEmpty(), "process(String) must produce fragments");
+        assertFalse(intOverloadFrags.isEmpty(), "process(int) must produce fragments");
+
+        // Verify that chunk IDs and document UUIDs differ between corresponding fragments of the overloads
+        for (int i = 0; i < Math.min(stringOverloadFrags.size(), intOverloadFrags.size()); i++) {
+            CodeChunk strFrag = stringOverloadFrags.get(i);
+            CodeChunk intFrag = intOverloadFrags.get(i);
+
+            assertNotEquals(strFrag.getId(), intFrag.getId(),
+                    "Fragment chunk IDs must differ between overloaded methods for fragment index " + i);
+            assertTrue(strFrag.getId().contains("String data"), "Chunk ID should incorporate String overload signature");
+            assertTrue(intFrag.getId().contains("int count"), "Chunk ID should incorporate int overload signature");
+
+            String strDocId = DocumentIdGenerator.generateDeterministicId(strFrag);
+            String intDocId = DocumentIdGenerator.generateDeterministicId(intFrag);
+            assertNotEquals(strDocId, intDocId,
+                    "Document UUIDs must differ between overloaded methods for fragment index " + i);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════

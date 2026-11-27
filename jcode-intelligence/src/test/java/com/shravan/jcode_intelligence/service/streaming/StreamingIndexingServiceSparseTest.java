@@ -1,10 +1,12 @@
 package com.shravan.jcode_intelligence.service.streaming;
 
 import com.shravan.jcode_intelligence.config.ChunkingConfig;
+import com.shravan.jcode_intelligence.config.EmbeddingQueueConfig;
 import com.shravan.jcode_intelligence.config.LargeRepoIndexingConfig;
 import com.shravan.jcode_intelligence.config.RetrievalConfig;
 import com.shravan.jcode_intelligence.converter.DocumentConverter;
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import com.shravan.jcode_intelligence.model.EmbeddedRecord;
 import com.shravan.jcode_intelligence.parser.EmbeddingBudgetValidator;
 import com.shravan.jcode_intelligence.parser.JavaProjectParser;
 import com.shravan.jcode_intelligence.parser.PackageSummaryGenerator;
@@ -14,6 +16,7 @@ import com.shravan.jcode_intelligence.service.RepositoryManagementService;
 import com.shravan.jcode_intelligence.sparse.mapper.LuceneDocumentMapper;
 import com.shravan.jcode_intelligence.sparse.query.LuceneQueryBuilder;
 import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
+import com.shravan.jcode_intelligence.util.DocumentIdGenerator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -30,6 +33,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -329,6 +333,103 @@ class StreamingIndexingServiceSparseTest {
     }
 
     @Test
+    @DisplayName("Streaming re-indexing success safely cleans up obsolete vectors from previous runs while preserving re-persisted vectors")
+    void testStreamingReindexSuccessCleansUpObsoleteVectors() throws Exception {
+        String repoId = "reindex-success-repo";
+        Path file1 = tempDir.resolve("ReindexSuccessFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-reindex-success-1");
+        c1.setContent("public class ReindexSuccessTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+        // Repository had 2 vectors previously: old-obsolete-vec and retained-vec
+        when(repoMgmtService.getRepositoryVectorIds(eq(repoId))).thenReturn(Set.of("old-obsolete-vec", "retained-vec"));
+        // Current job persisted retained-vec and newly-persisted-vec
+        when(embeddingQueue.getPersistedRecordIds(anyString())).thenReturn(Set.of("retained-vec", "newly-persisted-vec"));
+
+        LuceneGenerationStore spyStore = spy(store);
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, spyStore
+        );
+
+        int count = service.index(repoId, List.of(file1));
+        assertTrue(count > 0);
+
+        // Verification: obsolete vector from previous run must be deleted
+        verify(repoMgmtService).deleteVectorsByIds(eq(Set.of("old-obsolete-vec")));
+        // Retained vector and newly persisted vector must NOT be deleted
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Repository must NOT be marked inconsistent on success
+        verify(repoMgmtService, never()).markRepositoryInconsistent(eq(repoId), anyString());
+        // Queue tracking state must be cleaned up on success
+        verify(embeddingQueue).cleanupJob(anyString());
+    }
+
+    @Test
+    @DisplayName("Streaming re-indexing with real queue completion lifecycle preserves re-upserted vectors and removes obsolete vectors")
+    void testStreamingReindexRealQueueLifecyclePreservesReUpsertedVectors() throws Exception {
+        String repoId = "real-queue-repo";
+        Path file1 = tempDir.resolve("RealLifecycleFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("retained-chunk-id");
+        c1.setRepositoryId(repoId);
+        c1.setContent("public class RealLifecycleTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+
+        // Repository had 2 pre-existing vectors: "old-obsolete-id" and the deterministic ID for c1
+        String retainedDocId = DocumentIdGenerator.generateDeterministicId(c1);
+        when(repoMgmtService.getRepositoryVectorIds(eq(repoId))).thenReturn(Set.of("old-obsolete-id", retainedDocId));
+
+        // Use a real EmbeddingQueue instance to verify actual completion lifecycle
+        EmbeddingQueue realQueue = new EmbeddingQueue(new EmbeddingQueueConfig(200, 50, 10, 150, 2, 3, 50));
+        java.util.concurrent.atomic.AtomicReference<String> capturedJobId = new java.util.concurrent.atomic.AtomicReference<>();
+
+        // When helper.embedAndStage is invoked by the streaming pipeline, simulate real staging & persistence in realQueue
+        doAnswer(invocation -> {
+            String invocationJobId = invocation.getArgument(1);
+            capturedJobId.set(invocationJobId);
+            List<Document> subBatch = invocation.getArgument(2);
+            for (Document doc : subBatch) {
+                EmbeddedRecord record = new EmbeddedRecord(
+                        doc.getId(), invocationJobId, repoId, doc.getText(),
+                        doc.getMetadata(), new float[]{0.1f}, new CompletableFuture<>()
+                );
+                realQueue.submit(record);
+                realQueue.recordPersisted(record);
+            }
+            return null;
+        }).when(helper).embedAndStage(eq(repoId), anyString(), anyList());
+
+        LuceneGenerationStore spyStore = spy(store);
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, realQueue, modelProvider,
+                repoMgmtService, helper, null, spyStore
+        );
+
+        int count = service.index(repoId, List.of(file1));
+        assertTrue(count > 0);
+
+        // Verification: only old-obsolete-id must be deleted; retainedDocId was re-persisted so it must NOT be deleted
+        verify(repoMgmtService).deleteVectorsByIds(eq(Set.of("old-obsolete-id")));
+        verify(repoMgmtService, never()).deleteVectorsByIds(argThat(set -> set.contains(retainedDocId)));
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        verify(repoMgmtService, never()).markRepositoryInconsistent(eq(repoId), anyString());
+
+        // Tracking state should be cleaned up after successful completion
+        assertNotNull(capturedJobId.get());
+        assertTrue(realQueue.getPersistedRecordIds(capturedJobId.get()).isEmpty());
+        assertEquals(0, realQueue.getActiveJobCount());
+    }
+
+    @Test
     @DisplayName("Settlement timeout defers/skips vector deletion while in-flight writers may still commit")
     void testStreamingFailureSkipsDeleteWhenSettlementTimesOut() throws Exception {
         String repoId = "settle-timeout-repo";
@@ -356,5 +457,55 @@ class StreamingIndexingServiceSparseTest {
         verify(repoMgmtService, never()).deleteVectorsByIds(any());
         verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
         verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), anyString());
+    }
+
+    @Test
+    @DisplayName("Failed existing-vector lookup propagates error, skips dense rollback, and disposes staging session and queue resources")
+    void testFailedExistingVectorLookupDisposesResourcesAndPreservesVectors() throws Exception {
+        String repoId = "lookup-fail-repo";
+        Path file1 = tempDir.resolve("LookupFailFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-lookup-fail-1");
+        c1.setContent("public class LookupFailTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+
+        // Simulate database lookup failure
+        doThrow(new org.springframework.dao.CannotAcquireLockException("Database connection timeout"))
+                .when(repoMgmtService).getRepositoryVectorIds(eq(repoId));
+
+        LuceneGenerationStore spyStore = spy(store);
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, spyStore
+        );
+
+        org.springframework.dao.CannotAcquireLockException thrown = assertThrows(
+                org.springframework.dao.CannotAcquireLockException.class,
+                () -> service.index(repoId, List.of(file1)),
+                "Lookup failure must be propagated out of streaming index pipeline"
+        );
+        assertTrue(thrown.getMessage().contains("Database connection timeout"));
+
+        // Staging session must be discarded and never published
+        verify(spyStore).stageGeneration(eq(repoId));
+        verify(spyStore).discardGeneration(any(LuceneGenerationStore.StagingSession.class));
+        verify(spyStore, never()).publishGeneration(any());
+
+        // Queue resources must be failed and cleaned up
+        verify(embeddingQueue).failJob(anyString(), any());
+        verify(embeddingQueue).cleanupJob(anyString());
+
+        // Writers must never have been dispatched
+        verify(helper, never()).embedAndStage(anyString(), anyString(), anyList());
+
+        // Dense vectors must NEVER be rolled back / deleted
+        verify(repoMgmtService, never()).deleteVectorsByIds(any());
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Since lookup failed before writes occurred, repository must not be marked inconsistent
+        verify(repoMgmtService, never()).markRepositoryInconsistent(eq(repoId), anyString());
     }
 }

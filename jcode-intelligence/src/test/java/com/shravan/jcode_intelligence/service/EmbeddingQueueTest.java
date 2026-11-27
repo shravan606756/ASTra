@@ -197,8 +197,16 @@ class EmbeddingQueueTest {
             assertTrue(r.acknowledgement().isDone(), "Acknowledgement future must be completed");
         }
 
-        // Await should return cleanly without exception
-        assertDoesNotThrow(() -> queue.awaitJobCompletion(jobId, Duration.ofSeconds(1)));
+        // Await should return cleanly without exception and return persisted IDs snapshot
+        Set<String> persistedSnapshot = queue.awaitJobCompletion(jobId, Duration.ofSeconds(1));
+        assertEquals(3, persistedSnapshot.size());
+
+        // Snapshot remains accessible via getPersistedRecordIds after awaitJobCompletion
+        assertEquals(persistedSnapshot, queue.getPersistedRecordIds(jobId));
+
+        // Explicit cleanup disposes of the tracking state and snapshot
+        queue.cleanupJob(jobId);
+        assertTrue(queue.getPersistedRecordIds(jobId).isEmpty());
     }
 
     @Test

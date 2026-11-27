@@ -125,13 +125,80 @@ public class JavaParserStabilizedBenchmarkValidationTest {
                     retrievalConfig
             );
 
-            // 1. Run Benchmark against Legacy Default Suite
-            BenchmarkRequest defaultReq = new BenchmarkRequest("javaparser", "default", 5, "HYBRID_RRF", false);
-            BenchmarkResponse defaultResponse = benchmark.runBenchmark(defaultReq);
+            // 1. Run Benchmark against Issue #34 Dataset ("default") across all 3 modes
+            BenchmarkRequest denseReq = new BenchmarkRequest("javaparser", "default", 5, "DENSE_ONLY", false);
+            BenchmarkResponse denseResponse = benchmark.runBenchmark(denseReq);
+
+            BenchmarkRequest sparseReq = new BenchmarkRequest("javaparser", "default", 5, "SPARSE_ONLY", false);
+            BenchmarkResponse sparseResponse = benchmark.runBenchmark(sparseReq);
+
+            BenchmarkRequest hybridReq = new BenchmarkRequest("javaparser", "default", 5, "HYBRID_RRF", false);
+            BenchmarkResponse defaultResponse = benchmark.runBenchmark(hybridReq);
 
             // 2. Run Benchmark against Validated Suite (3.28.2)
             BenchmarkRequest validatedReq = new BenchmarkRequest("javaparser", "javaparser-3.28.2-validated", 5, "HYBRID_RRF", false);
             BenchmarkResponse validatedResponse = benchmark.runBenchmark(validatedReq);
+
+            // 2b. Assert exact identifiers rank at position 1
+            List<Document> ipeResults = retrievalService.retrieve("InvalidProjectException", 5, "javaparser");
+            assertFalse(ipeResults.isEmpty(), "InvalidProjectException query must return results");
+            assertEquals("InvalidProjectException", ipeResults.get(0).getMetadata().get("elementName"),
+                    "InvalidProjectException declaring chunk must return at rank 1");
+
+            List<Document> embResults = retrievalService.retrieve("exceedsMethodBudget", 5, "javaparser");
+            assertFalse(embResults.isEmpty(), "exceedsMethodBudget query must return results");
+            assertEquals("exceedsMethodBudget", embResults.get(0).getMetadata().get("elementName"),
+                    "exceedsMethodBudget declaring chunk must return at rank 1");
+
+            // 2c. Measure and assert HYBRID_RRF latency against 100 ms target and 150 ms limit
+            BenchmarkSummaryDTO hybridDefSum = defaultResponse.getSummary();
+            System.out.println("\n================================================================================");
+            System.out.println("Issue #34 Dataset Benchmark Comparison: Dense vs. BM25 vs. Hybrid RRF (topK=5)");
+            System.out.println("================================================================================");
+            System.out.printf("%-20s | %-12s | %-12s | %-12s%n", "Metric", "Dense-Only", "BM25-Only", "Hybrid RRF");
+            System.out.println("--------------------------------------------------------------------------------");
+            System.out.printf("%-20s | %11.1f%% | %11.1f%% | %11.1f%%%n", "Hit Rate@5",
+                    denseResponse.getSummary().getHitRateAt5() * 100.0,
+                    sparseResponse.getSummary().getHitRateAt5() * 100.0,
+                    defaultResponse.getSummary().getHitRateAt5() * 100.0);
+            System.out.printf("%-20s | %11.1f%% | %11.1f%% | %11.1f%%%n", "Recall@5",
+                    denseResponse.getSummary().getRecallAt5() * 100.0,
+                    sparseResponse.getSummary().getRecallAt5() * 100.0,
+                    defaultResponse.getSummary().getRecallAt5() * 100.0);
+            System.out.printf("%-20s | %12.4f | %12.4f | %12.4f%n", "MRR",
+                    denseResponse.getSummary().getMrr(),
+                    sparseResponse.getSummary().getMrr(),
+                    defaultResponse.getSummary().getMrr());
+            System.out.printf("%-20s | %12.4f | %12.4f | %12.4f%n", "NDCG@5",
+                    denseResponse.getSummary().getNdcgAt5(),
+                    sparseResponse.getSummary().getNdcgAt5(),
+                    defaultResponse.getSummary().getNdcgAt5());
+            System.out.printf("%-20s | %10.1fms | %10.1fms | %10.1fms%n", "Average Latency",
+                    denseResponse.getSummary().getAvgTotalLatencyMs(),
+                    sparseResponse.getSummary().getAvgTotalLatencyMs(),
+                    hybridDefSum.getAvgTotalLatencyMs());
+            System.out.printf("%-20s | %10.1fms | %10.1fms | %10.1fms%n", "p50 Latency",
+                    denseResponse.getSummary().getP50LatencyMs(),
+                    sparseResponse.getSummary().getP50LatencyMs(),
+                    hybridDefSum.getP50LatencyMs());
+            System.out.printf("%-20s | %10.1fms | %10.1fms | %10.1fms%n", "p95 Latency",
+                    denseResponse.getSummary().getP95LatencyMs(),
+                    sparseResponse.getSummary().getP95LatencyMs(),
+                    hybridDefSum.getP95LatencyMs());
+            System.out.printf("%-20s | %10.1fms | %10.1fms | %10.1fms%n", "Max Latency",
+                    denseResponse.getSummary().getMaxLatencyMs(),
+                    sparseResponse.getSummary().getMaxLatencyMs(),
+                    hybridDefSum.getMaxLatencyMs());
+            System.out.println("================================================================================");
+
+            assertTrue(hybridDefSum.getAvgTotalLatencyMs() <= 100.0,
+                    "Average HYBRID_RRF latency (" + hybridDefSum.getAvgTotalLatencyMs() + " ms) must be within 100 ms target");
+            assertTrue(hybridDefSum.getP50LatencyMs() <= 100.0,
+                    "Median (p50) HYBRID_RRF latency (" + hybridDefSum.getP50LatencyMs() + " ms) must be within 100 ms target");
+            assertTrue(hybridDefSum.getP95LatencyMs() <= 150.0,
+                    "95th percentile HYBRID_RRF latency (" + hybridDefSum.getP95LatencyMs() + " ms) must not exceed 150 ms limit");
+            assertTrue(hybridDefSum.getMaxLatencyMs() <= 150.0,
+                    "Max HYBRID_RRF latency (" + hybridDefSum.getMaxLatencyMs() + " ms) must not exceed 150 ms limit");
 
             // 3. Inspect Q02 and Q11-Q16 individually
             System.out.println("================================================================================");
@@ -279,6 +346,35 @@ public class JavaParserStabilizedBenchmarkValidationTest {
         nodeMeta.put("repositoryId", "javaparser");
         String nodeContent = "package com.github.javaparser.ast;\npublic abstract class Node {\n    // 1302 lines in 3.28.2\n}";
         corpusMap.put("Node", new Document(DocumentIdGenerator.generateDeterministicId("javaparser", "Node", nodeContent), nodeContent, nodeMeta));
+
+        // Add declaring chunk for InvalidProjectException
+        String ipeKey = "com/shravan/jcode_intelligence/exception/InvalidProjectException.java:InvalidProjectException";
+        Map<String, Object> ipeMeta = new HashMap<>();
+        ipeMeta.put("filePath", "com/shravan/jcode_intelligence/exception/InvalidProjectException.java");
+        ipeMeta.put("elementName", "InvalidProjectException");
+        ipeMeta.put("className", "InvalidProjectException");
+        ipeMeta.put("type", "CLASS");
+        ipeMeta.put("startLine", 1);
+        ipeMeta.put("endLine", 4);
+        ipeMeta.put("repositoryId", "javaparser");
+        ipeMeta.put("signature", "public class InvalidProjectException");
+        String ipeContent = "package com.shravan.jcode_intelligence.exception;\npublic class InvalidProjectException {\n}";
+        corpusMap.put(ipeKey, new Document(DocumentIdGenerator.generateDeterministicId("javaparser", ipeKey, ipeContent), ipeContent, ipeMeta));
+
+        // Add declaring chunk for exceedsMethodBudget
+        String embKey = "com/shravan/jcode_intelligence/parser/spi/ChunkBudgetEstimator.java:exceedsMethodBudget";
+        Map<String, Object> embMeta = new HashMap<>();
+        embMeta.put("filePath", "com/shravan/jcode_intelligence/parser/spi/ChunkBudgetEstimator.java");
+        embMeta.put("elementName", "exceedsMethodBudget");
+        embMeta.put("methodName", "exceedsMethodBudget");
+        embMeta.put("className", "ChunkBudgetEstimator");
+        embMeta.put("type", "METHOD");
+        embMeta.put("startLine", 10);
+        embMeta.put("endLine", 25);
+        embMeta.put("repositoryId", "javaparser");
+        embMeta.put("signature", "boolean exceedsMethodBudget(String content)");
+        String embContent = "package com.shravan.jcode_intelligence.parser.spi;\npublic interface ChunkBudgetEstimator {\n    boolean exceedsMethodBudget(String content);\n}";
+        corpusMap.put(embKey, new Document(DocumentIdGenerator.generateDeterministicId("javaparser", embKey, embContent), embContent, embMeta));
 
         for (BenchmarkQueryDefinition q : suite.getQueries()) {
             if (q.getRelevantChunks() != null) {

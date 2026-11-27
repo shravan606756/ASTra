@@ -3,6 +3,8 @@ package com.shravan.jcode_intelligence.service.impl;
 import com.shravan.jcode_intelligence.service.RepositoryConcurrencyManager;
 import com.shravan.jcode_intelligence.service.RepositoryManagementService;
 import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -18,6 +20,8 @@ import java.util.TreeSet;
 
 @Service
 public class RepositoryManagementServiceImpl implements RepositoryManagementService {
+
+    private static final Logger log = LoggerFactory.getLogger(RepositoryManagementServiceImpl.class);
 
     private final JdbcTemplate jdbcTemplate;
     private final RepositoryConcurrencyManager concurrencyManager;

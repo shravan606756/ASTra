@@ -372,9 +372,16 @@ public class GenerationBenchmarkRunner {
         }
 
         if (observedRevisionStatuses.isEmpty() && sourceRoot != null && !sourceRoot.isBlank()) {
-            RevisionStatus status = citationValidator.checkRevision(Paths.get(sourceRoot), suiteSourceRevision);
-            if (status != null) {
-                observedRevisionStatuses.add(status.name());
+            try {
+                RevisionStatus status = citationValidator.checkRevision(Paths.get(sourceRoot), suiteSourceRevision);
+                if (status != null) {
+                    observedRevisionStatuses.add(status.name());
+                } else {
+                    observedRevisionStatuses.add(RevisionStatus.UNAVAILABLE.name());
+                }
+            } catch (Exception e) {
+                log.warn("Invalid source path or revision check failure in summary fallback for '{}': {}", sourceRoot, e.getMessage());
+                observedRevisionStatuses.add(RevisionStatus.UNAVAILABLE.name());
             }
         }
 

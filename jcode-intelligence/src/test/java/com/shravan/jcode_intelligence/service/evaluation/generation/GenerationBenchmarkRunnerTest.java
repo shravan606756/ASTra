@@ -463,4 +463,55 @@ class GenerationBenchmarkRunnerTest {
         assertEquals(1.0000, summary.getAverageCitationCorrectness(), "Average citation correctness must include only the evaluated query");
         assertEquals(1.0000, summary.getAverageExpectedSourceRecall(), "Average expected source recall must include only the evaluated query");
     }
+
+    @Test
+    @DisplayName("Invalid source path is caught per-query and summary fallback does not throw, recording UNAVAILABLE revision status")
+    void testInvalidSourcePath_handledGracefullyWithoutAbortingBenchmark() {
+        LLMClient mockLlm = new LLMClient(null) {
+            @Override
+            public LLMResponse generateWithUsage(String prompt, ChatOptions options) {
+                return new LLMResponse("Generated answer with citation [cite: src/Sample.java:1-5].", 10, 5, 10L, "mock-model");
+            }
+        };
+
+        GenerationEvaluator evaluator = new GenerationEvaluator(mockLlm, new LlmRetryHelper(1, 0, 1.0, 0, 0), templateLoader);
+        GenerationBenchmarkRunner runner = new GenerationBenchmarkRunner(
+                promptBuilder, mockLlm, new LlmRetryHelper(1, 0, 1.0, 0, 0),
+                new CitationParser(), new CitationValidator(), new CitationMetricsCalculator(),
+                evaluator,
+                5
+        );
+
+        BenchmarkQueryDefinition bq = new BenchmarkQueryDefinition(
+                "Q1", "Query 1", "Category", "repo", "CLASS", List.of(), "Ref answer 1", List.of("src/Sample.java")
+        );
+        QueryBenchmarkResultDTO qr = new QueryBenchmarkResultDTO();
+        qr.setQueryId("Q1");
+        qr.setStatus("SUCCESS");
+
+        List<GenerationBenchmarkRunner.RetainedBenchmarkQuery> retained = List.of(
+                new GenerationBenchmarkRunner.RetainedBenchmarkQuery(bq, qr, List.of(createTestDoc()), QueryIntent.SEARCH, "repo")
+        );
+
+        BenchmarkRequest request = new BenchmarkRequest("repo");
+        request.setEvaluateGeneration(true);
+        // Syntactically invalid path containing null character
+        request.setSourceRoot("invalid\0source:path");
+
+        // Must complete without throwing InvalidPathException
+        BenchmarkGenerationSummaryDTO summary = assertDoesNotThrow(
+                () -> runner.runGenerationEvaluation(retained, request, null)
+        );
+
+        assertNotNull(summary);
+        assertEquals(1, summary.getTotalQueriesEvaluated());
+        assertEquals(1, summary.getFailedGenerations());
+        assertEquals(0, summary.getSuccessfulGenerations());
+        assertEquals("UNAVAILABLE", summary.getRevisionStatus(), "Summary must record UNAVAILABLE revision status");
+
+        // Per-query failure is preserved
+        assertNotNull(qr.getGenerationResult());
+        assertEquals("FAILED", qr.getGenerationResult().getStatus());
+        assertNotNull(qr.getGenerationResult().getFailureReason());
+    }
 }

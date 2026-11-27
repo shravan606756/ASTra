@@ -11,8 +11,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.document.Document;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -62,9 +64,11 @@ class LuceneGenerationStoreTest {
 
         // Write documents
         Document doc1 = new Document("doc-1", "public class UserService { public User findUserById(Long id) {} }",
-                Map.of("repositoryId", repoId, "className", "UserService", "elementName", "findUserById", "chunkId", "c1"));
+                Map.of("repositoryId", repoId, "className", "UserService", "elementName", "findUserById", "chunkId",
+                        "c1"));
         Document doc2 = new Document("doc-2", "public class OrderService { public Order createOrder() {} }",
-                Map.of("repositoryId", repoId, "className", "OrderService", "elementName", "createOrder", "chunkId", "c2"));
+                Map.of("repositoryId", repoId, "className", "OrderService", "elementName", "createOrder", "chunkId",
+                        "c2"));
 
         session.writeDocuments(List.of(doc1, doc2));
 
@@ -230,7 +234,8 @@ class LuceneGenerationStoreTest {
         // Verify: gen0 was an unreferenced old generation, so it should be cleaned up
         assertFalse(Files.exists(gen0Dir), "Unreferenced gen0 directory should be cleaned up as an orphan");
 
-        // Crucial regression verification: gen2 is an ongoing staging session and MUST NOT be deleted
+        // Crucial regression verification: gen2 is an ongoing staging session and MUST
+        // NOT be deleted
         assertTrue(Files.exists(gen2Dir), "Active staging directory gen2 must NOT be deleted by gen1 orphan cleanup");
 
         // Job 2 completes and publishes gen2 successfully without errors
@@ -345,7 +350,8 @@ class LuceneGenerationStoreTest {
         assertEquals(expectedDocId, searchResults.get(0).getId());
 
         // Verify no stray temporary CURRENT.*.tmp files were left behind
-        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(tempDir.resolve("sparse-index").resolve(repoId))) {
+        try (java.nio.file.DirectoryStream<Path> stream = Files
+                .newDirectoryStream(tempDir.resolve("sparse-index").resolve(repoId))) {
             for (Path entry : stream) {
                 String name = entry.getFileName().toString();
                 assertFalse(name.startsWith("CURRENT") && name.endsWith(".tmp"),
@@ -385,8 +391,7 @@ class LuceneGenerationStoreTest {
                 "foo\\bar",
                 "foo bar",
                 "foo;bar",
-                "foo*bar"
-        );
+                "foo*bar");
 
         for (String invalidId : invalidIds) {
             assertThrows(IllegalArgumentException.class, () -> store.resolveRepoDir(invalidId),
@@ -401,7 +406,8 @@ class LuceneGenerationStoreTest {
         Files.createDirectories(outsideDir);
 
         assertThrows(IllegalArgumentException.class, () -> store.stageGeneration("../outside-target"));
-        assertThrows(IllegalArgumentException.class, () -> store.stageGeneration(outsideDir.toAbsolutePath().toString()));
+        assertThrows(IllegalArgumentException.class,
+                () -> store.stageGeneration(outsideDir.toAbsolutePath().toString()));
 
         // Verify outside directory remains empty
         try (var stream = Files.newDirectoryStream(outsideDir)) {
@@ -429,7 +435,8 @@ class LuceneGenerationStoreTest {
         Files.writeString(secretFile, "critical data");
 
         assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex("../victim-dir"));
-        assertThrows(IllegalArgumentException.class, () -> store.deleteRepositoryIndex(victimDir.toAbsolutePath().toString()));
+        assertThrows(IllegalArgumentException.class,
+                () -> store.deleteRepositoryIndex(victimDir.toAbsolutePath().toString()));
 
         // Verify victim directory and its files still exist
         assertTrue(Files.exists(victimDir), "Victim directory must not be deleted by path traversal");
@@ -514,8 +521,10 @@ class LuceneGenerationStoreTest {
         for (int i = 0; i < 10; i++) {
             List<Document> unscoped = store.searchUnscoped("target", 10);
             assertEquals(2, unscoped.size());
-            assertEquals(1, store.getSearcherRefCount(repoA), "Ref count must not increment after unscoped search " + i);
-            assertEquals(1, store.getSearcherRefCount(repoB), "Ref count must not increment after unscoped search " + i);
+            assertEquals(1, store.getSearcherRefCount(repoA),
+                    "Ref count must not increment after unscoped search " + i);
+            assertEquals(1, store.getSearcherRefCount(repoB),
+                    "Ref count must not increment after unscoped search " + i);
         }
 
         // Execute repeated scoped searches and verify ref count remains 1
@@ -530,8 +539,10 @@ class LuceneGenerationStoreTest {
                 Map.of("repositoryId", repoA, "chunkId", "ca2"))));
         store.publishGeneration(sessionA2);
 
-        // Because ref count was not leaked, Gen 1 reader was fully closed during eviction,
-        // so Windows file locks are released and orphan cleanup successfully removes Gen 1 directory.
+        // Because ref count was not leaked, Gen 1 reader was fully closed during
+        // eviction,
+        // so Windows file locks are released and orphan cleanup successfully removes
+        // Gen 1 directory.
         assertFalse(Files.exists(genA1Dir), "Orphaned Gen 1 directory must be cleanly removed without file lock leaks");
 
         // Verify newly published generation is searchable
@@ -662,5 +673,118 @@ class LuceneGenerationStoreTest {
         executor.shutdown();
 
         assertTrue(errors.isEmpty(), "Errors occurred during concurrent openIfChanged: " + errors);
+    }
+
+    @Test
+    @DisplayName("Two store instances: orphan cleanup does not delete in-flight temporary pointer of concurrent publisher")
+    void testTwoStoresConcurrentPublishAndOrphanCleanup() throws Exception {
+        Path sharedIndexDir = tempDir.resolve("shared-sparse-index");
+        RetrievalConfig config1 = new RetrievalConfig();
+        config1.setIndexDir(sharedIndexDir.toString());
+        RetrievalConfig config2 = new RetrievalConfig();
+        config2.setIndexDir(sharedIndexDir.toString());
+
+        LuceneGenerationStore store1 = new LuceneGenerationStore(config1, mapper, queryBuilder);
+        LuceneGenerationStore store2 = new LuceneGenerationStore(config2, mapper, queryBuilder);
+
+        try {
+            String repoId = "two-store-repo";
+
+            // Store 1 stages generation 1
+            LuceneGenerationStore.StagingSession session1 = store1.stageGeneration(repoId);
+            session1.writeDocuments(List.of(new Document("doc-s1", "store one content",
+                    Map.of("repositoryId", repoId, "chunkId", "c1"))));
+            session1.getIndexWriter().commit();
+            session1.close();
+
+            // Store 2 stages and publishes generation 2
+            LuceneGenerationStore.StagingSession session2 = store2.stageGeneration(repoId);
+            session2.writeDocuments(List.of(new Document("doc-s2", "store two content",
+                    Map.of("repositoryId", repoId, "chunkId", "c2"))));
+
+            // Simulate store 1 pausing between writing currentTmp and moving it:
+            Path repoDir = sharedIndexDir.resolve(repoId);
+            Path store1InFlightTmp = repoDir.resolve("CURRENT.store1-inflight.tmp");
+            Files.writeString(store1InFlightTmp, session1.getGenerationName(), StandardCharsets.UTF_8);
+            assertTrue(Files.exists(store1InFlightTmp));
+
+            // Store 2 publishes generation 2, which triggers orphan sweep
+            store2.publishGeneration(session2);
+
+            // Verify that store 2's orphan sweep did NOT delete store 1's in-flight
+            // temporary pointer
+            assertTrue(Files.exists(store1InFlightTmp),
+                    "In-flight temporary pointer of store 1 must not be deleted by store 2's orphan sweep");
+
+            // Store 1 completes its publication by atomically moving its pointer
+            Path currentFile = repoDir.resolve("CURRENT");
+            Files.move(store1InFlightTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
+
+            // Store 1 is now active CURRENT
+            assertEquals(session1.getGenerationName(), Files.readString(currentFile).trim());
+
+            // Search on store 1 sees store 1 content
+            List<Document> results = store1.search(repoId, "store", 5);
+            assertFalse(results.isEmpty());
+            assertEquals("doc-s1", results.get(0).getId());
+        } finally {
+            store1.close();
+            store2.close();
+        }
+    }
+
+    @Test
+    @DisplayName("Search transparently recovers when selected generation directory disappears during concurrent publication")
+    void testSearchRecoversWhenSelectedGenerationDisappearsConcurrently() throws Exception {
+        String repoId = "repo-disappearing-gen";
+
+        // Stage and publish Gen 1
+        LuceneGenerationStore.StagingSession gen1 = store.stageGeneration(repoId);
+        gen1.writeDocuments(List.of(new Document("doc-1", "disappearing generation content v1",
+                Map.of("repositoryId", repoId, "chunkId", "c1"))));
+        store.publishGeneration(gen1);
+
+        // Stage and publish Gen 2
+        LuceneGenerationStore.StagingSession gen2 = store.stageGeneration(repoId);
+        gen2.writeDocuments(List.of(new Document("doc-2", "disappearing generation content v2",
+                Map.of("repositoryId", repoId, "chunkId", "c2"))));
+        store.publishGeneration(gen2);
+
+        // Pre-warm cache on Gen 2
+        assertEquals(1, store.getDocumentCount(repoId));
+        assertEquals(1, store.search(repoId, "content", 5).size());
+
+        // Now simulate a transition where CURRENT was pointing to an older generation
+        // that has been deleted
+        Path repoDir = tempDir.resolve("sparse-index").resolve(repoId);
+        Path currentFile = repoDir.resolve("CURRENT");
+        String staleGen = "gen_stale_deleted_" + System.currentTimeMillis();
+
+        // Write stale pointer to CURRENT momentarily
+        Files.writeString(currentFile, staleGen, StandardCharsets.UTF_8);
+
+        // Concurrently publish Gen 3 which writes real CURRENT and removes older
+        // generations
+        LuceneGenerationStore.StagingSession gen3 = store.stageGeneration(repoId);
+        gen3.writeDocuments(List.of(new Document("doc-3", "disappearing generation content v3",
+                Map.of("repositoryId", repoId, "chunkId", "c3"))));
+
+        // Start search thread
+        CompletableFuture<List<Document>> searchFuture = CompletableFuture.supplyAsync(() -> {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ignored) {
+            }
+            return store.search(repoId, "content", 5);
+        });
+
+        // Publish Gen 3 immediately
+        store.publishGeneration(gen3);
+
+        List<Document> results = searchFuture.get(5, TimeUnit.SECONDS);
+        assertNotNull(results);
+        assertFalse(results.isEmpty(), "Search must recover and return published results rather than empty");
+        assertEquals("doc-3", results.get(0).getId());
+        assertEquals(1, store.getDocumentCount(repoId));
     }
 }

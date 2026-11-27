@@ -36,6 +36,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -71,6 +72,7 @@ public class LuceneGenerationStore implements AutoCloseable {
     private final LuceneQueryBuilder queryBuilder;
 
     public static final Pattern SAFE_REPO_ID_PATTERN = Pattern.compile("^[A-Za-z0-9._-]+$");
+    private static final long CRASH_REMNANT_SWEEP_THRESHOLD_MS = 300_000L; // 5 minutes
 
     private final ConcurrentMap<String, SearcherHolder> searcherCache = new ConcurrentHashMap<>();
     private final Set<StagingSession> activeStagingSessions = ConcurrentHashMap.newKeySet();
@@ -602,14 +604,14 @@ public class LuceneGenerationStore implements AutoCloseable {
             return null;
         }
 
-        for (int attempt = 0; attempt < 5; attempt++) {
+        for (int attempt = 0; attempt < 15; attempt++) {
             if (closed.get()) {
                 return null;
             }
 
             if (attempt > 0) {
                 try {
-                    Thread.sleep(10);
+                    Thread.sleep(15);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return null;
@@ -622,8 +624,12 @@ public class LuceneGenerationStore implements AutoCloseable {
             }
 
             Path genDir = repoDir.resolve(currentGen).normalize();
-            if (!genDir.startsWith(repoDir) || genDir.equals(repoDir) || !Files.isDirectory(genDir)) {
-                return null;
+            if (!genDir.startsWith(repoDir) || genDir.equals(repoDir)) {
+                return null; // Path traversal security violation
+            }
+            if (!Files.isDirectory(genDir)) {
+                // Generation directory was removed/replaced by concurrent publication, retry with fresh CURRENT
+                continue;
             }
 
             SearcherHolder existing = searcherCache.get(safeRepoId);
@@ -665,33 +671,49 @@ public class LuceneGenerationStore implements AutoCloseable {
             }
 
             synchronized (searcherCache) {
+                // Re-read latest CURRENT pointer under lock to avoid using a stale pointer
+                String latestGen = readCurrentPointer(currentFile, safeRepoId);
+                if (latestGen == null || latestGen.isBlank()) {
+                    continue;
+                }
+                Path latestGenDir = repoDir.resolve(latestGen).normalize();
+                if (!latestGenDir.startsWith(repoDir) || latestGenDir.equals(repoDir)) {
+                    return null;
+                }
+
                 existing = searcherCache.get(safeRepoId);
-                if (existing != null && existing.genName.equals(currentGen)) {
+                if (existing != null && existing.genName.equals(latestGen)) {
                     if (existing.acquireRef()) {
                         return existing;
                     }
                 }
 
-                if (existing != null) {
+                // Never close existing if it matches latestGen
+                if (existing != null && !existing.genName.equals(latestGen)) {
                     existing.close();
                 }
 
+                if (!Files.isDirectory(latestGenDir)) {
+                    continue;
+                }
+
                 try {
-                    Directory dir = FSDirectory.open(genDir);
+                    Directory dir = FSDirectory.open(latestGenDir);
                     DirectoryReader reader = DirectoryReader.open(dir);
                     IndexSearcher searcher = new IndexSearcher(reader);
                     searcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
-                    SearcherHolder created = new SearcherHolder(currentGen, dir, reader, searcher);
+                    SearcherHolder created = new SearcherHolder(latestGen, dir, reader, searcher);
                     if (created.acquireRef()) {
                         searcherCache.put(safeRepoId, created);
                         return created;
                     } else {
                         created.close();
+                        continue;
                     }
                 } catch (IOException e) {
-                    log.error("Failed to open IndexSearcher for repo {} generation {}: {}",
-                            safeRepoId, currentGen, e.getMessage());
-                    return null;
+                    log.debug("Failed to open IndexSearcher for repo {} generation {}: {}",
+                            safeRepoId, latestGen, e.getMessage());
+                    continue;
                 }
             }
         }
@@ -718,6 +740,31 @@ public class LuceneGenerationStore implements AutoCloseable {
                     .map(s -> s.getStagingDir().toAbsolutePath().normalize())
                     .collect(Collectors.toSet());
 
+            Set<String> inFlightTmpGens = new HashSet<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(repoDir)) {
+                for (Path entry : stream) {
+                    if (Files.isRegularFile(entry)) {
+                        String name = entry.getFileName().toString();
+                        if (name.startsWith("CURRENT") && name.endsWith(".tmp")) {
+                            try {
+                                long ageMs = System.currentTimeMillis() - Files.getLastModifiedTime(entry).toMillis();
+                                if (ageMs > CRASH_REMNANT_SWEEP_THRESHOLD_MS) {
+                                    Files.deleteIfExists(entry);
+                                } else {
+                                    String gen = Files.readString(entry, StandardCharsets.UTF_8).trim();
+                                    if (!gen.isEmpty()) {
+                                        inFlightTmpGens.add(gen);
+                                    }
+                                }
+                            } catch (IOException ignored) {
+                            }
+                        }
+                    }
+                }
+            } catch (IOException e) {
+                log.debug("Error inspecting temporary pointers during orphan cleanup for {}: {}", repoDir, e.getMessage());
+            }
+
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(repoDir)) {
                 for (Path entry : stream) {
                     if (Files.isDirectory(entry)) {
@@ -725,16 +772,9 @@ public class LuceneGenerationStore implements AutoCloseable {
                         if (name.startsWith("gen_")
                                 && !name.equals(currentGenName)
                                 && !activeGens.contains(name)
+                                && !inFlightTmpGens.contains(name)
                                 && !activeDirs.contains(entry.toAbsolutePath().normalize())) {
                             deleteRecursively(entry);
-                        }
-                    } else if (Files.isRegularFile(entry)) {
-                        String name = entry.getFileName().toString();
-                        if (name.startsWith("CURRENT") && name.endsWith(".tmp")) {
-                            try {
-                                Files.deleteIfExists(entry);
-                            } catch (IOException ignored) {
-                            }
                         }
                     }
                 }

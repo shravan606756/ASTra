@@ -484,4 +484,112 @@ class LuceneGenerationStoreTest {
         assertThrows(IllegalArgumentException.class, () -> store.search("repo@v1", "query", 5));
         assertThrows(IllegalArgumentException.class, () -> store.hasIndex("repo@v1"));
     }
+
+    @Test
+    @DisplayName("searchUnscoped does not leak reader references, allowing orphan cleanup on replacement")
+    void testSearchUnscoped_doesNotLeakReaderReferencesAndAllowsOrphanCleanup() throws IOException {
+        String repoA = "repo-alpha-leak";
+        String repoB = "repo-beta-leak";
+
+        // Stage and publish repo A (Gen 1)
+        LuceneGenerationStore.StagingSession sessionA1 = store.stageGeneration(repoA);
+        sessionA1.writeDocuments(List.of(new Document("doc-a1", "search target content alpha",
+                Map.of("repositoryId", repoA, "chunkId", "ca1"))));
+        store.publishGeneration(sessionA1);
+        Path genA1Dir = sessionA1.getStagingDir();
+
+        // Stage and publish repo B
+        LuceneGenerationStore.StagingSession sessionB = store.stageGeneration(repoB);
+        sessionB.writeDocuments(List.of(new Document("doc-b1", "search target content beta",
+                Map.of("repositoryId", repoB, "chunkId", "cb1"))));
+        store.publishGeneration(sessionB);
+
+        // Warm up and verify initial cached ref count is 1
+        assertEquals(1, store.search(repoA, "target", 5).size());
+        assertEquals(1, store.search(repoB, "target", 5).size());
+        assertEquals(1, store.getSearcherRefCount(repoA), "Initial cached reader ref count must be 1");
+        assertEquals(1, store.getSearcherRefCount(repoB), "Initial cached reader ref count must be 1");
+
+        // Execute repeated unscoped searches
+        for (int i = 0; i < 10; i++) {
+            List<Document> unscoped = store.searchUnscoped("target", 10);
+            assertEquals(2, unscoped.size());
+            assertEquals(1, store.getSearcherRefCount(repoA), "Ref count must not increment after unscoped search " + i);
+            assertEquals(1, store.getSearcherRefCount(repoB), "Ref count must not increment after unscoped search " + i);
+        }
+
+        // Execute repeated scoped searches and verify ref count remains 1
+        for (int i = 0; i < 5; i++) {
+            assertEquals(1, store.search(repoA, "target", 5).size());
+            assertEquals(1, store.getSearcherRefCount(repoA));
+        }
+
+        // Publish Gen 2 for repo A
+        LuceneGenerationStore.StagingSession sessionA2 = store.stageGeneration(repoA);
+        sessionA2.writeDocuments(List.of(new Document("doc-a2", "new version content alpha",
+                Map.of("repositoryId", repoA, "chunkId", "ca2"))));
+        store.publishGeneration(sessionA2);
+
+        // Because ref count was not leaked, Gen 1 reader was fully closed during eviction,
+        // so Windows file locks are released and orphan cleanup successfully removes Gen 1 directory.
+        assertFalse(Files.exists(genA1Dir), "Orphaned Gen 1 directory must be cleanly removed without file lock leaks");
+
+        // Verify newly published generation is searchable
+        List<Document> searchResults = store.search(repoA, "alpha", 5);
+        assertEquals(1, searchResults.size());
+        assertEquals("doc-a2", searchResults.get(0).getId());
+    }
+
+    @Test
+    @DisplayName("Concurrent searches during generation publish and eviction do not fail with AlreadyClosedException")
+    void testConcurrentSearchesDuringPublishAndEviction() throws Exception {
+        String repoId = "repo-concurrent-evict";
+
+        LuceneGenerationStore.StagingSession gen1 = store.stageGeneration(repoId);
+        gen1.writeDocuments(List.of(new Document("doc-1", "concurrent search target text",
+                Map.of("repositoryId", repoId, "chunkId", "c1"))));
+        store.publishGeneration(gen1);
+
+        int numThreads = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(numThreads);
+        List<Throwable> errors = new CopyOnWriteArrayList<>();
+
+        for (int i = 0; i < numThreads; i++) {
+            final int threadId = i;
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    for (int j = 0; j < 25; j++) {
+                        if (threadId % 2 == 0) {
+                            List<Document> results = store.search(repoId, "target", 5);
+                            assertFalse(results.isEmpty());
+                        } else {
+                            List<Document> results = store.searchUnscoped("target", 5);
+                            assertFalse(results.isEmpty());
+                        }
+                    }
+                } catch (Throwable t) {
+                    errors.add(t);
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        startLatch.countDown();
+
+        // While threads are querying, publish gen 2
+        Thread.sleep(10);
+        LuceneGenerationStore.StagingSession gen2 = store.stageGeneration(repoId);
+        gen2.writeDocuments(List.of(new Document("doc-2", "concurrent search target text updated",
+                Map.of("repositoryId", repoId, "chunkId", "c2"))));
+        store.publishGeneration(gen2);
+
+        assertTrue(doneLatch.await(10, TimeUnit.SECONDS), "Concurrent searches timed out");
+        executor.shutdown();
+
+        assertTrue(errors.isEmpty(), "Concurrent searches failed with errors: " + errors);
+    }
 }

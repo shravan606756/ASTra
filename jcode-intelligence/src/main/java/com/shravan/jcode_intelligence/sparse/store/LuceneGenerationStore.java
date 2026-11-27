@@ -294,11 +294,7 @@ public class LuceneGenerationStore implements AutoCloseable {
                 Files.writeString(currentTmp, session.getGenerationName(), StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
 
-                try {
-                    Files.move(currentTmp, currentFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (AtomicMoveNotSupportedException e) {
-                    Files.move(currentTmp, currentFile, StandardCopyOption.REPLACE_EXISTING);
-                }
+                atomicMoveWithRetry(currentTmp, currentFile);
             } finally {
                 try {
                     Files.deleteIfExists(currentTmp);
@@ -306,12 +302,72 @@ public class LuceneGenerationStore implements AutoCloseable {
                 }
             }
 
-            // Invalidate or refresh cached searcher for this repository
-            evictAndCloseSearcher(safeRepoId);
+            // Update cached searcher with the newly published generation and close old searcher
+            try {
+                Path genDir = repoDir.resolve(session.getGenerationName()).normalize();
+                Directory dir = FSDirectory.open(genDir);
+                DirectoryReader reader = DirectoryReader.open(dir);
+                IndexSearcher searcher = new IndexSearcher(reader);
+                searcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+                SearcherHolder newHolder = new SearcherHolder(session.getGenerationName(), dir, reader, searcher);
+                SearcherHolder old = searcherCache.put(safeRepoId, newHolder);
+                if (old != null) {
+                    old.close();
+                }
+            } catch (IOException e) {
+                log.warn("Failed to pre-cache SearcherHolder for published generation {}: {}",
+                        session.getGenerationName(), e.getMessage());
+                evictAndCloseSearcher(safeRepoId);
+            }
 
             // Clean up orphan (older non-current) generations, excluding active staging directories
             cleanupOrphans(repoDir, session.getGenerationName());
         }
+    }
+
+    private void atomicMoveWithRetry(Path source, Path target) throws IOException {
+        IOException lastEx = null;
+        for (int i = 0; i < 15; i++) {
+            try {
+                try {
+                    Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException e) {
+                lastEx = e;
+                try {
+                    Thread.sleep(15);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted while moving file to " + target, ie);
+                }
+            }
+        }
+        if (lastEx != null) {
+            throw lastEx;
+        }
+    }
+
+    private String readCurrentPointer(Path currentFile, String safeRepoId) {
+        for (int i = 0; i < 5; i++) {
+            try {
+                return Files.readString(currentFile, StandardCharsets.UTF_8).trim();
+            } catch (IOException e) {
+                if (i == 4) {
+                    log.debug("Failed to read CURRENT pointer for repo {}: {}", safeRepoId, e.getMessage());
+                    return null;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -376,7 +432,12 @@ public class LuceneGenerationStore implements AutoCloseable {
         Path repoDir = resolveRepoDir(repositoryId);
         String safeRepoId = repoDir.getFileName().toString();
         SearcherHolder holder = acquireSearcher(safeRepoId);
-        if (holder == null) {
+        boolean leased = holder != null && holder.acquireRef();
+        if (!leased && holder != null) {
+            holder = acquireSearcher(safeRepoId);
+            leased = holder != null && holder.acquireRef();
+        }
+        if (!leased) {
             return Collections.emptyList();
         }
 
@@ -392,6 +453,8 @@ public class LuceneGenerationStore implements AutoCloseable {
         } catch (IOException e) {
             log.error("Error executing Lucene search for repo {}: {}", safeRepoId, e.getMessage(), e);
             return Collections.emptyList();
+        } finally {
+            holder.releaseRef();
         }
     }
 
@@ -411,43 +474,62 @@ public class LuceneGenerationStore implements AutoCloseable {
             return Collections.emptyList();
         }
 
+        List<SearcherHolder> leasedHolders = new ArrayList<>();
         List<DirectoryReader> activeReaders = new ArrayList<>();
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(baseDir)) {
-            for (Path repoPath : stream) {
-                if (Files.isDirectory(repoPath) && Files.exists(repoPath.resolve("CURRENT"))) {
-                    String repoName = repoPath.getFileName().toString();
-                    SearcherHolder holder = acquireSearcher(repoName);
-                    if (holder != null && holder.reader.numDocs() > 0) {
-                        activeReaders.add(holder.reader);
+        try {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(baseDir)) {
+                for (Path repoPath : stream) {
+                    if (Files.isDirectory(repoPath) && Files.exists(repoPath.resolve("CURRENT"))) {
+                        String repoName = repoPath.getFileName().toString();
+                        if (!SAFE_REPO_ID_PATTERN.matcher(repoName).matches() || repoName.equals(".") || repoName.equals("..")) {
+                            continue;
+                        }
+                        SearcherHolder holder = acquireSearcher(repoName);
+                        boolean leased = holder != null && holder.acquireRef();
+                        if (!leased && holder != null) {
+                            holder = acquireSearcher(repoName);
+                            leased = holder != null && holder.acquireRef();
+                        }
+                        if (leased) {
+                            if (holder.reader.numDocs() > 0) {
+                                leasedHolders.add(holder);
+                                activeReaders.add(holder.reader);
+                            } else {
+                                holder.releaseRef();
+                            }
+                        }
                     }
                 }
+            } catch (IOException e) {
+                log.warn("Error scanning repositories for unscoped search: {}", e.getMessage());
+                return Collections.emptyList();
             }
-        } catch (IOException e) {
-            log.warn("Error scanning repositories for unscoped search: {}", e.getMessage());
-            return Collections.emptyList();
-        }
 
-        if (activeReaders.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        try {
-            MultiReader multiReader = new MultiReader(activeReaders.toArray(new DirectoryReader[0]), false);
-            IndexSearcher multiSearcher = new IndexSearcher(multiReader);
-            multiSearcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
-
-            Query query = queryBuilder.buildQuery(queryStr, null);
-            TopDocs topDocs = multiSearcher.search(query, topK);
-
-            List<Document> results = new ArrayList<>(topDocs.scoreDocs.length);
-            for (ScoreDoc sd : topDocs.scoreDocs) {
-                org.apache.lucene.document.Document luceneDoc = multiSearcher.storedFields().document(sd.doc);
-                results.add(mapper.toSpringAiDocument(luceneDoc, sd.score));
+            if (activeReaders.isEmpty()) {
+                return Collections.emptyList();
             }
-            return results;
-        } catch (IOException e) {
-            log.error("Error executing unscoped Lucene search: {}", e.getMessage(), e);
-            return Collections.emptyList();
+
+            try (MultiReader multiReader = new MultiReader(activeReaders.toArray(new DirectoryReader[0]), false)) {
+                IndexSearcher multiSearcher = new IndexSearcher(multiReader);
+                multiSearcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+
+                Query query = queryBuilder.buildQuery(queryStr, null);
+                TopDocs topDocs = multiSearcher.search(query, topK);
+
+                List<Document> results = new ArrayList<>(topDocs.scoreDocs.length);
+                for (ScoreDoc sd : topDocs.scoreDocs) {
+                    org.apache.lucene.document.Document luceneDoc = multiSearcher.storedFields().document(sd.doc);
+                    results.add(mapper.toSpringAiDocument(luceneDoc, sd.score));
+                }
+                return results;
+            } catch (IOException e) {
+                log.error("Error executing unscoped Lucene search: {}", e.getMessage(), e);
+                return Collections.emptyList();
+            }
+        } finally {
+            for (SearcherHolder holder : leasedHolders) {
+                holder.releaseRef();
+            }
         }
     }
 
@@ -482,10 +564,19 @@ public class LuceneGenerationStore implements AutoCloseable {
         Path repoDir = resolveRepoDir(repositoryId);
         String safeRepoId = repoDir.getFileName().toString();
         SearcherHolder holder = acquireSearcher(safeRepoId);
-        if (holder == null) {
+        boolean leased = holder != null && holder.acquireRef();
+        if (!leased && holder != null) {
+            holder = acquireSearcher(safeRepoId);
+            leased = holder != null && holder.acquireRef();
+        }
+        if (!leased) {
             return 0;
         }
-        return holder.reader.numDocs();
+        try {
+            return holder.reader.numDocs();
+        } finally {
+            holder.releaseRef();
+        }
     }
 
     /**
@@ -523,11 +614,8 @@ public class LuceneGenerationStore implements AutoCloseable {
             return null;
         }
 
-        String currentGen;
-        try {
-            currentGen = Files.readString(currentFile, StandardCharsets.UTF_8).trim();
-        } catch (IOException e) {
-            log.debug("Failed to read CURRENT pointer for repo {}: {}", safeRepoId, e.getMessage());
+        String currentGen = readCurrentPointer(currentFile, safeRepoId);
+        if (currentGen == null || currentGen.isBlank()) {
             return null;
         }
 
@@ -548,7 +636,7 @@ public class LuceneGenerationStore implements AutoCloseable {
                 SearcherHolder refreshed = new SearcherHolder(currentGen, existing.directory, newReader, newSearcher);
                 searcherCache.put(repositoryId, refreshed);
                 try {
-                    existing.reader.close();
+                    existing.transferDirectoryOwnershipAndClose();
                 } catch (Exception ignored) {
                 }
                 return refreshed;
@@ -670,6 +758,10 @@ public class LuceneGenerationStore implements AutoCloseable {
         if (closed.compareAndSet(false, true)) {
             for (SearcherHolder holder : searcherCache.values()) {
                 holder.close();
+                try {
+                    holder.directory.close();
+                } catch (Exception ignored) {
+                }
             }
             searcherCache.clear();
 
@@ -680,11 +772,22 @@ public class LuceneGenerationStore implements AutoCloseable {
         }
     }
 
+    int getSearcherRefCount(String repositoryId) {
+        Path repoDir = resolveRepoDir(repositoryId);
+        String safeRepoId = repoDir.getFileName().toString();
+        SearcherHolder holder = searcherCache.get(safeRepoId);
+        if (holder == null) {
+            return -1;
+        }
+        return holder.reader.getRefCount();
+    }
+
     private static class SearcherHolder {
         final String genName;
         final Directory directory;
         final DirectoryReader reader;
         final IndexSearcher searcher;
+        private final AtomicBoolean closed = new AtomicBoolean(false);
 
         SearcherHolder(String genName, Directory directory, DirectoryReader reader, IndexSearcher searcher) {
             this.genName = genName;
@@ -693,15 +796,31 @@ public class LuceneGenerationStore implements AutoCloseable {
             this.searcher = searcher;
         }
 
+        boolean acquireRef() {
+            if (closed.get()) {
+                return false;
+            }
+            return reader.tryIncRef();
+        }
+
+        void releaseRef() {
+            try {
+                reader.decRef();
+            } catch (Exception ignored) {
+            }
+        }
+
         void close() {
-            try {
-                reader.close();
-            } catch (Exception ignored) {
+            if (closed.compareAndSet(false, true)) {
+                try {
+                    reader.close();
+                } catch (Exception ignored) {
+                }
             }
-            try {
-                directory.close();
-            } catch (Exception ignored) {
-            }
+        }
+
+        void transferDirectoryOwnershipAndClose() {
+            close();
         }
     }
 }

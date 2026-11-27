@@ -348,6 +348,22 @@ public class StreamingIndexingService {
                 }
             }
 
+            // Post-success cleanup for re-indexing: remove obsolete dense rows from previous runs
+            if (repositoryPreviouslyIndexed && repositoryManagementService != null) {
+                Set<String> obsoleteVectorIds = new HashSet<>(preExistingVectorIds);
+                obsoleteVectorIds.removeAll(embeddingQueue.getPersistedRecordIds(jobId));
+                if (!obsoleteVectorIds.isEmpty()) {
+                    try {
+                        int cleaned = repositoryManagementService.deleteVectorsByIds(obsoleteVectorIds);
+                        log.info("[STREAMING REINDEX CLEANUP] Cleaned up {} obsolete/stale dense vector(s) for re-indexed repository '{}'",
+                                cleaned, repoId);
+                    } catch (Exception cleanEx) {
+                        log.warn("Failed to clean up obsolete dense vectors for re-indexed repository '{}': {}",
+                                repoId, cleanEx.getMessage());
+                    }
+                }
+            }
+
             long duration = System.currentTimeMillis() - startTime;
             IndexingStatistics stats = statsAccumulator.build(duration);
             log.info("\n{}", stats);

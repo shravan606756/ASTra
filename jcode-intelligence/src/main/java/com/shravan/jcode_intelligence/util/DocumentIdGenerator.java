@@ -78,8 +78,7 @@ public final class DocumentIdGenerator {
         }
         if (!safeSig.isEmpty()) {
             seed.append(':').append(safeSig);
-        }
-        if (!lineRange.isEmpty()) {
+        } else if (!lineRange.isEmpty()) {
             seed.append(':').append(lineRange);
         }
         if (!frag.isEmpty()) {

@@ -304,6 +304,71 @@ public class HierarchicalChunkingTest {
         }
     }
 
+    @Test
+    void testTwoOversizedOverloadedMethodsInSameClassProduceDistinctChunkIds() {
+        ChunkingConfig tinyConfig = createConfig(50, 25);
+        ChunkBudgetEstimator tinyEstimator = new CharBasedBudgetEstimator(tinyConfig);
+        MetadataExtractor extractor = new MetadataExtractor();
+        ClassSummaryBuilder summaryBuilder = new ClassSummaryBuilder();
+        MethodFragmenter fragmenter = new MethodFragmenter(extractor, tinyEstimator);
+        ChunkGenerator gen = new ChunkGenerator(extractor, summaryBuilder, fragmenter, tinyEstimator);
+        AstVisitor visitor = new AstVisitor(gen);
+
+        String code = """
+                package com.example.service;
+
+                public class OverloadedService {
+                    public void process(String data) {
+                        String a = "step1";
+                        String b = "step2";
+                        String c = "step3";
+                        System.out.println(a + b + c + data);
+                    }
+
+                    public void process(int count) {
+                        String a = "step1";
+                        String b = "step2";
+                        String c = "step3";
+                        System.out.println(a + b + c + count);
+                    }
+                }
+                """;
+
+        List<CodeChunk> chunks = parseFromVisitor(code, visitor);
+
+        List<CodeChunk> fragments = chunks.stream()
+                .filter(c -> "METHOD_FRAGMENT".equals(c.getType()))
+                .toList();
+
+        assertFalse(fragments.isEmpty(), "Should produce fragments for overloaded methods");
+
+        List<CodeChunk> stringOverloadFrags = fragments.stream()
+                .filter(c -> c.getSignature() != null && c.getSignature().contains("String data"))
+                .toList();
+        List<CodeChunk> intOverloadFrags = fragments.stream()
+                .filter(c -> c.getSignature() != null && c.getSignature().contains("int count"))
+                .toList();
+
+        assertFalse(stringOverloadFrags.isEmpty(), "process(String) must produce fragments");
+        assertFalse(intOverloadFrags.isEmpty(), "process(int) must produce fragments");
+
+        // Verify that chunk IDs and document UUIDs differ between corresponding fragments of the overloads
+        for (int i = 0; i < Math.min(stringOverloadFrags.size(), intOverloadFrags.size()); i++) {
+            CodeChunk strFrag = stringOverloadFrags.get(i);
+            CodeChunk intFrag = intOverloadFrags.get(i);
+
+            assertNotEquals(strFrag.getId(), intFrag.getId(),
+                    "Fragment chunk IDs must differ between overloaded methods for fragment index " + i);
+            assertTrue(strFrag.getId().contains("String data"), "Chunk ID should incorporate String overload signature");
+            assertTrue(intFrag.getId().contains("int count"), "Chunk ID should incorporate int overload signature");
+
+            String strDocId = DocumentIdGenerator.generateDeterministicId(strFrag);
+            String intDocId = DocumentIdGenerator.generateDeterministicId(intFrag);
+            assertNotEquals(strDocId, intDocId,
+                    "Document UUIDs must differ between overloaded methods for fragment index " + i);
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════
     // Test 4: Package Summary Generation
     // ═══════════════════════════════════════════════════════════

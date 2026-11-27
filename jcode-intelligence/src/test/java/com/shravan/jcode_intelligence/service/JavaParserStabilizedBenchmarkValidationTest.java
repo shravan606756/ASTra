@@ -194,6 +194,9 @@ public class JavaParserStabilizedBenchmarkValidationTest {
 
             // Deterministic assertions for the default CI test suite
             assertEquals(50, defaultResponse.getResults().size(), "Benchmark must process all 50 queries deterministically");
+            assertEquals(50, defaultResponse.getSummary().getTotalQueries(), "Total queries in benchmark summary must be 50");
+            assertEquals(50, defaultResponse.getSummary().getSuccessfulQueries(), "Benchmark must report 50 successful queries");
+            assertEquals(0, defaultResponse.getSummary().getFailedQueries(), "Benchmark must report zero failed queries");
             assertTrue(defaultResponse.getSummary().getHitRateAt5() >= 0.50, "Issue #34 Hit Rate@5 must satisfy deterministic baseline (>= 50%)");
             assertTrue(defaultResponse.getSummary().getRecallAt5() >= 0.40, "Issue #34 Recall@5 must satisfy deterministic baseline (>= 40%)");
             assertTrue(defaultResponse.getSummary().getMrr() >= 0.50, "Issue #34 MRR must satisfy deterministic baseline (>= 0.50)");

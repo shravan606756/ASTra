@@ -329,6 +329,41 @@ class StreamingIndexingServiceSparseTest {
     }
 
     @Test
+    @DisplayName("Streaming re-indexing success safely cleans up obsolete vectors from previous runs while preserving re-persisted vectors")
+    void testStreamingReindexSuccessCleansUpObsoleteVectors() throws Exception {
+        String repoId = "reindex-success-repo";
+        Path file1 = tempDir.resolve("ReindexSuccessFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-reindex-success-1");
+        c1.setContent("public class ReindexSuccessTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+        // Repository had 2 vectors previously: old-obsolete-vec and retained-vec
+        when(repoMgmtService.getRepositoryVectorIds(eq(repoId))).thenReturn(Set.of("old-obsolete-vec", "retained-vec"));
+        // Current job persisted retained-vec and newly-persisted-vec
+        when(embeddingQueue.getPersistedRecordIds(anyString())).thenReturn(Set.of("retained-vec", "newly-persisted-vec"));
+
+        LuceneGenerationStore spyStore = spy(store);
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, spyStore
+        );
+
+        int count = service.index(repoId, List.of(file1));
+        assertTrue(count > 0);
+
+        // Verification: obsolete vector from previous run must be deleted
+        verify(repoMgmtService).deleteVectorsByIds(eq(Set.of("old-obsolete-vec")));
+        // Retained vector and newly persisted vector must NOT be deleted
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Repository must NOT be marked inconsistent on success
+        verify(repoMgmtService, never()).markRepositoryInconsistent(eq(repoId), anyString());
+    }
+
+    @Test
     @DisplayName("Settlement timeout defers/skips vector deletion while in-flight writers may still commit")
     void testStreamingFailureSkipsDeleteWhenSettlementTimesOut() throws Exception {
         String repoId = "settle-timeout-repo";

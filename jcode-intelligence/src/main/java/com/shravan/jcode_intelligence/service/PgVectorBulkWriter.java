@@ -192,51 +192,66 @@ public class PgVectorBulkWriter implements SmartLifecycle {
             return;
         }
 
+        // Filter out records whose job has failed to prevent committing rows after failure or cleanup
+        List<EmbeddedRecord> activeRecords = new ArrayList<>(batch.size());
+        for (EmbeddedRecord record : batch) {
+            if (record != null && queue.isJobFailed(record.jobId())) {
+                log.info("Discarding in-flight record {} for failed job '{}'", record.id(), record.jobId());
+                queue.recordFailed(record, new IllegalStateException("Job " + record.jobId() + " was failed or cancelled"));
+            } else if (record != null) {
+                activeRecords.add(record);
+            }
+        }
+        if (activeRecords.isEmpty()) {
+            return;
+        }
+        List<EmbeddedRecord> effectiveBatch = activeRecords.size() == batch.size() ? batch : activeRecords;
+
         try {
             long persistStart = System.currentTimeMillis();
-            executeBulkUpsert(batch);
+            executeBulkUpsert(effectiveBatch);
             long persistDuration = System.currentTimeMillis() - persistStart;
             log.info("[PGVECTOR BULK PERSISTENCE] Persisted bulk batch of {} vector record(s) to PostgreSQL {} in {} ms",
-                    batch.size(), targetTableName, persistDuration);
-            for (EmbeddedRecord record : batch) {
+                    effectiveBatch.size(), targetTableName, persistDuration);
+            for (EmbeddedRecord record : effectiveBatch) {
                 queue.recordPersisted(record);
             }
         } catch (Exception ex) {
-            log.warn("Bulk insert of {} records failed: {}", batch.size(), ex.getMessage());
+            log.warn("Bulk insert of {} records failed: {}", effectiveBatch.size(), ex.getMessage());
 
             // 1. If it's a transient connection error, retry directly with exponential backoff without splitting
             if (isTransientConnectionError(ex) && attempt < config.getMaxRetries()) {
                 long backoff = config.getRetryBackoffMs() * (1L << attempt);
                 log.info("Retrying connection error for batch of {} records (attempt {}/{}) after {} ms exponential backoff",
-                        batch.size(), attempt + 1, config.getMaxRetries(), backoff);
+                        effectiveBatch.size(), attempt + 1, config.getMaxRetries(), backoff);
                 try {
                     Thread.sleep(backoff);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    failOrFallback(batch, ex);
+                    failOrFallback(effectiveBatch, ex);
                     return;
                 }
-                persistWithAdaptiveSplitting(batch, attempt + 1, k);
+                persistWithAdaptiveSplitting(effectiveBatch, attempt + 1, k);
                 return;
             }
 
             // 2. Progressive k-way partitioning for size-related failures where sub-batches can be >= minBatchSize
-            int effectiveK = Math.min(k, batch.size() / config.getMinBatchSize());
+            int effectiveK = Math.min(k, effectiveBatch.size() / config.getMinBatchSize());
             if (isSizeRelatedError(ex) && effectiveK >= 2) {
-                int baseSize = batch.size() / effectiveK;
-                int remainder = batch.size() % effectiveK;
+                int baseSize = effectiveBatch.size() / effectiveK;
+                int remainder = effectiveBatch.size() % effectiveK;
                 List<List<EmbeddedRecord>> parts = new ArrayList<>(effectiveK);
                 List<Integer> partSizes = new ArrayList<>(effectiveK);
                 int offset = 0;
                 for (int i = 0; i < effectiveK; i++) {
                     int partSize = baseSize + (i < remainder ? 1 : 0);
-                    parts.add(batch.subList(offset, offset + partSize));
+                    parts.add(effectiveBatch.subList(offset, offset + partSize));
                     partSizes.add(partSize);
                     offset += partSize;
                 }
 
                 log.info("Splitting size-failed batch of {} records into {} sub-batches (k={}, effectiveK={}): {}",
-                        batch.size(), effectiveK, k, effectiveK, partSizes);
+                        effectiveBatch.size(), effectiveK, k, effectiveK, partSizes);
 
                 for (List<EmbeddedRecord> part : parts) {
                     persistWithAdaptiveSplitting(part, 0, k + 1);
@@ -248,20 +263,20 @@ public class PgVectorBulkWriter implements SmartLifecycle {
             if (attempt < config.getMaxRetries()) {
                 long backoff = config.getRetryBackoffMs() * (1L << attempt);
                 log.info("Retrying failed batch of {} records (attempt {}/{}) after {} ms exponential backoff",
-                        batch.size(), attempt + 1, config.getMaxRetries(), backoff);
+                        effectiveBatch.size(), attempt + 1, config.getMaxRetries(), backoff);
                 try {
                     Thread.sleep(backoff);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    failOrFallback(batch, ex);
+                    failOrFallback(effectiveBatch, ex);
                     return;
                 }
-                persistWithAdaptiveSplitting(batch, attempt + 1, k);
+                persistWithAdaptiveSplitting(effectiveBatch, attempt + 1, k);
             } else {
                 // 4. Exhausted retries; isolate or fail
                 log.error("Exhausted all retries for batch of {} records; isolating records",
-                        batch.size(), ex);
-                failOrFallback(batch, ex);
+                        effectiveBatch.size(), ex);
+                failOrFallback(effectiveBatch, ex);
             }
         }
     }

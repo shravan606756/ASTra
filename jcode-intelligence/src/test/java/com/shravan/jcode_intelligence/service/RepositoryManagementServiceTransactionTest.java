@@ -234,4 +234,52 @@ class RepositoryManagementServiceTransactionTest {
                 any(org.springframework.jdbc.core.ResultSetExtractor.class), eq("repo@v1"));
         verifyNoInteractions(store);
     }
+
+    @Test
+    @DisplayName("deleteVectorsByIds executes batch delete parameterized by UUID")
+    void testDeleteVectorsByIds() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        LuceneGenerationStore store = mock(LuceneGenerationStore.class);
+        RepositoryConcurrencyManager concurrencyManager = mock(RepositoryConcurrencyManager.class);
+
+        RepositoryManagementServiceImpl service =
+                new RepositoryManagementServiceImpl(jdbcTemplate, concurrencyManager, store);
+
+        when(jdbcTemplate.batchUpdate(anyString(), anyCollection(), anyInt(), any(org.springframework.jdbc.core.ParameterizedPreparedStatementSetter.class)))
+                .thenReturn(new int[][]{{1, 1}});
+
+        int deleted = service.deleteVectorsByIds(java.util.List.of("uuid-1", "uuid-2"));
+        assertEquals(2, deleted);
+
+        verify(jdbcTemplate).batchUpdate(eq("DELETE FROM vector_store WHERE id = ?::uuid"),
+                eq(java.util.List.of("uuid-1", "uuid-2")), eq(500), any());
+    }
+
+    @Test
+    @DisplayName("Default interface methods on RepositoryManagementService provide safe backward-compatible defaults")
+    void testDefaultInterfaceMethods() {
+        RepositoryManagementService anonymousService = new RepositoryManagementService() {
+            @Override
+            public java.util.List<String> listRepositories() {
+                return java.util.List.of();
+            }
+
+            @Override
+            public boolean removeRepository(String repositoryId) {
+                return false;
+            }
+
+            @Override
+            public void saveRepositoryStats(String repositoryId, com.shravan.jcode_intelligence.model.IndexingStatistics stats) {}
+
+            @Override
+            public com.shravan.jcode_intelligence.dto.response.RepositoryStatsDTO getRepositoryStats(String repositoryId) {
+                return null;
+            }
+        };
+
+        assertEquals(0, anonymousService.deleteRepositoryVectors("any-repo"));
+        assertEquals(0, anonymousService.deleteVectorsByIds(java.util.List.of("uuid-1")));
+        assertDoesNotThrow(() -> anonymousService.markRepositoryInconsistent("any-repo", "reason"));
+    }
 }

@@ -231,4 +231,64 @@ class StreamingIndexingServiceSparseTest {
         assertEquals(1, count);
         verify(embeddingQueue).completeJob(anyString());
     }
+
+    @Test
+    @DisplayName("Streaming failure deletes only job-scoped vector IDs and preserves pre-existing repository vectors")
+    void testStreamingFailureRollsBackOnlyJobStagedVectors() {
+        String repoId = "fail-scoped-repo";
+        Path file1 = tempDir.resolve("FailFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-fail-1");
+        c1.setContent("public class FailTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+        doThrow(new RuntimeException("Embedding model crashed")).when(helper).embedAndStage(anyString(), anyString(), anyList());
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, store
+        );
+
+        assertThrows(RuntimeException.class, () -> service.index(repoId, List.of(file1)));
+
+        // Job-scoped rollback was called with staged IDs
+        verify(repoMgmtService).deleteVectorsByIds(argThat((java.util.Collection<String> ids) -> ids != null && !ids.isEmpty()));
+        // CRITICAL: deleteRepositoryVectors must NEVER be called to preserve pre-existing vectors
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Repository marked inconsistent
+        verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), anyString());
+    }
+
+    @Test
+    @DisplayName("Sparse publish failure in streaming deletes only job-scoped vector IDs and preserves pre-existing vectors")
+    void testStreamingSparsePublishFailureRollsBackOnlyJobStagedVectors() throws Exception {
+        String repoId = "sparse-fail-scoped-repo";
+        Path file1 = tempDir.resolve("SparseFailFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-sparse-fail-1");
+        c1.setContent("public class SparseFailTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+
+        LuceneGenerationStore spyStore = spy(store);
+        doThrow(new RuntimeException("Lucene disk write failed")).when(spyStore).publishGeneration(any());
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, spyStore
+        );
+
+        assertThrows(RuntimeException.class, () -> service.index(repoId, List.of(file1)));
+
+        // Job-scoped rollback was called with staged IDs
+        verify(repoMgmtService).deleteVectorsByIds(argThat((java.util.Collection<String> ids) -> ids != null && !ids.isEmpty()));
+        // CRITICAL: deleteRepositoryVectors must NEVER be called
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Repository marked inconsistent
+        verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), contains("Sparse publish failed"));
+    }
 }

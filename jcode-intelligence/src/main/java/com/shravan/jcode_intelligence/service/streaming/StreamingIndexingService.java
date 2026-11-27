@@ -235,6 +235,7 @@ public class StreamingIndexingService {
         Set<CompletableFuture<Void>> inFlightFutures = ConcurrentHashMap.newKeySet();
         AtomicInteger totalSubmittedDocs = new AtomicInteger(0);
         AtomicInteger totalBatchesDispatched = new AtomicInteger(0);
+        Set<String> stagedDocumentIds = ConcurrentHashMap.newKeySet();
 
         PackageSummaryGenerator.Accumulator packageAccumulator = packageSummaryGenerator.createAccumulator();
         IndexingStatisticsAccumulator statsAccumulator = new IndexingStatisticsAccumulator();
@@ -270,7 +271,7 @@ public class StreamingIndexingService {
                                 passCounter);
                         flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                                 inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
-                                passCounter, sparseSession);
+                                passCounter, sparseSession, stagedDocumentIds);
                     }
                 }
             }
@@ -296,7 +297,7 @@ public class StreamingIndexingService {
                         chunkBuffer.size());
                 flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                         inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
-                        passCounter, sparseSession);
+                        passCounter, sparseSession, stagedDocumentIds);
             }
 
             // Reclaim all permits to ensure all in-flight worker tasks have finished execution
@@ -326,20 +327,7 @@ public class StreamingIndexingService {
                             repoId, e.getMessage(), e);
                     luceneGenerationStore.discardGeneration(sparseSession);
                     sparseSession = null;
-                    if (repositoryManagementService != null) {
-                        try {
-                            repositoryManagementService.deleteRepositoryVectors(repoId);
-                        } catch (Exception delEx) {
-                            log.error("Failed to clean up dense vectors for '{}' on sparse publish failure: {}", repoId, delEx.getMessage());
-                        }
-                        try {
-                            repositoryManagementService.markRepositoryInconsistent(repoId,
-                                    "Sparse publish failed after streaming persistence: " + e.getMessage());
-                        } catch (Exception markEx) {
-                            log.error("Failed to mark repository '{}' inconsistent: {}", repoId, markEx.getMessage());
-                        }
-                    }
-                    throw new RuntimeException("Failed to publish sparse generation for repository " + repoId, e);
+                    throw new RuntimeException("Sparse publish failed after streaming persistence: " + e.getMessage(), e);
                 }
             }
 
@@ -358,6 +346,26 @@ public class StreamingIndexingService {
             return totalSubmittedDocs.get();
         } catch (Throwable t) {
             log.error("[INDEX INCONSISTENCY] Large repository streaming failed for '{}'; stores may diverge: {}", repoId, t.getMessage());
+
+            // 1. Stop new submissions and cancel in-flight producers
+            firstFailureRef.compareAndSet(null, t);
+            for (CompletableFuture<Void> f : inFlightFutures) {
+                f.cancel(true);
+            }
+            shutdownAndAwaitTermination(executor);
+
+            // 2. Mark job as failed in queue so writers discard drained batches
+            embeddingQueue.failJob(jobId, firstFailureRef.get());
+
+            // 3. Await in-flight persistence settlement before rolling back
+            try {
+                embeddingQueue.awaitJobSettled(jobId, Duration.ofSeconds(30));
+            } catch (Exception settleEx) {
+                log.warn("Timed out or interrupted waiting for in-flight persistence to settle for job '{}': {}",
+                        jobId, settleEx.getMessage());
+            }
+
+            // 4. Discard uncommitted sparse session
             if (sparseSession != null && luceneGenerationStore != null) {
                 try {
                     luceneGenerationStore.discardGeneration(sparseSession);
@@ -366,11 +374,17 @@ public class StreamingIndexingService {
                 }
                 sparseSession = null;
             }
+
+            // 5. Job-specific rollback: delete only the dense vectors staged during this streaming job
             if (repositoryManagementService != null) {
-                try {
-                    repositoryManagementService.deleteRepositoryVectors(repoId);
-                } catch (Exception delEx) {
-                    log.error("Failed to clean up dense vectors for '{}' on streaming failure: {}", repoId, delEx.getMessage());
+                if (!stagedDocumentIds.isEmpty()) {
+                    try {
+                        int deleted = repositoryManagementService.deleteVectorsByIds(stagedDocumentIds);
+                        log.info("Rolled back {} dense vector(s) for failed streaming job '{}' in repository '{}'",
+                                deleted, jobId, repoId);
+                    } catch (Exception delEx) {
+                        log.error("Failed to clean up job dense vectors for '{}' on streaming failure: {}", repoId, delEx.getMessage());
+                    }
                 }
                 try {
                     repositoryManagementService.markRepositoryInconsistent(repoId, "Streaming indexing failed: " + t.getMessage());
@@ -378,16 +392,8 @@ public class StreamingIndexingService {
                     log.error("Failed to mark repository '{}' inconsistent: {}", repoId, markEx.getMessage());
                 }
             }
-            firstFailureRef.compareAndSet(null, t);
-            embeddingQueue.failJob(jobId, firstFailureRef.get());
 
-            for (CompletableFuture<Void> f : inFlightFutures) {
-                f.cancel(true);
-            }
-
-            // Wait for producers before cleanup
-            shutdownAndAwaitTermination(executor);
-
+            // 6. Clean up queue tracking
             embeddingQueue.cleanupJob(jobId);
 
             log.error(
@@ -441,7 +447,8 @@ public class StreamingIndexingService {
             AtomicInteger totalSubmittedDocs,
             AtomicInteger totalBatchesDispatched,
             int passNumber,
-            LuceneGenerationStore.StagingSession sparseSession
+            LuceneGenerationStore.StagingSession sparseSession,
+            Set<String> stagedDocumentIds
     ) {
         if (slice == null || slice.isEmpty()) {
             return;
@@ -455,6 +462,14 @@ public class StreamingIndexingService {
         // Convert and validate each flush
         List<Document> docs = converter.convert(slice);
         budgetValidator.validateAndAudit(docs, slice);
+
+        if (stagedDocumentIds != null) {
+            for (Document doc : docs) {
+                if (doc != null && doc.getId() != null && !doc.getId().isBlank()) {
+                    stagedDocumentIds.add(doc.getId());
+                }
+            }
+        }
 
         // Stage validated converted documents into sparse index before dispatch
         if (sparseSession != null) {

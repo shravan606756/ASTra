@@ -502,8 +502,72 @@ public class EmbeddingQueue {
         }
         lock.lock();
         try {
+            java.util.Iterator<EmbeddedRecord> it = buffer.iterator();
+            while (it.hasNext()) {
+                EmbeddedRecord next = it.next();
+                if (jobId != null && jobId.equals(next.jobId())) {
+                    it.remove();
+                    acknowledgeCancelled(next);
+                }
+            }
+            if (buffer.isEmpty()) {
+                firstRecordArrivalNanos = 0;
+            }
             recordsAvailable.signalAll();
             recordsDrained.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Checks whether an indexing job is marked as failed or cancelled.
+     *
+     * @param jobId indexing job identifier
+     * @return true if the job is marked failed
+     */
+    public boolean isJobFailed(String jobId) {
+        if (jobId == null) {
+            return false;
+        }
+        if (failedJobs.contains(jobId) || failedJobCauses.containsKey(jobId)) {
+            return true;
+        }
+        JobTracker tracker = activeJobs.get(jobId);
+        return tracker != null && tracker.isFailed();
+    }
+
+    /**
+     * Awaits all in-flight and pending persistence operations for a job to settle (either persisted or failed).
+     *
+     * <p>Safe to invoke on both active and failed jobs. If the job is not tracked or has zero in-flight records,
+     * returns immediately.
+     *
+     * @param jobId   indexing job identifier
+     * @param timeout maximum duration to wait
+     * @throws InterruptedException if interrupted while waiting
+     * @throws TimeoutException     if in-flight records do not settle within the timeout
+     */
+    public void awaitJobSettled(String jobId, Duration timeout) throws InterruptedException, TimeoutException {
+        if (jobId == null) {
+            return;
+        }
+        JobTracker tracker = activeJobs.get(jobId);
+        if (tracker == null) {
+            return;
+        }
+        long deadlineNanos = System.nanoTime() + timeout.toNanos();
+        lock.lock();
+        try {
+            while (tracker.persistedCount.get() + tracker.failedCount.get() < tracker.submittedCount.get()) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    throw new TimeoutException(String.format(
+                            "Job %s in-flight persistence did not settle within %s (submitted: %d, persisted: %d, failed: %d)",
+                            jobId, timeout, tracker.submittedCount.get(), tracker.persistedCount.get(), tracker.failedCount.get()));
+                }
+                recordsDrained.awaitNanos(Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(100)));
+            }
         } finally {
             lock.unlock();
         }
@@ -830,6 +894,12 @@ public class EmbeddingQueue {
         if (tracker != null) {
             tracker.persistedCount.incrementAndGet();
             checkJobTerminalState(tracker);
+            lock.lock();
+            try {
+                recordsDrained.signalAll();
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
@@ -964,9 +1034,11 @@ public class EmbeddingQueue {
                                 String.format("Job %s finished with %d failed record(s) out of %d total", tracker.jobId, failed, total)));
                     }
                 }
-                if (tracker.isFailed() && tracker.completionFuture.isDone()) {
-                    activeJobs.remove(tracker.getJobId());
-                    failedJobs.remove(tracker.getJobId());
+                lock.lock();
+                try {
+                    recordsDrained.signalAll();
+                } finally {
+                    lock.unlock();
                 }
             }
         }

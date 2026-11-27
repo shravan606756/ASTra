@@ -900,6 +900,71 @@ class EmbeddingQueueTest {
         assertEquals(EmbeddingQueue.FlushReason.MAX_WAIT_EXCEEDED, dynamicQueue.getLastFlushReason(),
                 "Flush reason must be MAX_WAIT_EXCEEDED");
     }
+
+    @Test
+    @DisplayName("failJob purges pending records for that job immediately and marks isJobFailed true")
+    void testFailJobPurgesBufferAndSetsIsJobFailed() throws Exception {
+        String jobId = "job-purge-test";
+        queue.registerJob(jobId, "repo-purge");
+
+        CompletableFuture<Void> ack1 = new CompletableFuture<>();
+        CompletableFuture<Void> ack2 = new CompletableFuture<>();
+
+        String id1 = EmbeddedRecord.generateDeterministicId("repo-purge", "c1", "a");
+        String id2 = EmbeddedRecord.generateDeterministicId("repo-purge", "c2", "b");
+
+        queue.submit(new EmbeddedRecord(id1, jobId, "repo-purge", "a", Map.of(), new float[]{0.1f}, ack1));
+        queue.submit(new EmbeddedRecord(id2, jobId, "repo-purge", "b", Map.of(), new float[]{0.1f}, ack2));
+
+        assertEquals(2, queue.size(), "Queue must have 2 records in buffer before failure");
+        assertFalse(queue.isJobFailed(jobId));
+
+        queue.failJob(jobId, new RuntimeException("Stream broke"));
+
+        assertTrue(queue.isJobFailed(jobId), "Job must be marked failed");
+        assertEquals(0, queue.size(), "Buffer must be purged of failed job records immediately");
+        assertTrue(ack1.isCompletedExceptionally());
+        assertTrue(ack2.isCompletedExceptionally());
+    }
+
+    @Test
+    @DisplayName("awaitJobSettled unblocks as soon as in-flight persistence completes")
+    void testAwaitJobSettledUnblocksOnPersistence() throws Exception {
+        String jobId = "job-settle-test";
+        queue.registerJob(jobId, "repo-settle");
+
+        EmbeddedRecord r1 = new EmbeddedRecord(
+                EmbeddedRecord.generateDeterministicId("repo-settle", "c1", "x"),
+                jobId, "repo-settle", "x", Map.of(), new float[]{0.1f}, new CompletableFuture<>()
+        );
+        EmbeddedRecord r2 = new EmbeddedRecord(
+                EmbeddedRecord.generateDeterministicId("repo-settle", "c2", "y"),
+                jobId, "repo-settle", "y", Map.of(), new float[]{0.1f}, new CompletableFuture<>()
+        );
+
+        queue.submit(r1);
+        queue.submit(r2);
+
+        // Simulate a worker draining both records
+        List<EmbeddedRecord> drained = queue.drainBatch(10, 100);
+        assertEquals(2, drained.size());
+
+        // Fail job while drained records are in flight
+        queue.failJob(jobId, new RuntimeException("Failure"));
+
+        ExecutorService waiter = Executors.newSingleThreadExecutor();
+        Future<?> waitFuture = waiter.submit(() -> {
+            assertDoesNotThrow(() -> queue.awaitJobSettled(jobId, Duration.ofSeconds(3)));
+        });
+
+        // Simulate writer persisting r1 and failing r2
+        Thread.sleep(50);
+        queue.recordPersisted(r1);
+        queue.recordFailed(r2, new RuntimeException("Record write failed"));
+
+        waitFuture.get(2, TimeUnit.SECONDS);
+        waiter.shutdownNow();
+    }
 }
 
 

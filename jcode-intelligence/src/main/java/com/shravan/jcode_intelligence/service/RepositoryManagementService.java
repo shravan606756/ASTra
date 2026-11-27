@@ -1,5 +1,6 @@
 package com.shravan.jcode_intelligence.service;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -32,11 +33,24 @@ public interface RepositoryManagementService {
     /**
      * Marks a repository as inconsistent in repository_statistics when stores diverge or indexing fails.
      */
-    void markRepositoryInconsistent(String repositoryId, String reason);
+    default void markRepositoryInconsistent(String repositoryId, String reason) {
+        // Default no-op for backward compatibility with existing test implementations
+    }
 
     /**
      * Deletes existing vector store records for the specified repository ID.
      * @return count of deleted vector rows
      */
-    int deleteRepositoryVectors(String repositoryId);
+    default int deleteRepositoryVectors(String repositoryId) {
+        return 0;
+    }
+
+    /**
+     * Deletes specific vector store records by their IDs.
+     * @param vectorIds collection of vector record UUIDs to delete
+     * @return count of deleted vector rows
+     */
+    default int deleteVectorsByIds(Collection<String> vectorIds) {
+        return 0;
+    }
 }

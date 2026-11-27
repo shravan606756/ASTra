@@ -248,4 +248,30 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
         String sql = "DELETE FROM vector_store WHERE metadata->>'repositoryId' = ?";
         return jdbcTemplate.update(sql, safeRepoId);
     }
+
+    @Override
+    public int deleteVectorsByIds(java.util.Collection<String> vectorIds) {
+        if (vectorIds == null || vectorIds.isEmpty()) {
+            return 0;
+        }
+        List<String> validIds = vectorIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (validIds.isEmpty()) {
+            return 0;
+        }
+        String sql = "DELETE FROM vector_store WHERE id = ?::uuid";
+        int[][] batchResults = jdbcTemplate.batchUpdate(sql, validIds, 500, (ps, id) -> ps.setString(1, id));
+        int totalDeleted = 0;
+        for (int[] batch : batchResults) {
+            for (int count : batch) {
+                if (count > 0) {
+                    totalDeleted += count;
+                }
+            }
+        }
+        return totalDeleted;
+    }
 }

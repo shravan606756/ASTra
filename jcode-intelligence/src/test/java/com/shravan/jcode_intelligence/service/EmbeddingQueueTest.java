@@ -965,6 +965,60 @@ class EmbeddingQueueTest {
         waitFuture.get(2, TimeUnit.SECONDS);
         waiter.shutdownNow();
     }
+
+    @Test
+    @DisplayName("Persistence timeout in awaitJobCompletion preserves tracker and failed write fence for awaitJobSettled")
+    void testTimeoutPreservesTrackerAndFenceUntilSettled() throws Exception {
+        String jobId = "job-timeout-fence";
+        queue.registerJob(jobId, "repo-timeout");
+
+        EmbeddedRecord r1 = new EmbeddedRecord(
+                EmbeddedRecord.generateDeterministicId("repo-timeout", "c1", "content-1"),
+                jobId, "repo-timeout", "content-1", Map.of(), new float[]{0.1f}, new CompletableFuture<>()
+        );
+        EmbeddedRecord r2 = new EmbeddedRecord(
+                EmbeddedRecord.generateDeterministicId("repo-timeout", "c2", "content-2"),
+                jobId, "repo-timeout", "content-2", Map.of(), new float[]{0.1f}, new CompletableFuture<>()
+        );
+
+        queue.submit(r1);
+        queue.submit(r2);
+
+        // Worker drains records (they are now in flight)
+        List<EmbeddedRecord> drained = queue.drainBatch(10, 100);
+        assertEquals(2, drained.size());
+
+        // Await completion with tiny timeout - must time out because drained records are not yet acknowledged
+        assertThrows(TimeoutException.class, () -> queue.awaitJobCompletion(jobId, Duration.ofMillis(50)));
+
+        // Job must be fenced as failed so any in-flight writers discard or abort
+        assertTrue(queue.isJobFailed(jobId), "Write fence must remain active after persistence timeout");
+
+        // The job tracker must NOT be retired yet - awaitJobSettled must be able to wait on in-flight records
+        ExecutorService waiter = Executors.newSingleThreadExecutor();
+        Future<?> waitFuture = waiter.submit(() -> {
+            assertDoesNotThrow(() -> queue.awaitJobSettled(jobId, Duration.ofSeconds(3)));
+        });
+
+        // Still running because r1 and r2 haven't settled
+        Thread.sleep(50);
+        assertFalse(waitFuture.isDone(), "Settlement wait must block until in-flight records settle");
+
+        // Writer completes r1 and fails r2
+        queue.recordPersisted(r1);
+        queue.recordFailed(r2, new RuntimeException("DB error"));
+
+        waitFuture.get(2, TimeUnit.SECONDS);
+        waiter.shutdownNow();
+
+        // Check that only r1 was tracked as persisted
+        Set<String> persisted = queue.getPersistedRecordIds(jobId);
+        assertEquals(Set.of(r1.id()), persisted, "Only successfully persisted records must be returned");
+
+        // Now caller cleans up the job
+        queue.cleanupJob(jobId);
+        assertFalse(queue.isJobFailed(jobId), "Job should be cleaned up after explicit cleanupJob");
+    }
 }
 
 

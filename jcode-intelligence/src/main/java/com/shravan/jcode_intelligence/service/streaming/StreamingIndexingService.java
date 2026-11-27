@@ -26,6 +26,8 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -235,7 +237,15 @@ public class StreamingIndexingService {
         Set<CompletableFuture<Void>> inFlightFutures = ConcurrentHashMap.newKeySet();
         AtomicInteger totalSubmittedDocs = new AtomicInteger(0);
         AtomicInteger totalBatchesDispatched = new AtomicInteger(0);
-        Set<String> stagedDocumentIds = ConcurrentHashMap.newKeySet();
+
+        Set<String> preExistingVectorIds = (repositoryManagementService != null)
+                ? repositoryManagementService.getRepositoryVectorIds(repoId)
+                : Collections.emptySet();
+        boolean repositoryPreviouslyIndexed = !preExistingVectorIds.isEmpty();
+        if (repositoryPreviouslyIndexed) {
+            log.info("Repository '{}' was previously indexed (found {} existing vector(s)); preserving existing vectors on failure",
+                    repoId, preExistingVectorIds.size());
+        }
 
         PackageSummaryGenerator.Accumulator packageAccumulator = packageSummaryGenerator.createAccumulator();
         IndexingStatisticsAccumulator statsAccumulator = new IndexingStatisticsAccumulator();
@@ -271,7 +281,7 @@ public class StreamingIndexingService {
                                 passCounter);
                         flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                                 inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
-                                passCounter, sparseSession, stagedDocumentIds);
+                                passCounter, sparseSession);
                     }
                 }
             }
@@ -297,7 +307,7 @@ public class StreamingIndexingService {
                         chunkBuffer.size());
                 flushChunkSlice(slice, repoId, jobId, maxSubBatchSize, semaphore, executor,
                         inFlightFutures, firstFailureRef, helper, totalSubmittedDocs, totalBatchesDispatched,
-                        passCounter, sparseSession, stagedDocumentIds);
+                        passCounter, sparseSession);
             }
 
             // Reclaim all permits to ensure all in-flight worker tasks have finished execution
@@ -358,8 +368,10 @@ public class StreamingIndexingService {
             embeddingQueue.failJob(jobId, firstFailureRef.get());
 
             // 3. Await in-flight persistence settlement before rolling back
+            boolean settled = false;
             try {
                 embeddingQueue.awaitJobSettled(jobId, Duration.ofSeconds(30));
+                settled = true;
             } catch (Exception settleEx) {
                 log.warn("Timed out or interrupted waiting for in-flight persistence to settle for job '{}': {}",
                         jobId, settleEx.getMessage());
@@ -375,15 +387,39 @@ public class StreamingIndexingService {
                 sparseSession = null;
             }
 
-            // 5. Job-specific rollback: delete only the dense vectors staged during this streaming job
+            // 5. Job-specific rollback: delete only newly inserted dense vectors actually persisted by this job
             if (repositoryManagementService != null) {
-                if (!stagedDocumentIds.isEmpty()) {
-                    try {
-                        int deleted = repositoryManagementService.deleteVectorsByIds(stagedDocumentIds);
-                        log.info("Rolled back {} dense vector(s) for failed streaming job '{}' in repository '{}'",
-                                deleted, jobId, repoId);
-                    } catch (Exception delEx) {
-                        log.error("Failed to clean up job dense vectors for '{}' on streaming failure: {}", repoId, delEx.getMessage());
+                if (!settled) {
+                    log.error("Skipping dense vector rollback for job '{}' in repository '{}' because in-flight persistence did not settle; writes must be fenced before deletion",
+                            jobId, repoId);
+                } else if (!repositoryPreviouslyIndexed) {
+                    // Brand-new repository: rollback only records that were actually persisted by this failed job
+                    Set<String> persistedIds = embeddingQueue.getPersistedRecordIds(jobId);
+                    if (!persistedIds.isEmpty()) {
+                        try {
+                            int deleted = repositoryManagementService.deleteVectorsByIds(persistedIds);
+                            log.info("Rolled back {} dense vector(s) for failed streaming job '{}' in repository '{}'",
+                                    deleted, jobId, repoId);
+                        } catch (Exception delEx) {
+                            log.error("Failed to clean up job dense vectors for '{}' on streaming failure: {}", repoId, delEx.getMessage());
+                        }
+                    }
+                } else {
+                    // Previously indexed repository: preserve all pre-existing vectors!
+                    // Delete only IDs that were persisted by this job AND did not exist before this job.
+                    Set<String> newlyPersistedIds = new HashSet<>(embeddingQueue.getPersistedRecordIds(jobId));
+                    newlyPersistedIds.removeAll(preExistingVectorIds);
+                    if (!newlyPersistedIds.isEmpty()) {
+                        try {
+                            int deleted = repositoryManagementService.deleteVectorsByIds(newlyPersistedIds);
+                            log.info("Rolled back {} newly-added dense vector(s) for failed streaming job '{}' in previously-indexed repository '{}'",
+                                    deleted, jobId, repoId);
+                        } catch (Exception delEx) {
+                            log.error("Failed to clean up newly added vectors for '{}': {}", repoId, delEx.getMessage());
+                        }
+                    } else {
+                        log.info("Preserving all pre-existing dense vectors for previously-indexed repository '{}' on streaming job failure",
+                                repoId);
                     }
                 }
                 try {
@@ -447,8 +483,7 @@ public class StreamingIndexingService {
             AtomicInteger totalSubmittedDocs,
             AtomicInteger totalBatchesDispatched,
             int passNumber,
-            LuceneGenerationStore.StagingSession sparseSession,
-            Set<String> stagedDocumentIds
+            LuceneGenerationStore.StagingSession sparseSession
     ) {
         if (slice == null || slice.isEmpty()) {
             return;
@@ -462,14 +497,6 @@ public class StreamingIndexingService {
         // Convert and validate each flush
         List<Document> docs = converter.convert(slice);
         budgetValidator.validateAndAudit(docs, slice);
-
-        if (stagedDocumentIds != null) {
-            for (Document doc : docs) {
-                if (doc != null && doc.getId() != null && !doc.getId().isBlank()) {
-                    stagedDocumentIds.add(doc.getId());
-                }
-            }
-        }
 
         // Stage validated converted documents into sparse index before dispatch
         if (sparseSession != null) {

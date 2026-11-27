@@ -65,5 +65,22 @@ public record EmbeddedRecord(
     public static String generateDeterministicId(String repositoryId, String chunkId, String content) {
         return DocumentIdGenerator.generateDeterministicId(repositoryId, chunkId, content);
     }
+
+    /**
+     * Generates a unique, deterministic RFC-4122 type 3 UUID from chunk coordinates, disambiguating
+     * overloaded methods, same-named classes in different files, and method fragments.
+     */
+    public static String generateDeterministicId(
+            String repositoryId,
+            String filePath,
+            String chunkId,
+            String signature,
+            int startLine,
+            int endLine,
+            Integer fragmentIndex,
+            String content) {
+        return DocumentIdGenerator.generateDeterministicId(
+                repositoryId, filePath, chunkId, signature, startLine, endLine, fragmentIndex, content);
+    }
 }
 

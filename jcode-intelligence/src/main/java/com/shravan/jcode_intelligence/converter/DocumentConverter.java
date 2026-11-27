@@ -89,9 +89,7 @@ public class DocumentConverter {
         }
 
         String content = chunk.getContent() != null ? chunk.getContent() : "";
-        String repoId = (chunk.getRepositoryId() == null || chunk.getRepositoryId().isBlank())
-                ? "default" : chunk.getRepositoryId();
-        String docId = DocumentIdGenerator.generateDeterministicId(repoId, chunk.getId(), content);
+        String docId = DocumentIdGenerator.generateDeterministicId(chunk);
         return new Document(docId, content, metadata);
     }
 

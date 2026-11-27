@@ -29,6 +29,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -244,6 +246,7 @@ class StreamingIndexingServiceSparseTest {
 
         when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
         doThrow(new RuntimeException("Embedding model crashed")).when(helper).embedAndStage(anyString(), anyString(), anyList());
+        when(embeddingQueue.getPersistedRecordIds(anyString())).thenReturn(Set.of("persisted-id-1"));
 
         StreamingIndexingService service = new StreamingIndexingService(
                 parser, converter, budgetValidator, summaryGenerator,
@@ -253,8 +256,8 @@ class StreamingIndexingServiceSparseTest {
 
         assertThrows(RuntimeException.class, () -> service.index(repoId, List.of(file1)));
 
-        // Job-scoped rollback was called with staged IDs
-        verify(repoMgmtService).deleteVectorsByIds(argThat((java.util.Collection<String> ids) -> ids != null && !ids.isEmpty()));
+        // Job-scoped rollback was called with persisted IDs
+        verify(repoMgmtService).deleteVectorsByIds(eq(Set.of("persisted-id-1")));
         // CRITICAL: deleteRepositoryVectors must NEVER be called to preserve pre-existing vectors
         verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
         // Repository marked inconsistent
@@ -272,6 +275,7 @@ class StreamingIndexingServiceSparseTest {
         c1.setContent("public class SparseFailTest {}");
 
         when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+        when(embeddingQueue.getPersistedRecordIds(anyString())).thenReturn(Set.of("persisted-id-2"));
 
         LuceneGenerationStore spyStore = spy(store);
         doThrow(new RuntimeException("Lucene disk write failed")).when(spyStore).publishGeneration(any());
@@ -284,11 +288,73 @@ class StreamingIndexingServiceSparseTest {
 
         assertThrows(RuntimeException.class, () -> service.index(repoId, List.of(file1)));
 
-        // Job-scoped rollback was called with staged IDs
-        verify(repoMgmtService).deleteVectorsByIds(argThat((java.util.Collection<String> ids) -> ids != null && !ids.isEmpty()));
+        // Job-scoped rollback was called with persisted IDs
+        verify(repoMgmtService).deleteVectorsByIds(eq(Set.of("persisted-id-2")));
         // CRITICAL: deleteRepositoryVectors must NEVER be called
         verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
         // Repository marked inconsistent
         verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), contains("Sparse publish failed"));
+    }
+
+    @Test
+    @DisplayName("Streaming re-indexing failure strictly preserves pre-existing dense vectors from previous successful run")
+    void testStreamingFailurePreservesPreExistingVectorsOnReindex() {
+        String repoId = "reindex-repo";
+        Path file1 = tempDir.resolve("ReindexFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-reindex-1");
+        c1.setContent("public class ReindexTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+        // Repository already had pre-existing vectors from previous run
+        when(repoMgmtService.getRepositoryVectorIds(eq(repoId))).thenReturn(Set.of("old-vec-1", "old-vec-2"));
+        // Current job re-persisted old-vec-1
+        when(embeddingQueue.getPersistedRecordIds(anyString())).thenReturn(Set.of("old-vec-1"));
+        doThrow(new RuntimeException("Embedding worker failed")).when(helper).embedAndStage(anyString(), anyString(), anyList());
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, store
+        );
+
+        assertThrows(RuntimeException.class, () -> service.index(repoId, List.of(file1)));
+
+        // Pre-existing vectors must NOT be deleted
+        verify(repoMgmtService, never()).deleteVectorsByIds(any());
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Repository marked inconsistent
+        verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), anyString());
+    }
+
+    @Test
+    @DisplayName("Settlement timeout defers/skips vector deletion while in-flight writers may still commit")
+    void testStreamingFailureSkipsDeleteWhenSettlementTimesOut() throws Exception {
+        String repoId = "settle-timeout-repo";
+        Path file1 = tempDir.resolve("TimeoutFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-timeout-1");
+        c1.setContent("public class TimeoutTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+        doThrow(new RuntimeException("Worker failed")).when(helper).embedAndStage(anyString(), anyString(), anyList());
+        // Settlement wait times out
+        doThrow(new TimeoutException("In-flight records did not settle")).when(embeddingQueue).awaitJobSettled(anyString(), any());
+        when(embeddingQueue.getPersistedRecordIds(anyString())).thenReturn(Set.of("p-1"));
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, store
+        );
+
+        assertThrows(RuntimeException.class, () -> service.index(repoId, List.of(file1)));
+
+        // Because settlement timed out, vector deletion must be skipped to avoid race with in-flight writers
+        verify(repoMgmtService, never()).deleteVectorsByIds(any());
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), anyString());
     }
 }

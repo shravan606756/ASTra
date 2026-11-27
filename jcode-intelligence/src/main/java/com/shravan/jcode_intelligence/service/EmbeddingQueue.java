@@ -554,6 +554,9 @@ public class EmbeddingQueue {
         }
         JobTracker tracker = activeJobs.get(jobId);
         if (tracker == null) {
+            if (failedJobs.contains(jobId) || failedJobCauses.containsKey(jobId)) {
+                throw new IllegalStateException("Job " + jobId + " tracker missing while marked failed; cannot verify persistence settlement");
+            }
             return;
         }
         long deadlineNanos = System.nanoTime() + timeout.toNanos();
@@ -571,6 +574,23 @@ public class EmbeddingQueue {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Retrieves the set of document/record IDs that were successfully persisted to the database for this job.
+     *
+     * @param jobId indexing job identifier
+     * @return set of persisted record IDs (empty set if none or untracked)
+     */
+    public Set<String> getPersistedRecordIds(String jobId) {
+        if (jobId == null) {
+            return Collections.emptySet();
+        }
+        JobTracker tracker = activeJobs.get(jobId);
+        if (tracker != null) {
+            return new java.util.HashSet<>(tracker.persistedRecordIds);
+        }
+        return Collections.emptySet();
     }
 
     /**
@@ -608,7 +628,7 @@ public class EmbeddingQueue {
             }
             throw new RuntimeException(cause);
         } finally {
-            if (tracker.completionFuture.isDone()) {
+            if (tracker.completionFuture.isDone() && !tracker.isFailed()) {
                 activeJobs.remove(jobId);
                 failedJobs.remove(jobId);
                 failedJobCauses.remove(jobId);
@@ -892,6 +912,9 @@ public class EmbeddingQueue {
 
         JobTracker tracker = activeJobs.get(record.jobId());
         if (tracker != null) {
+            if (record.id() != null && !record.id().isBlank()) {
+                tracker.persistedRecordIds.add(record.id());
+            }
             tracker.persistedCount.incrementAndGet();
             checkJobTerminalState(tracker);
             lock.lock();
@@ -1067,6 +1090,7 @@ public class EmbeddingQueue {
         private final AtomicBoolean failed = new AtomicBoolean(false);
         private final CompletableFuture<Void> completionFuture = new CompletableFuture<>();
         private final List<String> recordErrors = Collections.synchronizedList(new ArrayList<>());
+        private final Set<String> persistedRecordIds = ConcurrentHashMap.newKeySet();
 
         public JobTracker(String jobId, String repositoryId) {
             this(jobId, repositoryId, null);

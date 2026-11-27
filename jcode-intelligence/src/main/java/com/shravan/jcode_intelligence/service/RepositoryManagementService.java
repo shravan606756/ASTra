@@ -1,8 +1,10 @@
 package com.shravan.jcode_intelligence.service;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Manages indexed repositories inside the vector store.
@@ -52,5 +54,15 @@ public interface RepositoryManagementService {
      */
     default int deleteVectorsByIds(Collection<String> vectorIds) {
         return 0;
+    }
+
+    /**
+     * Retrieves all existing vector record IDs currently associated with the specified repository.
+     *
+     * @param repositoryId repository identifier
+     * @return set of vector record ID strings (empty set if none found)
+     */
+    default Set<String> getRepositoryVectorIds(String repositoryId) {
+        return Collections.emptySet();
     }
 }

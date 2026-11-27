@@ -12,7 +12,9 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -273,5 +275,21 @@ public class RepositoryManagementServiceImpl implements RepositoryManagementServ
             }
         }
         return totalDeleted;
+    }
+
+    @Override
+    public Set<String> getRepositoryVectorIds(String repositoryId) {
+        if (repositoryId == null || repositoryId.isBlank()) {
+            return Collections.emptySet();
+        }
+        String safeRepoId = repositoryId.trim();
+        String sql = "SELECT id::text FROM vector_store WHERE metadata->>'repositoryId' = ?";
+        try {
+            List<String> ids = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getString(1), safeRepoId);
+            return new HashSet<>(ids);
+        } catch (Exception e) {
+            log.warn("Failed to retrieve existing vector IDs for repository '{}': {}", safeRepoId, e.getMessage());
+            return Collections.emptySet();
+        }
     }
 }

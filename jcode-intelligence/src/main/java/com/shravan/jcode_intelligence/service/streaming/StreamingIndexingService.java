@@ -330,7 +330,13 @@ public class StreamingIndexingService {
 
             // Complete job and await persistence
             embeddingQueue.completeJob(jobId);
-            embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
+            Set<String> persistedRecordIds = embeddingQueue.awaitJobCompletion(jobId, Duration.ofMinutes(15));
+            if (persistedRecordIds == null || persistedRecordIds.isEmpty()) {
+                persistedRecordIds = embeddingQueue.getPersistedRecordIds(jobId);
+            }
+            if (persistedRecordIds == null) {
+                persistedRecordIds = Collections.emptySet();
+            }
 
             // Publish sparse generation after the persistence wait
             if (sparseSession != null && luceneGenerationStore != null) {
@@ -351,7 +357,7 @@ public class StreamingIndexingService {
             // Post-success cleanup for re-indexing: remove obsolete dense rows from previous runs
             if (repositoryPreviouslyIndexed && repositoryManagementService != null) {
                 Set<String> obsoleteVectorIds = new HashSet<>(preExistingVectorIds);
-                obsoleteVectorIds.removeAll(embeddingQueue.getPersistedRecordIds(jobId));
+                obsoleteVectorIds.removeAll(persistedRecordIds);
                 if (!obsoleteVectorIds.isEmpty()) {
                     try {
                         int cleaned = repositoryManagementService.deleteVectorsByIds(obsoleteVectorIds);
@@ -363,6 +369,9 @@ public class StreamingIndexingService {
                     }
                 }
             }
+
+            // Clean up queue tracking state after post-success processing
+            embeddingQueue.cleanupJob(jobId);
 
             long duration = System.currentTimeMillis() - startTime;
             IndexingStatistics stats = statsAccumulator.build(duration);

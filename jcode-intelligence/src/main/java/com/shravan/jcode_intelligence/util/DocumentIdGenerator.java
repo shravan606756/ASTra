@@ -78,7 +78,8 @@ public final class DocumentIdGenerator {
         }
         if (!safeSig.isEmpty()) {
             seed.append(':').append(safeSig);
-        } else if (!lineRange.isEmpty()) {
+        }
+        if (!lineRange.isEmpty()) {
             seed.append(':').append(lineRange);
         }
         if (!frag.isEmpty()) {
@@ -100,10 +101,15 @@ public final class DocumentIdGenerator {
         }
         String repoId = (chunk.getRepositoryId() == null || chunk.getRepositoryId().isBlank())
                 ? "default" : chunk.getRepositoryId();
+        String chunkId = chunk.getId();
+        if ((chunkId == null || chunkId.isBlank()) && chunk.getParentChunkId() != null && !chunk.getParentChunkId().isBlank()) {
+            String elem = chunk.getElementName() != null ? chunk.getElementName() : "";
+            chunkId = chunk.getParentChunkId() + "::" + (chunk.getType() != null ? chunk.getType() : "CHUNK") + "::" + elem;
+        }
         return generateDeterministicId(
                 repoId,
                 chunk.getFilePath(),
-                chunk.getId(),
+                chunkId,
                 chunk.getSignature(),
                 chunk.getStartLine(),
                 chunk.getEndLine(),

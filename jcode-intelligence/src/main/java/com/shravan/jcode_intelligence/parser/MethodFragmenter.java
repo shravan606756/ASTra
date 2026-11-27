@@ -301,6 +301,11 @@ public class MethodFragmenter implements CodeFragmenter {
 
         chunk.setElementName(methodName + "#fragment" + fragmentIndex);
 
+        String fragmentChunkId = (parentChunkId != null && !parentChunkId.isBlank())
+                ? parentChunkId + "::" + ChunkType.METHOD_FRAGMENT.name() + "::" + methodName + "#fragment" + fragmentIndex
+                : ChunkType.METHOD_FRAGMENT.name() + "::" + methodName + "#fragment" + fragmentIndex;
+        chunk.setId(fragmentChunkId);
+
         return chunk;
     }
 }

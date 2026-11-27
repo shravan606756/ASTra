@@ -357,4 +357,54 @@ class StreamingIndexingServiceSparseTest {
         verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
         verify(repoMgmtService).markRepositoryInconsistent(eq(repoId), anyString());
     }
+
+    @Test
+    @DisplayName("Failed existing-vector lookup propagates error, skips dense rollback, and disposes staging session and queue resources")
+    void testFailedExistingVectorLookupDisposesResourcesAndPreservesVectors() throws Exception {
+        String repoId = "lookup-fail-repo";
+        Path file1 = tempDir.resolve("LookupFailFile.java");
+
+        CodeChunk c1 = new CodeChunk();
+        c1.setId("c-lookup-fail-1");
+        c1.setContent("public class LookupFailTest {}");
+
+        when(parser.parse(List.of(file1))).thenReturn(List.of(c1));
+
+        // Simulate database lookup failure
+        doThrow(new org.springframework.dao.CannotAcquireLockException("Database connection timeout"))
+                .when(repoMgmtService).getRepositoryVectorIds(eq(repoId));
+
+        LuceneGenerationStore spyStore = spy(store);
+
+        StreamingIndexingService service = new StreamingIndexingService(
+                parser, converter, budgetValidator, summaryGenerator,
+                largeRepoConfig, chunkingConfig, embeddingQueue, modelProvider,
+                repoMgmtService, helper, null, spyStore
+        );
+
+        org.springframework.dao.CannotAcquireLockException thrown = assertThrows(
+                org.springframework.dao.CannotAcquireLockException.class,
+                () -> service.index(repoId, List.of(file1)),
+                "Lookup failure must be propagated out of streaming index pipeline"
+        );
+        assertTrue(thrown.getMessage().contains("Database connection timeout"));
+
+        // Staging session must be discarded and never published
+        verify(spyStore).stageGeneration(eq(repoId));
+        verify(spyStore).discardGeneration(any(LuceneGenerationStore.StagingSession.class));
+        verify(spyStore, never()).publishGeneration(any());
+
+        // Queue resources must be failed and cleaned up
+        verify(embeddingQueue).failJob(anyString(), any());
+        verify(embeddingQueue).cleanupJob(anyString());
+
+        // Writers must never have been dispatched
+        verify(helper, never()).embedAndStage(anyString(), anyString(), anyList());
+
+        // Dense vectors must NEVER be rolled back / deleted
+        verify(repoMgmtService, never()).deleteVectorsByIds(any());
+        verify(repoMgmtService, never()).deleteRepositoryVectors(anyString());
+        // Since lookup failed before writes occurred, repository must not be marked inconsistent
+        verify(repoMgmtService, never()).markRepositoryInconsistent(eq(repoId), anyString());
+    }
 }

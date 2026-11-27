@@ -280,6 +280,36 @@ class RepositoryManagementServiceTransactionTest {
 
         assertEquals(0, anonymousService.deleteRepositoryVectors("any-repo"));
         assertEquals(0, anonymousService.deleteVectorsByIds(java.util.List.of("uuid-1")));
+        assertEquals(java.util.Collections.emptySet(), anonymousService.getRepositoryVectorIds("any-repo"));
         assertDoesNotThrow(() -> anonymousService.markRepositoryInconsistent("any-repo", "reason"));
+    }
+
+    @Test
+    @DisplayName("getRepositoryVectorIds returns set of IDs on success and propagates DataAccessException on query failure")
+    void testGetRepositoryVectorIdsPropagatesFailure() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        LuceneGenerationStore store = mock(LuceneGenerationStore.class);
+        RepositoryConcurrencyManager concurrencyManager = mock(RepositoryConcurrencyManager.class);
+
+        RepositoryManagementServiceImpl service =
+                new RepositoryManagementServiceImpl(jdbcTemplate, concurrencyManager, store);
+
+        when(jdbcTemplate.query(eq("SELECT id::text FROM vector_store WHERE metadata->>'repositoryId' = ?"),
+                any(org.springframework.jdbc.core.RowMapper.class), eq("repo-success")))
+                .thenReturn(java.util.List.of("id-1", "id-2"));
+
+        java.util.Set<String> ids = service.getRepositoryVectorIds("repo-success");
+        assertEquals(java.util.Set.of("id-1", "id-2"), ids);
+
+        when(jdbcTemplate.query(eq("SELECT id::text FROM vector_store WHERE metadata->>'repositoryId' = ?"),
+                any(org.springframework.jdbc.core.RowMapper.class), eq("repo-fail")))
+                .thenThrow(new org.springframework.dao.CannotAcquireLockException("Database deadlock"));
+
+        org.springframework.dao.CannotAcquireLockException ex = assertThrows(
+                org.springframework.dao.CannotAcquireLockException.class,
+                () -> service.getRepositoryVectorIds("repo-fail"),
+                "Lookup failure must be propagated rather than converted into empty set"
+        );
+        assertTrue(ex.getMessage().contains("Database deadlock"));
     }
 }

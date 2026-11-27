@@ -238,14 +238,9 @@ public class StreamingIndexingService {
         AtomicInteger totalSubmittedDocs = new AtomicInteger(0);
         AtomicInteger totalBatchesDispatched = new AtomicInteger(0);
 
-        Set<String> preExistingVectorIds = (repositoryManagementService != null)
-                ? repositoryManagementService.getRepositoryVectorIds(repoId)
-                : Collections.emptySet();
-        boolean repositoryPreviouslyIndexed = !preExistingVectorIds.isEmpty();
-        if (repositoryPreviouslyIndexed) {
-            log.info("Repository '{}' was previously indexed (found {} existing vector(s)); preserving existing vectors on failure",
-                    repoId, preExistingVectorIds.size());
-        }
+        Set<String> preExistingVectorIds = Collections.emptySet();
+        boolean repositoryPreviouslyIndexed = false;
+        boolean lookupSucceeded = false;
 
         PackageSummaryGenerator.Accumulator packageAccumulator = packageSummaryGenerator.createAccumulator();
         IndexingStatisticsAccumulator statsAccumulator = new IndexingStatisticsAccumulator();
@@ -255,6 +250,18 @@ public class StreamingIndexingService {
         int passCounter = 0;
 
         try {
+            if (repositoryManagementService != null) {
+                preExistingVectorIds = repositoryManagementService.getRepositoryVectorIds(repoId);
+                if (preExistingVectorIds == null) {
+                    preExistingVectorIds = Collections.emptySet();
+                }
+            }
+            lookupSucceeded = true;
+            repositoryPreviouslyIndexed = !preExistingVectorIds.isEmpty();
+            if (repositoryPreviouslyIndexed) {
+                log.info("Repository '{}' was previously indexed (found {} existing vector(s)); preserving existing vectors on failure",
+                        repoId, preExistingVectorIds.size());
+            }
             if (eligibleFiles != null) {
                 for (Path file : eligibleFiles) {
                     checkFailure(firstFailureRef);
@@ -392,6 +399,9 @@ public class StreamingIndexingService {
                 if (!settled) {
                     log.error("Skipping dense vector rollback for job '{}' in repository '{}' because in-flight persistence did not settle; writes must be fenced before deletion",
                             jobId, repoId);
+                } else if (!lookupSucceeded) {
+                    log.warn("Existing vector lookup failed before submitting writes for job '{}'; skipping dense rollback",
+                            jobId);
                 } else if (!repositoryPreviouslyIndexed) {
                     // Brand-new repository: rollback only records that were actually persisted by this failed job
                     Set<String> persistedIds = embeddingQueue.getPersistedRecordIds(jobId);
@@ -422,10 +432,12 @@ public class StreamingIndexingService {
                                 repoId);
                     }
                 }
-                try {
-                    repositoryManagementService.markRepositoryInconsistent(repoId, "Streaming indexing failed: " + t.getMessage());
-                } catch (Exception markEx) {
-                    log.error("Failed to mark repository '{}' inconsistent: {}", repoId, markEx.getMessage());
+                if (lookupSucceeded) {
+                    try {
+                        repositoryManagementService.markRepositoryInconsistent(repoId, "Streaming indexing failed: " + t.getMessage());
+                    } catch (Exception markEx) {
+                        log.error("Failed to mark repository '{}' inconsistent: {}", repoId, markEx.getMessage());
+                    }
                 }
             }
 

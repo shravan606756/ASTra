@@ -813,7 +813,7 @@ public class LuceneGenerationStore implements AutoCloseable {
         void close() {
             if (closed.compareAndSet(false, true)) {
                 try {
-                    reader.close();
+                    reader.decRef();
                 } catch (Exception ignored) {
                 }
             }

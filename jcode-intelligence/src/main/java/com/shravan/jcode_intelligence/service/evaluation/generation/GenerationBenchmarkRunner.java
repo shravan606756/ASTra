@@ -27,7 +27,10 @@ import org.springframework.stereotype.Component;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Orchestrates batch evaluation of LLM code generation and inline citation verification.
@@ -194,9 +197,6 @@ public class GenerationBenchmarkRunner {
             List<CitationValidationResult> validationResults = citationValidator.validateAll(
                     parsedCitations, sourceRoot, effectiveRevision
             );
-            if (validationResults != null && !validationResults.isEmpty()) {
-                revStatus = validationResults.get(0).revisionStatus();
-            }
 
             CitationMetrics citationMetrics = citationMetricsCalculator.calculateMetrics(
                     validationResults, bq.getExpectedCitations(), revStatus
@@ -297,7 +297,7 @@ public class GenerationBenchmarkRunner {
         int totalAttemptedCitations = 0;
         int totalValidSyntaxCitations = 0;
         int totalStructurallyValidCitations = 0;
-        String resolvedRevisionStatus = null;
+        Set<String> observedRevisionStatuses = new LinkedHashSet<>();
 
         for (RetainedBenchmarkQuery rq : retainedQueries) {
             QueryBenchmarkResultDTO qr = rq.resultDto();
@@ -365,19 +365,28 @@ public class GenerationBenchmarkRunner {
                     sumExpectedRecall += cite.getExpectedSourceRecall();
                     countExpectedRecall++;
                 }
-                if (cite.getRevisionStatus() != null) {
-                    if (resolvedRevisionStatus == null || "DIRTY".equalsIgnoreCase(cite.getRevisionStatus())) {
-                        resolvedRevisionStatus = cite.getRevisionStatus();
-                    }
+                if (cite.getRevisionStatus() != null && !cite.getRevisionStatus().isBlank()) {
+                    observedRevisionStatuses.add(cite.getRevisionStatus().trim().toUpperCase(Locale.ROOT));
                 }
             }
         }
 
-        if (resolvedRevisionStatus == null && sourceRoot != null && !sourceRoot.isBlank()) {
+        if (observedRevisionStatuses.isEmpty() && sourceRoot != null && !sourceRoot.isBlank()) {
             RevisionStatus status = citationValidator.checkRevision(Paths.get(sourceRoot), suiteSourceRevision);
             if (status != null) {
-                resolvedRevisionStatus = status.name();
+                observedRevisionStatuses.add(status.name());
             }
+        }
+
+        String resolvedRevisionStatus = null;
+        if (observedRevisionStatuses.contains("DIRTY")) {
+            resolvedRevisionStatus = "DIRTY";
+        } else if (observedRevisionStatuses.contains("MISMATCHED")) {
+            resolvedRevisionStatus = "MISMATCHED";
+        } else if (observedRevisionStatuses.contains("UNAVAILABLE")) {
+            resolvedRevisionStatus = "UNAVAILABLE";
+        } else if (observedRevisionStatuses.contains("MATCHED")) {
+            resolvedRevisionStatus = "MATCHED";
         }
 
         summary.setSuccessfulGenerations(successfulGenerations);

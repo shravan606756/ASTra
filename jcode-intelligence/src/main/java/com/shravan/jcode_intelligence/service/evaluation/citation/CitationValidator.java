@@ -151,11 +151,11 @@ public class CitationValidator {
     public CitationValidationResult validateSingle(Citation citation, Path repositoryRoot,
             RevisionStatus revisionStatus) {
         if (citation == null) {
-            return CitationValidationResult.malformed(Citation.malformed(""), "Citation is null");
+            return CitationValidationResult.malformed(Citation.malformed(""), revisionStatus, "Citation is null");
         }
 
         if (!citation.validSyntax()) {
-            return CitationValidationResult.malformed(citation, "Malformed citation syntax: " + citation.rawText());
+            return CitationValidationResult.malformed(citation, revisionStatus, "Malformed citation syntax: " + citation.rawText());
         }
 
         if (revisionStatus == RevisionStatus.MISMATCHED || revisionStatus == RevisionStatus.UNAVAILABLE

@@ -37,14 +37,18 @@ public record CitationValidationResult(
         );
     }
 
-    public static CitationValidationResult malformed(Citation citation, String reason) {
+    public static CitationValidationResult malformed(Citation citation, RevisionStatus revisionStatus, String reason) {
         return new CitationValidationResult(
                 citation,
                 false,
-                RevisionStatus.UNAVAILABLE,
+                revisionStatus != null ? revisionStatus : RevisionStatus.UNAVAILABLE,
                 FileStatus.INVALID_SYNTAX,
                 EntityStatus.NOT_APPLICABLE,
                 reason
         );
+    }
+
+    public static CitationValidationResult malformed(Citation citation, String reason) {
+        return malformed(citation, RevisionStatus.UNAVAILABLE, reason);
     }
 }

@@ -14,6 +14,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.BM25Similarity;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.slf4j.Logger;
@@ -432,12 +433,7 @@ public class LuceneGenerationStore implements AutoCloseable {
         Path repoDir = resolveRepoDir(repositoryId);
         String safeRepoId = repoDir.getFileName().toString();
         SearcherHolder holder = acquireSearcher(safeRepoId);
-        boolean leased = holder != null && holder.acquireRef();
-        if (!leased && holder != null) {
-            holder = acquireSearcher(safeRepoId);
-            leased = holder != null && holder.acquireRef();
-        }
-        if (!leased) {
+        if (holder == null) {
             return Collections.emptyList();
         }
 
@@ -485,12 +481,7 @@ public class LuceneGenerationStore implements AutoCloseable {
                             continue;
                         }
                         SearcherHolder holder = acquireSearcher(repoName);
-                        boolean leased = holder != null && holder.acquireRef();
-                        if (!leased && holder != null) {
-                            holder = acquireSearcher(repoName);
-                            leased = holder != null && holder.acquireRef();
-                        }
-                        if (leased) {
+                        if (holder != null) {
                             if (holder.reader.numDocs() > 0) {
                                 leasedHolders.add(holder);
                                 activeReaders.add(holder.reader);
@@ -564,12 +555,7 @@ public class LuceneGenerationStore implements AutoCloseable {
         Path repoDir = resolveRepoDir(repositoryId);
         String safeRepoId = repoDir.getFileName().toString();
         SearcherHolder holder = acquireSearcher(safeRepoId);
-        boolean leased = holder != null && holder.acquireRef();
-        if (!leased && holder != null) {
-            holder = acquireSearcher(safeRepoId);
-            leased = holder != null && holder.acquireRef();
-        }
-        if (!leased) {
+        if (holder == null) {
             return 0;
         }
         try {
@@ -604,7 +590,9 @@ public class LuceneGenerationStore implements AutoCloseable {
     }
 
     /**
-     * Lazily acquires or refreshes a cached point-in-time SearcherHolder for a repository.
+     * Lazily acquires or refreshes a cached point-in-time SearcherHolder for a repository,
+     * returning a holder that is already leased via acquireRef().
+     * The caller is responsible for calling releaseRef() on the returned holder.
      */
     private SearcherHolder acquireSearcher(String repositoryId) {
         Path repoDir = resolveRepoDir(repositoryId);
@@ -614,61 +602,100 @@ public class LuceneGenerationStore implements AutoCloseable {
             return null;
         }
 
-        String currentGen = readCurrentPointer(currentFile, safeRepoId);
-        if (currentGen == null || currentGen.isBlank()) {
-            return null;
-        }
-
-        Path genDir = repoDir.resolve(currentGen).normalize();
-        if (!genDir.startsWith(repoDir) || genDir.equals(repoDir) || !Files.isDirectory(genDir)) {
-            return null;
-        }
-
-        SearcherHolder existing = searcherCache.get(repositoryId);
-        if (existing != null && existing.genName.equals(currentGen)) {
-            try {
-                DirectoryReader newReader = DirectoryReader.openIfChanged(existing.reader);
-                if (newReader == null) {
-                    return existing;
-                }
-                IndexSearcher newSearcher = new IndexSearcher(newReader);
-                newSearcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
-                SearcherHolder refreshed = new SearcherHolder(currentGen, existing.directory, newReader, newSearcher);
-                searcherCache.put(repositoryId, refreshed);
-                try {
-                    existing.transferDirectoryOwnershipAndClose();
-                } catch (Exception ignored) {
-                }
-                return refreshed;
-            } catch (IOException e) {
-                log.debug("Error checking openIfChanged for {}: {}", repositoryId, e.getMessage());
-            }
-        }
-
-        synchronized (searcherCache) {
-            existing = searcherCache.get(repositoryId);
-            if (existing != null && existing.genName.equals(currentGen)) {
-                return existing;
-            }
-
-            if (existing != null) {
-                existing.close();
-            }
-
-            try {
-                Directory dir = FSDirectory.open(genDir);
-                DirectoryReader reader = DirectoryReader.open(dir);
-                IndexSearcher searcher = new IndexSearcher(reader);
-                searcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
-                SearcherHolder created = new SearcherHolder(currentGen, dir, reader, searcher);
-                searcherCache.put(repositoryId, created);
-                return created;
-            } catch (IOException e) {
-                log.error("Failed to open IndexSearcher for repo {} generation {}: {}",
-                        repositoryId, currentGen, e.getMessage());
+        for (int attempt = 0; attempt < 5; attempt++) {
+            if (closed.get()) {
                 return null;
             }
+
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+
+            String currentGen = readCurrentPointer(currentFile, safeRepoId);
+            if (currentGen == null || currentGen.isBlank()) {
+                continue;
+            }
+
+            Path genDir = repoDir.resolve(currentGen).normalize();
+            if (!genDir.startsWith(repoDir) || genDir.equals(repoDir) || !Files.isDirectory(genDir)) {
+                return null;
+            }
+
+            SearcherHolder existing = searcherCache.get(safeRepoId);
+            if (existing != null && existing.genName.equals(currentGen)) {
+                if (existing.acquireRef()) {
+                    boolean keepLease = false;
+                    try {
+                        DirectoryReader newReader = null;
+                        try {
+                            newReader = DirectoryReader.openIfChanged(existing.reader);
+                        } catch (AlreadyClosedException e) {
+                            continue;
+                        } catch (IOException e) {
+                            log.debug("Error checking openIfChanged for {}: {}", safeRepoId, e.getMessage());
+                        }
+
+                        if (newReader == null) {
+                            keepLease = true;
+                            return existing;
+                        }
+
+                        IndexSearcher newSearcher = new IndexSearcher(newReader);
+                        newSearcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+                        SearcherHolder refreshed = new SearcherHolder(currentGen, existing.directory, newReader, newSearcher);
+                        if (refreshed.acquireRef()) {
+                            searcherCache.put(safeRepoId, refreshed);
+                            existing.transferDirectoryOwnershipAndClose();
+                            return refreshed;
+                        } else {
+                            refreshed.close();
+                            continue;
+                        }
+                    } finally {
+                        if (!keepLease) {
+                            existing.releaseRef();
+                        }
+                    }
+                }
+            }
+
+            synchronized (searcherCache) {
+                existing = searcherCache.get(safeRepoId);
+                if (existing != null && existing.genName.equals(currentGen)) {
+                    if (existing.acquireRef()) {
+                        return existing;
+                    }
+                }
+
+                if (existing != null) {
+                    existing.close();
+                }
+
+                try {
+                    Directory dir = FSDirectory.open(genDir);
+                    DirectoryReader reader = DirectoryReader.open(dir);
+                    IndexSearcher searcher = new IndexSearcher(reader);
+                    searcher.setSimilarity(new BM25Similarity(config.getK1(), config.getB()));
+                    SearcherHolder created = new SearcherHolder(currentGen, dir, reader, searcher);
+                    if (created.acquireRef()) {
+                        searcherCache.put(safeRepoId, created);
+                        return created;
+                    } else {
+                        created.close();
+                    }
+                } catch (IOException e) {
+                    log.error("Failed to open IndexSearcher for repo {} generation {}: {}",
+                            safeRepoId, currentGen, e.getMessage());
+                    return null;
+                }
+            }
         }
+        return null;
     }
 
     private void evictAndCloseSearcher(String repositoryId) {

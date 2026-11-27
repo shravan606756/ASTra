@@ -592,4 +592,75 @@ class LuceneGenerationStoreTest {
 
         assertTrue(errors.isEmpty(), "Concurrent searches failed with errors: " + errors);
     }
+
+    @Test
+    @DisplayName("Concurrent publish during acquireSearcher openIfChanged checks does not abort searches or doc count")
+    void testConcurrentPublishDuringOpenIfChangedDoesNotThrowAlreadyClosedException() throws Exception {
+        String repoId = "repo-openifchanged-race";
+
+        LuceneGenerationStore.StagingSession gen1 = store.stageGeneration(repoId);
+        gen1.writeDocuments(List.of(new Document("doc-1", "openIfChanged race target content",
+                Map.of("repositoryId", repoId, "chunkId", "c1"))));
+        store.publishGeneration(gen1);
+
+        // Pre-warm the cache
+        assertEquals(1, store.getDocumentCount(repoId));
+        assertEquals(1, store.search(repoId, "target", 5).size());
+
+        int numQueryThreads = 6;
+        ExecutorService executor = Executors.newFixedThreadPool(numQueryThreads + 1);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(numQueryThreads + 1);
+        List<Throwable> errors = new CopyOnWriteArrayList<>();
+
+        // Query threads exercising search, unscoped search, and getDocumentCount
+        for (int i = 0; i < numQueryThreads; i++) {
+            final int threadId = i;
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    for (int j = 0; j < 30; j++) {
+                        if (threadId % 3 == 0) {
+                            List<Document> res = store.search(repoId, "target", 5);
+                            assertFalse(res.isEmpty(), "Scoped search returned empty results");
+                        } else if (threadId % 3 == 1) {
+                            List<Document> res = store.searchUnscoped("target", 5);
+                            assertFalse(res.isEmpty(), "Unscoped search returned empty results");
+                        } else {
+                            int count = store.getDocumentCount(repoId);
+                            assertTrue(count >= 1, "Document count was 0");
+                        }
+                    }
+                } catch (Throwable t) {
+                    errors.add(t);
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        // Publisher thread rapidly publishing new generations
+        executor.submit(() -> {
+            try {
+                startLatch.await();
+                for (int g = 2; g <= 4; g++) {
+                    Thread.sleep(5);
+                    LuceneGenerationStore.StagingSession nextGen = store.stageGeneration(repoId);
+                    nextGen.writeDocuments(List.of(new Document("doc-" + g, "openIfChanged race target content v" + g,
+                            Map.of("repositoryId", repoId, "chunkId", "c" + g))));
+                    store.publishGeneration(nextGen);
+                }
+            } catch (Throwable t) {
+                errors.add(t);
+            } finally {
+                doneLatch.countDown();
+            }
+        });
+
+        startLatch.countDown();
+        assertTrue(doneLatch.await(15, TimeUnit.SECONDS), "Concurrent test timed out");
+        executor.shutdown();
+
+        assertTrue(errors.isEmpty(), "Errors occurred during concurrent openIfChanged: " + errors);
+    }
 }

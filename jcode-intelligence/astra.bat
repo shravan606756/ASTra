@@ -19,7 +19,7 @@ REM java -jar target\astra-cli.jar %*
 REM Change directory to the location of this script so Maven finds the pom.xml
 pushd "%~dp0"
 
-call .\mvnw.cmd -q exec:java -Dexec.mainClass="com.shravan.jcode_intelligence.cli.AstraCli"
+call .\mvnw.cmd -q compile exec:java -Dexec.mainClass="com.shravan.jcode_intelligence.cli.AstraCli"
 
 popd
 

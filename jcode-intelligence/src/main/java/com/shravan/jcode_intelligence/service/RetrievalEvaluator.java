@@ -9,22 +9,43 @@ import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Deterministic Information Retrieval evaluation engine.
  * Computes standard IR ranking metrics (Hit Rate, Recall, Precision, MRR, NDCG, Context Precision/Recall)
  * against ground-truth relevance annotations without external LLM dependencies.
+ *
+ * <p>Supports dynamic file-path normalization, symbol & signature stripping for overloaded methods,
+ * interval line-range overlap, and configurable relevance thresholds.
  */
 @Component
 public class RetrievalEvaluator {
 
+    private static final Pattern TEMP_PATH_PREFIX_PATTERN = Pattern.compile("(?i)(?:astra-repo-[^/\\\\]+|Temp[/\\\\]astra-[^/\\\\]+|AppData[/\\\\]Local[/\\\\]Temp|/tmp)[/\\\\](.*)");
+    private static final Pattern JAVA_SRC_PATTERN = Pattern.compile("(?i)(?:src[/\\\\](?:main|test)[/\\\\]java[/\\\\])(.*)");
+
+    private int relevanceThreshold = 1;
+
+    public RetrievalEvaluator() {
+        this(1);
+    }
+
+    public RetrievalEvaluator(int relevanceThreshold) {
+        this.relevanceThreshold = (relevanceThreshold > 0) ? relevanceThreshold : 1;
+    }
+
+    public int getRelevanceThreshold() {
+        return relevanceThreshold;
+    }
+
+    public void setRelevanceThreshold(int relevanceThreshold) {
+        this.relevanceThreshold = (relevanceThreshold > 0) ? relevanceThreshold : 1;
+    }
+
     /**
      * Evaluates a ranked list of retrieved documents against expected relevant chunks for a query.
-     *
-     * @param documents ranked documents; null is treated as empty
-     * @param groundTruths expected relevant chunks with graded relevance
-     * @param retrievedChunks optional list to append chunk representations to
-     * @return per-query quality metrics, or null when ground truth is null or empty
      */
     public QueryQualityMetricsDTO evaluateQuery(List<Document> documents,
                                                 List<RelevantChunkDefinition> groundTruths,
@@ -33,16 +54,15 @@ public class RetrievalEvaluator {
     }
 
     /**
-     * Evaluates all ranked documents against expected relevant chunks, consuming each
-     * ground-truth definition at most once for chunk scoring. The display limit does not
-     * limit the documents used for metrics.
+     * Evaluates all ranked documents against expected relevant chunks.
+     * Graded relevance is preserved per chunk while metric consumption strictly credits each
+     * ground-truth item at most once to prevent duplicate score inflation.
      *
      * @param documents ranked documents; null is treated as empty
      * @param groundTruths expected relevant chunks with graded relevance
      * @param retrievedChunks optional list to append chunk representations to
      * @param maxDisplayChunks maximum chunks to append; zero or less includes all
-     * @return per-query quality metrics, or null when ground truth is null or empty;
-     *         in that case appended chunks have null relevance fields
+     * @return per-query quality metrics, or null when ground truth is null or empty
      */
     public QueryQualityMetricsDTO evaluateQuery(List<Document> documents,
                                                 List<RelevantChunkDefinition> groundTruths,
@@ -58,103 +78,118 @@ public class RetrievalEvaluator {
 
         QueryQualityMetricsDTO metrics = new QueryQualityMetricsDTO();
 
-        // 1. Score each retrieved document against ground truths
-        // To prevent duplicate inflation, each ground-truth item can only be satisfied once
         List<Integer> relevanceGrades = new ArrayList<>(documents.size());
-        Set<RelevantChunkDefinition> matchedGroundTruths = new LinkedHashSet<>();
-        Set<RelevantChunkDefinition> unsatisfiedGts = new LinkedHashSet<>(groundTruths);
+        Set<RelevantChunkDefinition> satisfiedGts = new LinkedHashSet<>();
+        Set<RelevantChunkDefinition> satisfiedRelevantGts = new LinkedHashSet<>();
+        Set<RelevantChunkDefinition> remainingGts = new LinkedHashSet<>(groundTruths);
 
         int displayLimit = (maxDisplayChunks > 0) ? Math.min(maxDisplayChunks, documents.size()) : documents.size();
 
         for (int i = 0; i < documents.size(); i++) {
             Document doc = documents.get(i);
-            int grade = 0;
-            RelevantChunkDefinition matchedGt = null;
 
-            for (RelevantChunkDefinition gt : unsatisfiedGts) {
+            // 1. Check matching against all ground truths for chunk evidence reporting
+            RelevantChunkDefinition chunkBestGt = null;
+            int chunkBestGrade = 0;
+            String chunkMatchReason = null;
+
+            for (RelevantChunkDefinition gt : groundTruths) {
                 if (matches(doc, gt)) {
-                    if (gt.getRelevance() > grade) {
-                        grade = gt.getRelevance();
-                        matchedGt = gt;
+                    if (gt.getRelevance() > chunkBestGrade) {
+                        chunkBestGrade = gt.getRelevance();
+                        chunkBestGt = gt;
+                        chunkMatchReason = getMatchReason(doc, gt);
                     }
                 }
             }
 
-            if (matchedGt != null && grade > 0) {
-                matchedGroundTruths.add(matchedGt);
-                unsatisfiedGts.remove(matchedGt); // Consumed: prevent duplicate inflation
+            // 2. Consume from remaining ground truths for metric calculations (prevents duplicate inflation)
+            RelevantChunkDefinition metricMatchedGt = null;
+            int metricGrade = 0;
+
+            for (RelevantChunkDefinition gt : remainingGts) {
+                if (matches(doc, gt)) {
+                    if (gt.getRelevance() > metricGrade) {
+                        metricGrade = gt.getRelevance();
+                        metricMatchedGt = gt;
+                    }
+                }
             }
 
-            relevanceGrades.add(grade);
+            if (metricMatchedGt != null && metricGrade > 0) {
+                satisfiedGts.add(metricMatchedGt);
+                if (metricMatchedGt.getRelevance() >= relevanceThreshold) {
+                    satisfiedRelevantGts.add(metricMatchedGt);
+                }
+                remainingGts.remove(metricMatchedGt);
+            }
 
+            relevanceGrades.add(metricGrade);
+
+            // Populate display chunk
             if (retrievedChunks != null && i < displayLimit) {
-                Map<String, Object> meta = doc.getMetadata();
+                Map<String, Object> meta = (doc != null) ? doc.getMetadata() : Map.of();
                 String chunkId = String.valueOf(meta.getOrDefault("chunkId", ""));
                 String filePath = String.valueOf(meta.getOrDefault("filePath", ""));
                 String className = String.valueOf(meta.getOrDefault("className", ""));
                 String elementName = String.valueOf(meta.getOrDefault("elementName", ""));
                 String type = String.valueOf(meta.getOrDefault("type", ""));
 
+                boolean isRel = (chunkBestGrade >= relevanceThreshold);
+                String reason = chunkMatchReason;
+                if (chunkBestGt != null && metricMatchedGt == null) {
+                    reason = (reason != null ? reason : "MATCH") + " (DUPLICATE_OF_PREVIOUS_CHUNK)";
+                }
+
                 retrievedChunks.add(new RetrievedChunkDTO(
                         chunkId, filePath, className, elementName, type,
-                        i + 1, grade > 0, grade
+                        i + 1, isRel, chunkBestGrade > 0 ? chunkBestGrade : 0, reason
                 ));
             }
         }
 
-        int totalRelevantGt = (int) groundTruths.stream().filter(gt -> gt.getRelevance() > 0).count();
+        int totalRelevantGt = (int) groundTruths.stream()
+                .filter(gt -> gt.getRelevance() >= relevanceThreshold)
+                .count();
 
-        // 2. Compute Hit Rate @ K (K in [3, 5, 25])
+        // Compute metrics
         metrics.setHitRateAt3(computeHitRate(relevanceGrades, 3));
         metrics.setHitRateAt5(computeHitRate(relevanceGrades, 5));
         metrics.setHitRateAt25(computeHitRate(relevanceGrades, 25));
 
-        // 3. Compute Recall @ K (K in [3, 5, 25])
         metrics.setRecallAt3(computeRecall(relevanceGrades, 3, totalRelevantGt, documents, groundTruths));
         metrics.setRecallAt5(computeRecall(relevanceGrades, 5, totalRelevantGt, documents, groundTruths));
         metrics.setRecallAt25(computeRecall(relevanceGrades, 25, totalRelevantGt, documents, groundTruths));
 
-        // 4. Compute Precision @ K (K in [3, 5, 25])
         metrics.setPrecisionAt3(computePrecision(relevanceGrades, 3));
         metrics.setPrecisionAt5(computePrecision(relevanceGrades, 5));
         metrics.setPrecisionAt25(computePrecision(relevanceGrades, 25));
 
-        // 5. Compute Reciprocal Rank (RR)
         metrics.setReciprocalRank(computeReciprocalRank(relevanceGrades));
 
-        // 6. Compute NDCG @ K (K in [3, 5, 25])
         metrics.setNdcgAt3(computeNdcg(relevanceGrades, 3, groundTruths));
         metrics.setNdcgAt5(computeNdcg(relevanceGrades, 5, groundTruths));
         metrics.setNdcgAt25(computeNdcg(relevanceGrades, 25, groundTruths));
 
-        // 7. Context Precision
         metrics.setContextPrecision(computeContextPrecision(relevanceGrades));
-
-        // 8. Context Recall
-        metrics.setContextRecall(totalRelevantGt > 0 ? (double) matchedGroundTruths.size() / totalRelevantGt : 0.0);
+        metrics.setContextRecall(totalRelevantGt > 0 ? (double) satisfiedRelevantGts.size() / totalRelevantGt : 0.0);
 
         return metrics;
     }
 
     /**
      * Populates retrieved chunk representations when ground truth is not provided.
-     * Relevant flag and relevanceGrade are left null.
      */
     public void populateRetrievedChunks(List<Document> documents, List<RetrievedChunkDTO> retrievedChunks) {
         populateRetrievedChunks(documents, retrievedChunks, documents != null ? documents.size() : 0);
     }
 
-    /**
-     * Appends retrieved chunk representations with null relevance fields.
-     *
-     * @param maxDisplayChunks maximum chunks to append; zero or less includes all
-     */
     public void populateRetrievedChunks(List<Document> documents, List<RetrievedChunkDTO> retrievedChunks, int maxDisplayChunks) {
         if (documents == null || retrievedChunks == null) return;
         int displayLimit = (maxDisplayChunks > 0) ? Math.min(maxDisplayChunks, documents.size()) : documents.size();
         for (int i = 0; i < displayLimit; i++) {
             Document doc = documents.get(i);
-            Map<String, Object> meta = doc.getMetadata();
+            Map<String, Object> meta = (doc != null) ? doc.getMetadata() : Map.of();
             String chunkId = String.valueOf(meta.getOrDefault("chunkId", ""));
             String filePath = String.valueOf(meta.getOrDefault("filePath", ""));
             String className = String.valueOf(meta.getOrDefault("className", ""));
@@ -163,18 +198,39 @@ public class RetrievalEvaluator {
 
             retrievedChunks.add(new RetrievedChunkDTO(
                     chunkId, filePath, className, elementName, type,
-                    i + 1, null, null
+                    i + 1, null, null, null
             ));
         }
     }
 
     /**
-     * Aggregates query results into a summary. Quality metrics are averaged over
-     * successful results with ground truth and quality metrics; operational averages
-     * use all results, including failures and results without operational metrics.
-     *
-     * @param totalDurationMs total run duration in milliseconds
-     * @param timeoutCount number of timeouts to include in the summary
+     * Returns the list of ground-truth chunks that were not matched by any retrieved document.
+     */
+    public List<RelevantChunkDefinition> findUnmatchedGroundTruths(List<Document> documents, List<RelevantChunkDefinition> groundTruths) {
+        if (groundTruths == null || groundTruths.isEmpty()) {
+            return List.of();
+        }
+        if (documents == null || documents.isEmpty()) {
+            return new ArrayList<>(groundTruths);
+        }
+        List<RelevantChunkDefinition> unmatched = new ArrayList<>();
+        for (RelevantChunkDefinition gt : groundTruths) {
+            boolean found = false;
+            for (Document doc : documents) {
+                if (matches(doc, gt)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                unmatched.add(gt);
+            }
+        }
+        return unmatched;
+    }
+
+    /**
+     * Aggregates query results into a summary.
      */
     public BenchmarkSummaryDTO aggregateSummary(List<QueryBenchmarkResultDTO> results,
                                                long totalDurationMs,
@@ -205,6 +261,7 @@ public class RetrievalEvaluator {
         long sumVectorSearchLatency = 0;
         long sumRerankingLatency = 0;
         long sumRetrievedChunks = 0;
+        List<Long> totalLatencies = new ArrayList<>();
 
         for (QueryBenchmarkResultDTO r : results) {
             if (r.isHasGroundTruth()) {
@@ -241,11 +298,15 @@ public class RetrievalEvaluator {
             }
 
             if (r.getOperationalMetrics() != null) {
-                sumTotalLatency += r.getOperationalMetrics().getTotalLatencyMs();
+                long totalLatency = r.getOperationalMetrics().getTotalLatencyMs();
+                sumTotalLatency += totalLatency;
+                totalLatencies.add(totalLatency);
                 sumEmbeddingLatency += r.getOperationalMetrics().getEmbeddingLatencyMs();
                 sumVectorSearchLatency += r.getOperationalMetrics().getVectorSearchLatencyMs();
                 sumRerankingLatency += r.getOperationalMetrics().getRerankingLatencyMs();
                 sumRetrievedChunks += r.getOperationalMetrics().getRetrievedChunkCount();
+            } else {
+                totalLatencies.add(0L);
             }
         }
 
@@ -289,41 +350,57 @@ public class RetrievalEvaluator {
         summary.setAvgRerankingLatencyMs(round((double) sumRerankingLatency / nTotal));
         summary.setAvgRetrievedChunks(round((double) sumRetrievedChunks / nTotal));
 
+        Collections.sort(totalLatencies);
+        summary.setP50LatencyMs(round(computePercentile(totalLatencies, 50.0)));
+        summary.setP95LatencyMs(round(computePercentile(totalLatencies, 95.0)));
+        summary.setMaxLatencyMs(round(totalLatencies.isEmpty() ? 0.0 : (double) totalLatencies.get(totalLatencies.size() - 1)));
+
         return summary;
+    }
+
+    public double computePercentile(List<Long> sortedValues, double percentile) {
+        if (sortedValues == null || sortedValues.isEmpty()) {
+            return 0.0;
+        }
+        int n = sortedValues.size();
+        int index = (int) Math.ceil((percentile / 100.0) * n) - 1;
+        if (index < 0) index = 0;
+        if (index >= n) index = n - 1;
+        return sortedValues.get(index);
     }
 
     // ── Metric Calculation Helpers ────────────────────────────
 
-    /** Returns 1 if a positive grade occurs within the first {@code k} ranks, otherwise 0. */
     public double computeHitRate(List<Integer> grades, int k) {
+        if (grades == null || grades.isEmpty() || k <= 0) return 0.0;
         int limit = Math.min(k, grades.size());
         for (int i = 0; i < limit; i++) {
-            if (grades.get(i) > 0) {
+            if (grades.get(i) >= relevanceThreshold) {
                 return 1.0;
             }
         }
         return 0.0;
     }
 
-    /**
-     * Returns the number of distinct positive-relevance definitions matched by the first
-     * {@code k} documents divided by {@code totalRelevantGt}, or zero if that total is zero.
-     * One document can match multiple definitions; the grades parameter is not used.
-     */
     public double computeRecall(List<Integer> grades, int k, int totalRelevantGt,
                                 List<Document> documents, List<RelevantChunkDefinition> groundTruths) {
         if (totalRelevantGt == 0 || documents == null || groundTruths == null || k <= 0) return 0.0;
         int limit = Math.min(k, documents.size());
 
         Set<RelevantChunkDefinition> matchedAtK = new LinkedHashSet<>();
-        Set<RelevantChunkDefinition> remaining = new LinkedHashSet<>(groundTruths);
+        Set<RelevantChunkDefinition> remaining = new LinkedHashSet<>();
+        for (RelevantChunkDefinition gt : groundTruths) {
+            if (gt.getRelevance() >= relevanceThreshold) {
+                remaining.add(gt);
+            }
+        }
 
         for (int i = 0; i < limit; i++) {
             Document doc = documents.get(i);
             RelevantChunkDefinition bestMatch = null;
             int bestGrade = 0;
             for (RelevantChunkDefinition gt : remaining) {
-                if (gt.getRelevance() > 0 && matches(doc, gt)) {
+                if (matches(doc, gt) && gt.getRelevance() >= relevanceThreshold) {
                     if (gt.getRelevance() > bestGrade) {
                         bestGrade = gt.getRelevance();
                         bestMatch = gt;
@@ -338,52 +415,44 @@ public class RetrievalEvaluator {
         return (double) matchedAtK.size() / totalRelevantGt;
     }
 
-    /**
-     * Returns the number of positive grades in the first {@code k} ranks divided by
-     * {@code k}, including when fewer grades are available; returns zero for nonpositive k.
-     */
     public double computePrecision(List<Integer> grades, int k) {
-        if (k <= 0) return 0.0;
+        if (k <= 0 || grades == null || grades.isEmpty()) return 0.0;
         int limit = Math.min(k, grades.size());
         long relevantCount = 0;
         for (int i = 0; i < limit; i++) {
-            if (grades.get(i) > 0) {
+            if (grades.get(i) >= relevanceThreshold) {
                 relevantCount++;
             }
         }
         return (double) relevantCount / k;
     }
 
-    /** Returns the reciprocal of the first positive grade's one-based rank, or zero if absent. */
     public double computeReciprocalRank(List<Integer> grades) {
+        if (grades == null || grades.isEmpty()) return 0.0;
         for (int i = 0; i < grades.size(); i++) {
-            if (grades.get(i) > 0) {
+            if (grades.get(i) >= relevanceThreshold) {
                 return 1.0 / (i + 1);
             }
         }
         return 0.0;
     }
 
-    /**
-     * Returns graded DCG at {@code k} divided by the ideal DCG from positive ground-truth
-     * grades, capped at 1. Returns zero for nonpositive k or zero ideal DCG.
-     */
     public double computeNdcg(List<Integer> grades, int k, List<RelevantChunkDefinition> groundTruths) {
-        if (k <= 0) return 0.0;
+        if (k <= 0 || grades == null || grades.isEmpty() || groundTruths == null || groundTruths.isEmpty()) return 0.0;
         int limit = Math.min(k, grades.size());
 
-        // DCG@K
+        // DCG@K using graded relevance: gain = 2^grade - 1
         double dcg = 0.0;
         for (int i = 0; i < limit; i++) {
             int grade = grades.get(i);
             if (grade > 0) {
                 double gain = Math.pow(2.0, grade) - 1.0;
-                double discount = Math.log(i + 2) / Math.log(2.0); // log2(i + 2) since i is 0-indexed
+                double discount = Math.log(i + 2) / Math.log(2.0); // log2(rank + 1)
                 dcg += gain / discount;
             }
         }
 
-        // Ideal DCG@K (IDCG)
+        // Ideal DCG@K (IDCG) using all positive ground-truth grades sorted descending
         List<Integer> idealGrades = new ArrayList<>();
         for (RelevantChunkDefinition gt : groundTruths) {
             if (gt.getRelevance() > 0) {
@@ -408,10 +477,6 @@ public class RetrievalEvaluator {
         return Math.min(1.0, dcg / idcg);
     }
 
-    /**
-     * Returns the mean precision at ranks with positive grades, or zero if grades are
-     * null, empty, or contain no positive grades.
-     */
     public double computeContextPrecision(List<Integer> grades) {
         if (grades == null || grades.isEmpty()) return 0.0;
 
@@ -419,7 +484,7 @@ public class RetrievalEvaluator {
         double sumPrecision = 0.0;
 
         for (int k = 1; k <= grades.size(); k++) {
-            if (grades.get(k - 1) > 0) {
+            if (grades.get(k - 1) >= relevanceThreshold) {
                 totalRelevant++;
                 double precisionAtK = (double) totalRelevant / k;
                 sumPrecision += precisionAtK;
@@ -433,94 +498,263 @@ public class RetrievalEvaluator {
         return sumPrecision / totalRelevant;
     }
 
-    // ── Matching Logic ────────────────────────────────────────
+    // ── Matching Engine ────────────────────────────────────────
 
     /**
-     * Tests the specified path and symbol against document metadata. Both must match when
-     * both are present; a definition with neither does not match. Paths use normalized
-     * slashes, and class-name matches require a class, interface, record, or enum chunk.
-     * Line bounds in the definition are not considered.
-     *
-     * @return false if either argument is null or the specified fields do not match
+     * Determines whether a retrieved document matches the specified ground-truth chunk definition.
      */
     public boolean matches(Document doc, RelevantChunkDefinition gt) {
-        if (doc == null || gt == null) return false;
+        return getMatchReason(doc, gt) != null;
+    }
+
+    /**
+     * Evaluates matching between doc and ground truth, returning a descriptive reason
+     * string when matched or {@code null} when not matched.
+     */
+    public String getMatchReason(Document doc, RelevantChunkDefinition gt) {
+        if (doc == null || gt == null) return null;
 
         Map<String, Object> meta = doc.getMetadata();
-        String docPath = normalizePath(String.valueOf(meta.getOrDefault("filePath", "")));
-        String gtPath = normalizePath(gt.getFilePath());
+        if (meta == null) return null;
 
-        String elementName = String.valueOf(meta.getOrDefault("elementName", ""));
-        String className = String.valueOf(meta.getOrDefault("className", ""));
-        String methodName = String.valueOf(meta.getOrDefault("methodName", ""));
-        String type = String.valueOf(meta.getOrDefault("type", "")).toUpperCase(Locale.ROOT);
+        String rawDocPath = String.valueOf(meta.getOrDefault("filePath", ""));
+        String rawGtPath = gt.getFilePath();
 
-        boolean pathMatches = false;
-        if (!gtPath.isBlank() && !docPath.isBlank()) {
-            pathMatches = docPath.equals(gtPath)
-                    || docPath.endsWith("/" + gtPath)
-                    || docPath.contains("/" + gtPath + "/");
+        boolean hasGtPath = (rawGtPath != null && !rawGtPath.isBlank());
+        boolean hasGtSymbol = (gt.getSymbol() != null && !gt.getSymbol().isBlank());
+
+        if (!hasGtPath && !hasGtSymbol) {
+            return null; // Definition with neither path nor symbol matches nothing
         }
 
-        boolean symbolMatches = false;
-        String gtSymbol = (gt.getSymbol() != null) ? gt.getSymbol().trim() : "";
-        if (!gtSymbol.isBlank()) {
-            boolean elemMatch = gtSymbol.equalsIgnoreCase(elementName)
-                    || elementName.startsWith(gtSymbol + "#")
-                    || elementName.startsWith(gtSymbol + "(")
-                    || elementName.equalsIgnoreCase(gtSymbol + "()");
-            boolean methodMatch = gtSymbol.equalsIgnoreCase(methodName)
-                    || methodName.startsWith(gtSymbol + "(")
-                    || methodName.equalsIgnoreCase(gtSymbol + "()");
-            boolean classChunkMatch = ("CLASS".equals(type) || "INTERFACE".equals(type) || "RECORD".equals(type) || "ENUM".equals(type))
-                    && gtSymbol.equalsIgnoreCase(className);
-
-            symbolMatches = elemMatch || methodMatch || classChunkMatch;
+        // 1. Path Matching
+        if (hasGtPath) {
+            String cleanDoc = cleanPath(rawDocPath);
+            String cleanGt = cleanPath(rawGtPath);
+            if (!pathsMatch(cleanDoc, cleanGt)) {
+                return null;
+            }
         }
 
-        // Optional line range bounds check if specified in ground truth
-        if (gt.getStartLine() != null || gt.getEndLine() != null) {
+        // 2. Symbol Matching
+        String symbolReason = null;
+        if (hasGtSymbol) {
+            String docElem = String.valueOf(meta.getOrDefault("elementName", ""));
+            String docClass = String.valueOf(meta.getOrDefault("className", ""));
+            String docMethod = String.valueOf(meta.getOrDefault("methodName", ""));
+            String docType = String.valueOf(meta.getOrDefault("type", "")).toUpperCase(Locale.ROOT);
+
+            symbolReason = checkSymbolMatch(docElem, docClass, docMethod, docType, gt.getSymbol(), hasGtPath);
+            if (symbolReason == null) {
+                return null;
+            }
+        }
+
+        // 3. Line Range Overlap
+        boolean hasGtLines = (gt.getStartLine() != null || gt.getEndLine() != null);
+        if (hasGtLines) {
             Object docStartObj = meta.get("startLine");
             Object docEndObj = meta.get("endLine");
             if (docStartObj != null && docEndObj != null) {
                 try {
                     int docStart = Integer.parseInt(String.valueOf(docStartObj));
                     int docEnd = Integer.parseInt(String.valueOf(docEndObj));
-                    if (gt.getStartLine() != null && docEnd < gt.getStartLine()) {
-                        return false;
+                    if (!linesOverlap(docStart, docEnd, gt.getStartLine(), gt.getEndLine())) {
+                        return null;
                     }
-                    if (gt.getEndLine() != null && docStart > gt.getEndLine()) {
-                        return false;
-                    }
-                } catch (NumberFormatException ignored) {}
+                } catch (NumberFormatException ignored) {
+                    // Non-integer line boundaries skip strict line rejection
+                }
             }
         }
 
-        // If both path and symbol are specified, both must match
-        if (!gtPath.isBlank() && !gtSymbol.isBlank()) {
-            return pathMatches && symbolMatches;
+        // Build descriptive match reason
+        if (hasGtPath && hasGtSymbol && hasGtLines) {
+            return "PATH_SYMBOL_LINE_MATCH (" + symbolReason + ")";
+        } else if (hasGtPath && hasGtSymbol) {
+            return "PATH_AND_SYMBOL_MATCH (" + symbolReason + ")";
+        } else if (hasGtPath) {
+            return "PATH_ONLY_MATCH";
+        } else {
+            return "SYMBOL_ONLY_MATCH (" + symbolReason + ")";
+        }
+    }
+
+    /**
+     * Checks if cleanDocPath and cleanGtPath represent the same file location.
+     * Uses normalized forward slashes, case-insensitive suffix matching on directory boundaries,
+     * and Java package path alignment.
+     */
+    public boolean pathsMatch(String cleanDoc, String cleanGt) {
+        if (cleanDoc == null || cleanDoc.isBlank() || cleanGt == null || cleanGt.isBlank()) {
+            return false;
         }
 
-        // If only path is specified
-        if (!gtPath.isBlank()) {
-            return pathMatches;
+        cleanDoc = cleanDoc.toLowerCase(Locale.ROOT);
+        cleanGt = cleanGt.toLowerCase(Locale.ROOT);
+
+        // Direct equality
+        if (cleanDoc.equals(cleanGt)) {
+            return true;
         }
 
-        // If only symbol is specified
-        if (!gtSymbol.isBlank()) {
-            return symbolMatches;
+        // Slash-boundary suffix matching (bidirectional)
+        if (cleanDoc.endsWith("/" + cleanGt) || cleanGt.endsWith("/" + cleanDoc)) {
+            return true;
+        }
+
+        // Package path extraction after src/main/java or src/test/java
+        String docPkg = extractPackagePath(cleanDoc);
+        String gtPkg = extractPackagePath(cleanGt);
+        if (!docPkg.isBlank() && !gtPkg.isBlank() && docPkg.equals(gtPkg)) {
+            return true;
+        }
+
+        // If gt is a simple filename (no slashes), check if doc ends with it
+        if (!cleanGt.contains("/") && cleanDoc.endsWith("/" + cleanGt)) {
+            return true;
         }
 
         return false;
     }
 
-    private String normalizePath(String path) {
+    /**
+     * Extracts canonical Java package path from a file path (after src/main/java/ or src/test/java/).
+     */
+    private String extractPackagePath(String path) {
         if (path == null) return "";
-        return path.replace('\\', '/').trim();
+        Matcher m = JAVA_SRC_PATTERN.matcher(path);
+        if (m.find()) {
+            return m.group(1);
+        }
+        return path;
+    }
+
+    /**
+     * Evaluates symbol matching between doc metadata and ground-truth symbol.
+     * Handles overloaded methods, parameters, qualified names (Class#method or Class.method),
+     * and chunk types.
+     */
+    public String checkSymbolMatch(String docElem, String docClass, String docMethod, String docType, String rawGtSymbol) {
+        return checkSymbolMatch(docElem, docClass, docMethod, docType, rawGtSymbol, true);
+    }
+
+    public String checkSymbolMatch(String docElem, String docClass, String docMethod, String docType, String rawGtSymbol, boolean pathMatched) {
+        if (rawGtSymbol == null || rawGtSymbol.isBlank()) {
+            return "BLANK_GT_SYMBOL";
+        }
+
+        String gtSym = rawGtSymbol.trim();
+        String baseGt = stripSignature(gtSym);
+
+        String baseElem = stripSignature(docElem);
+        String baseMethod = stripSignature(docMethod);
+        String baseClass = stripSignature(docClass);
+
+        // 1. Qualified GT symbol: ClassName#methodName or ClassName.methodName
+        if (gtSym.contains("#") || (gtSym.contains(".") && !gtSym.endsWith(".java"))) {
+            String delimiter = gtSym.contains("#") ? "#" : "\\.";
+            String[] parts = gtSym.split(delimiter);
+            if (parts.length == 2) {
+                String expectedClass = stripSignature(parts[0]);
+                String expectedMethod = stripSignature(parts[1]);
+
+                boolean classOk = expectedClass.equalsIgnoreCase(baseClass);
+                boolean methodOk = expectedMethod.equalsIgnoreCase(baseElem) || expectedMethod.equalsIgnoreCase(baseMethod);
+
+                if (classOk && methodOk) {
+                    return "QUALIFIED_METHOD_MATCH";
+                }
+            }
+        }
+
+        // 2. Exact element or method name match (case-insensitive)
+        if (!baseGt.isBlank()) {
+            if (baseGt.equalsIgnoreCase(baseElem) || baseGt.equalsIgnoreCase(docElem)) {
+                return "EXACT_ELEMENT_MATCH";
+            }
+            if (baseGt.equalsIgnoreCase(baseMethod) || baseGt.equalsIgnoreCase(docMethod)) {
+                return "EXACT_METHOD_MATCH";
+            }
+        }
+
+        // 3. Class/Interface/Record/Enum chunk match
+        boolean isTypeChunk = "CLASS".equals(docType) || "INTERFACE".equals(docType)
+                || "RECORD".equals(docType) || "ENUM".equals(docType);
+        if (isTypeChunk && !baseGt.isBlank() && baseGt.equalsIgnoreCase(baseClass)) {
+            return "CLASS_DECLARATION_MATCH";
+        }
+
+        // 4. Constructor chunk match
+        if ("CONSTRUCTOR".equals(docType) && !baseGt.isBlank() && baseGt.equalsIgnoreCase(baseClass)) {
+            return "CONSTRUCTOR_MATCH";
+        }
+
+        // 5. Fragment match (e.g., element "doFragment#0" for symbol "doFragment")
+        if (!baseGt.isBlank() && docElem != null && docElem.toLowerCase(Locale.ROOT).startsWith(baseGt.toLowerCase(Locale.ROOT) + "#")) {
+            return "FRAGMENT_MATCH";
+        }
+
+        return null;
+    }
+
+    /**
+     * Strips parameters, parentheses, and qualification to extract the base symbol identifier.
+     */
+    public String stripSignature(String s) {
+        if (s == null || s.isBlank()) return "";
+        String clean = s.trim();
+        // Remove trailing or inline parentheses and parameter lists: e.g. "findFirst(Class<T>)" -> "findFirst"
+        int parenIdx = clean.indexOf('(');
+        if (parenIdx >= 0) {
+            clean = clean.substring(0, parenIdx).trim();
+        }
+        // If qualified with #, e.g. "Node#findFirst", take the method part
+        int hashIdx = clean.lastIndexOf('#');
+        if (hashIdx >= 0 && hashIdx < clean.length() - 1) {
+            clean = clean.substring(hashIdx + 1).trim();
+        }
+        return clean;
+    }
+
+    /**
+     * Checks whether doc interval [docStart, docEnd] intersects ground truth interval [gtStart, gtEnd].
+     */
+    public boolean linesOverlap(int docStart, int docEnd, Integer gtStart, Integer gtEnd) {
+        if (gtStart == null && gtEnd == null) return true;
+        if (gtStart != null && gtEnd != null) {
+            int start = Math.max(docStart, gtStart);
+            int end = Math.min(docEnd, gtEnd);
+            return start <= end;
+        }
+        if (gtStart != null) {
+            return docEnd >= gtStart;
+        }
+        return docStart <= gtEnd;
+    }
+
+    /**
+     * Normalizes slashes, trims whitespace, and strips known temporary extraction directory prefixes.
+     */
+    public String cleanPath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) return "";
+        String path = rawPath.replace('\\', '/').trim();
+
+        Matcher m = TEMP_PATH_PREFIX_PATTERN.matcher(path);
+        if (m.find()) {
+            path = m.group(1);
+        }
+
+        while (path.startsWith("/")) {
+            path = path.substring(1);
+        }
+        while (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return path;
     }
 
     private double round(double value) {
         return Math.round(value * 10000.0) / 10000.0;
     }
 }
-

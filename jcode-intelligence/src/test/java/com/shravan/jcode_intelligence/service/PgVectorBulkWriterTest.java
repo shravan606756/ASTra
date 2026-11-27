@@ -586,5 +586,79 @@ class PgVectorBulkWriterTest {
             assertFalse(r.acknowledgement().isCompletedExceptionally());
         }
     }
+
+    @Test
+    @DisplayName("Drained batch for failed job is discarded without database persistence")
+    void testFencingDrainedBatchFromFailedJobPreventsPersistence() {
+        String jobId = "job-fenced-fail";
+        queue.registerJob(jobId, "repo-fence");
+
+        List<EmbeddedRecord> batch = new ArrayList<>();
+        for (int i = 1; i <= 5; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-fence", "c-" + i, "data");
+            batch.add(new EmbeddedRecord(id, jobId, "repo-fence", "data", Map.of(), new float[]{0.1f}, new CompletableFuture<>()));
+        }
+
+        // Job fails while batch was already drained by a writer
+        queue.failJob(jobId, new RuntimeException("Parser crash in streaming pipeline"));
+
+        writer.persistWithAdaptiveSplitting(batch, 0);
+
+        // Verify that no SQL update was executed for the failed job
+        verify(mockJdbcTemplate, never()).batchUpdate(anyString(), any(BatchPreparedStatementSetter.class));
+
+        // Verify all records were failed
+        for (EmbeddedRecord r : batch) {
+            assertTrue(r.acknowledgement().isDone());
+            assertTrue(r.acknowledgement().isCompletedExceptionally());
+        }
+    }
+
+    @Test
+    @DisplayName("Heterogeneous batch filters out records for failed job and persists active job records")
+    void testHeterogeneousBatchFencesFailedJobAndPersistsActiveJob() {
+        String activeJobId = "job-active";
+        String failedJobId = "job-failed";
+
+        queue.registerJob(activeJobId, "repo-active");
+        queue.registerJob(failedJobId, "repo-failed");
+
+        List<EmbeddedRecord> batch = new ArrayList<>();
+        List<EmbeddedRecord> activeRecords = new ArrayList<>();
+        List<EmbeddedRecord> failedRecords = new ArrayList<>();
+
+        for (int i = 1; i <= 3; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-active", "act-" + i, "content");
+            EmbeddedRecord r = new EmbeddedRecord(id, activeJobId, "repo-active", "content", Map.of(), new float[]{0.1f}, new CompletableFuture<>());
+            activeRecords.add(r);
+            batch.add(r);
+        }
+        for (int i = 1; i <= 3; i++) {
+            String id = EmbeddedRecord.generateDeterministicId("repo-failed", "fail-" + i, "content");
+            EmbeddedRecord r = new EmbeddedRecord(id, failedJobId, "repo-failed", "content", Map.of(), new float[]{0.1f}, new CompletableFuture<>());
+            failedRecords.add(r);
+            batch.add(r);
+        }
+
+        when(mockJdbcTemplate.batchUpdate(anyString(), any(BatchPreparedStatementSetter.class)))
+                .thenReturn(new int[]{1, 1, 1});
+
+        // Fail one job
+        queue.failJob(failedJobId, new RuntimeException("Aborted"));
+
+        writer.persistWithAdaptiveSplitting(batch, 0);
+
+        // Verify batchUpdate was called with batchSize = 3 (only active records)
+        verify(mockJdbcTemplate, times(1)).batchUpdate(anyString(), argThat((BatchPreparedStatementSetter setter) -> setter.getBatchSize() == 3));
+
+        for (EmbeddedRecord r : activeRecords) {
+            assertTrue(r.acknowledgement().isDone());
+            assertFalse(r.acknowledgement().isCompletedExceptionally());
+        }
+        for (EmbeddedRecord r : failedRecords) {
+            assertTrue(r.acknowledgement().isDone());
+            assertTrue(r.acknowledgement().isCompletedExceptionally());
+        }
+    }
 }
 

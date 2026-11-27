@@ -2,10 +2,17 @@ package com.shravan.jcode_intelligence.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shravan.jcode_intelligence.config.IntentRetrievalConfig;
+import com.shravan.jcode_intelligence.config.RetrievalConfig;
 import com.shravan.jcode_intelligence.model.QueryIntent;
+import com.shravan.jcode_intelligence.model.RetrievalStrategy;
+import com.shravan.jcode_intelligence.sparse.fusion.ReciprocalRankFusion;
+import com.shravan.jcode_intelligence.sparse.mapper.LuceneDocumentMapper;
+import com.shravan.jcode_intelligence.sparse.query.LuceneQueryBuilder;
+import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.document.DocumentMetadata;
 import org.springframework.ai.vectorstore.SearchRequest;
@@ -13,9 +20,12 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.file.Path;
 import java.sql.ResultSet;
 import java.util.*;
+import java.util.concurrent.ThreadPoolExecutor;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -342,7 +352,415 @@ class RetrievalStrategySelectorTest {
         assertEquals("C_VECTOR", docs.get(2).getMetadata().get("chunkId"), "Vector match must appear third");
     }
 
+    @Test
+    @DisplayName("Strategy selection routes to DENSE, SPARSE, or HYBRID candidate retrieval")
+    void testStrategySelection_Dense_Sparse_Hybrid() {
+        Document vectorDoc = new Document("v1", "vector content", Map.of("chunkId", "V1", "filePath", "src/V1.java", "type", "CLASS"));
+        Document sparseDoc = new Document("s1", "sparse content", Map.of("chunkId", "S1", "filePath", "src/S1.java", "type", "CLASS"));
+
+        TestVectorStore vs = new TestVectorStore();
+        vs.defaultSearchResults = List.of(vectorDoc);
+
+        RetrievalConfig rConfig = new RetrievalConfig();
+        TestLuceneStore ls = new TestLuceneStore(rConfig);
+        ls.defaultSearchResults = List.of(sparseDoc);
+
+        RetrievalStrategySelector stratSelector = new RetrievalStrategySelector(
+                vs, testJdbcTemplate, symbolExtractor, config, archBuilder,
+                new ObjectMapper(), null, ls, new ReciprocalRankFusion(rConfig), rConfig
+        );
+
+        // 1. DENSE strategy
+        List<Document> denseResults = stratSelector.retrieve("query", QueryIntent.UNKNOWN, "repo-1", RetrievalStrategy.DENSE);
+        assertEquals(1, vs.callCount);
+        assertEquals(0, ls.callCount);
+        assertEquals(1, denseResults.size());
+        assertEquals("V1", denseResults.get(0).getMetadata().get("chunkId"));
+
+        // 2. SPARSE strategy
+        vs.callCount = 0;
+        ls.callCount = 0;
+        List<Document> sparseResults = stratSelector.retrieve("query", QueryIntent.UNKNOWN, "repo-1", RetrievalStrategy.SPARSE);
+        assertEquals(0, vs.callCount);
+        assertEquals(1, ls.callCount);
+        assertEquals(1, sparseResults.size());
+        assertEquals("S1", sparseResults.get(0).getMetadata().get("chunkId"));
+
+        // 3. HYBRID strategy
+        vs.callCount = 0;
+        ls.callCount = 0;
+        List<Document> hybridResults = stratSelector.retrieve("query", QueryIntent.UNKNOWN, "repo-1", RetrievalStrategy.HYBRID);
+        assertEquals(1, vs.callCount);
+        assertEquals(1, ls.callCount);
+        assertEquals(2, hybridResults.size());
+    }
+
+    @Test
+    @DisplayName("Package intent retrieval executes strategy-selected candidates (DENSE, SPARSE, HYBRID) and combines with structural elements")
+    void testPackageIntent_Dense_Sparse_Hybrid_routesStrategyAndCombinesStructural() {
+        Document vectorDoc = new Document("v1", "vector content", Map.of("chunkId", "V_PKG", "filePath", "src/V1.java", "type", "CLASS"));
+        Document sparseDoc = new Document("s1", "sparse content", Map.of("chunkId", "S_PKG", "filePath", "src/S1.java", "type", "CLASS"));
+        Document fieldDoc = new Document("f1", "field content", Map.of("chunkId", "F1", "filePath", "src/F1.java", "type", "FIELD"));
+
+        TestVectorStore vs = new TestVectorStore();
+        RetrievalConfig rConfig = new RetrievalConfig();
+        TestLuceneStore ls = new TestLuceneStore(rConfig);
+
+        Document pkgDoc = new Document("pkg", "package summary", Map.of("chunkId", "P1", "filePath", "package-info.java", "type", "PACKAGE"));
+        TestJdbcTemplate jdbc = new TestJdbcTemplate();
+        jdbc.defaultPackageResponse = List.of(pkgDoc);
+
+        RetrievalStrategySelector stratSelector = new RetrievalStrategySelector(
+                vs, jdbc, symbolExtractor, config, archBuilder,
+                new ObjectMapper(), null, ls, new ReciprocalRankFusion(rConfig), rConfig
+        );
+
+        // 1. DENSE strategy with PACKAGE intent
+        vs.defaultSearchResults = List.of(vectorDoc, fieldDoc);
+        List<Document> denseResults = stratSelector.retrieve("user auth package", QueryIntent.PACKAGE, "repo-1", RetrievalStrategy.DENSE);
+        assertEquals(1, vs.callCount, "Vector store must be called in DENSE mode for PACKAGE intent");
+        assertEquals(0, ls.callCount, "Lucene store must not be called in DENSE mode");
+        assertTrue(denseResults.stream().anyMatch(d -> "P1".equals(d.getMetadata().get("chunkId"))), "Structural PACKAGE chunk must be included");
+        assertTrue(denseResults.stream().anyMatch(d -> "V_PKG".equals(d.getMetadata().get("chunkId"))), "Dense candidate must be included");
+        assertFalse(denseResults.stream().anyMatch(d -> "F1".equals(d.getMetadata().get("chunkId"))), "FIELD candidate must be excluded from PACKAGE intent");
+
+        // 2. SPARSE strategy with PACKAGE intent
+        vs.callCount = 0;
+        ls.callCount = 0;
+        ls.defaultSearchResults = List.of(sparseDoc);
+        List<Document> sparseResults = stratSelector.retrieve("user auth package", QueryIntent.PACKAGE, "repo-1", RetrievalStrategy.SPARSE);
+        assertEquals(0, vs.callCount, "Vector store must not be called in SPARSE mode");
+        assertEquals(1, ls.callCount, "Lucene store must be called in SPARSE mode for PACKAGE intent");
+        assertTrue(sparseResults.stream().anyMatch(d -> "P1".equals(d.getMetadata().get("chunkId"))));
+        assertTrue(sparseResults.stream().anyMatch(d -> "S_PKG".equals(d.getMetadata().get("chunkId"))));
+
+        // 3. HYBRID strategy with PACKAGE intent
+        vs.callCount = 0;
+        ls.callCount = 0;
+        vs.defaultSearchResults = List.of(vectorDoc);
+        ls.defaultSearchResults = List.of(sparseDoc);
+        List<Document> hybridResults = stratSelector.retrieve("user auth package", QueryIntent.PACKAGE, "repo-1", RetrievalStrategy.HYBRID);
+        assertEquals(1, vs.callCount, "Vector store must be called in HYBRID mode");
+        assertEquals(1, ls.callCount, "Lucene store must be called in HYBRID mode");
+        assertTrue(hybridResults.stream().anyMatch(d -> "P1".equals(d.getMetadata().get("chunkId"))));
+        assertTrue(hybridResults.stream().anyMatch(d -> "V_PKG".equals(d.getMetadata().get("chunkId"))));
+        assertTrue(hybridResults.stream().anyMatch(d -> "S_PKG".equals(d.getMetadata().get("chunkId"))));
+    }
+
+    @Test
+    @DisplayName("Hybrid search handles branch failures independently without failing request")
+    void testIndependentBranchFailureHandling() {
+        Document vectorDoc = new Document("v1", "vector content", Map.of("chunkId", "V1", "filePath", "src/V1.java", "type", "CLASS"));
+        Document sparseDoc = new Document("s1", "sparse content", Map.of("chunkId", "S1", "filePath", "src/S1.java", "type", "CLASS"));
+
+        TestVectorStore vs = new TestVectorStore();
+        RetrievalConfig rConfig = new RetrievalConfig();
+        TestLuceneStore ls = new TestLuceneStore(rConfig);
+
+        RetrievalStrategySelector stratSelector = new RetrievalStrategyStrategyWrapper(
+                vs, testJdbcTemplate, symbolExtractor, config, archBuilder,
+                new ObjectMapper(), null, ls, new ReciprocalRankFusion(rConfig), rConfig
+        );
+
+        // Subcase A: Vector store throws exception, Sparse succeeds
+        vs.throwError = true;
+        ls.throwError = false;
+        ls.defaultSearchResults = List.of(sparseDoc);
+
+        List<Document> resA = stratSelector.retrieve("query", QueryIntent.UNKNOWN, "repo-1", RetrievalStrategy.HYBRID);
+        assertNotNull(resA);
+        assertEquals(1, resA.size());
+        assertEquals("S1", resA.get(0).getMetadata().get("chunkId"));
+
+        // Subcase B: Sparse store throws exception, Vector succeeds
+        vs.throwError = false;
+        vs.defaultSearchResults = List.of(vectorDoc);
+        ls.throwError = true;
+
+        List<Document> resB = stratSelector.retrieve("query", QueryIntent.UNKNOWN, "repo-1", RetrievalStrategy.HYBRID);
+        assertNotNull(resB);
+        assertEquals(1, resB.size());
+        assertEquals("V1", resB.get(0).getMetadata().get("chunkId"));
+    }
+
+    @Test
+    @DisplayName("Fallback executor core size is configurable with default of 4")
+    void testFallbackExecutorCoreSizeConfigurable() throws Exception {
+        // 1. Custom core pool size
+        RetrievalConfig customConfig = new RetrievalConfig();
+        customConfig.setExecutorCorePoolSize(7);
+
+        RetrievalStrategySelector customSelector = new RetrievalStrategySelector(
+                testVectorStore, testJdbcTemplate, symbolExtractor, config, archBuilder,
+                new ObjectMapper(), null, null, null, customConfig
+        );
+
+        Field execField = RetrievalStrategySelector.class.getDeclaredField("retrievalExecutor");
+        execField.setAccessible(true);
+        ThreadPoolExecutor customExecutor = (ThreadPoolExecutor) execField.get(customSelector);
+        assertEquals(7, customExecutor.getCorePoolSize());
+
+        // 2. Default core pool size (4)
+        RetrievalConfig defaultConfig = new RetrievalConfig();
+        RetrievalStrategySelector defaultSelector = new RetrievalStrategySelector(
+                testVectorStore, testJdbcTemplate, symbolExtractor, config, archBuilder,
+                new ObjectMapper(), null, null, null, defaultConfig
+        );
+        ThreadPoolExecutor defaultExecutor = (ThreadPoolExecutor) execField.get(defaultSelector);
+        assertEquals(4, defaultExecutor.getCorePoolSize());
+    }
+
+    @Test
+    @DisplayName("Real temporary Lucene index verifies exact identifier and typo fuzzy matching")
+    void testRealLuceneExactIdentifierAndTypoSearch(@TempDir Path tempDir) throws Exception {
+        RetrievalConfig luceneConfig = new RetrievalConfig();
+        luceneConfig.setIndexDir(tempDir.toString());
+        luceneConfig.setFuzzyMinTermLength(4);
+        luceneConfig.setFuzzyMaxEdits(1);
+
+        try (LuceneGenerationStore realStore = new LuceneGenerationStore(
+                luceneConfig, new LuceneDocumentMapper(), new LuceneQueryBuilder(luceneConfig))) {
+
+            try (LuceneGenerationStore.StagingSession session = realStore.stageGeneration("repo-test")) {
+                Map<String, Object> meta = new HashMap<>();
+                meta.put("type", "CLASS");
+                meta.put("className", "PaymentProcessingService");
+                meta.put("elementName", "PaymentProcessingService");
+                meta.put("filePath", "src/PaymentProcessingService.java");
+                meta.put("startLine", 1);
+                meta.put("endLine", 50);
+                meta.put("repositoryId", "repo-test");
+                Document doc = new Document("uuid-payment-1",
+                        "public class PaymentProcessingService { public void processPayment() {} }", meta);
+                session.writeDocuments(List.of(doc));
+                realStore.publishGeneration(session);
+            }
+
+            RetrievalStrategySelector realSelector = new RetrievalStrategySelector(
+                    testVectorStore, testJdbcTemplate, symbolExtractor, config, archBuilder,
+                    new ObjectMapper(), null, realStore, new ReciprocalRankFusion(luceneConfig), luceneConfig
+            );
+
+            // 1. Exact identifier search
+            List<Document> exactResults = realSelector.retrieve(
+                    "PaymentProcessingService", QueryIntent.UNKNOWN, "repo-test", RetrievalStrategy.SPARSE);
+            assertFalse(exactResults.isEmpty(), "Exact identifier search must return results");
+            assertEquals("uuid-payment-1", exactResults.get(0).getId());
+
+            // 2. Typo query: "PaymentProcessngService" (1 edit distance: missing 'i' in Processing)
+            List<Document> typoResults = realSelector.retrieve(
+                    "PaymentProcessngService", QueryIntent.UNKNOWN, "repo-test", RetrievalStrategy.SPARSE);
+            assertFalse(typoResults.isEmpty(), "Fuzzy search must tolerate typo and find PaymentProcessingService");
+            assertEquals("uuid-payment-1", typoResults.get(0).getId());
+        }
+    }
+
+    @Test
+    @DisplayName("Deduplication preserves first-wins order, merges route union, and computes maximum dense score")
+    void testDeduplicatePreservesFirstWinsOrderAndMergesMaxDenseScoreAndRouteUnion() throws Exception {
+        // Document A (first encountered at index 0)
+        Map<String, Object> metaA1 = new HashMap<>();
+        metaA1.put("repositoryId", "repo-1");
+        metaA1.put("filePath", "src/Service.java");
+        metaA1.put("startLine", 10);
+        metaA1.put("endLine", 30);
+        metaA1.put("type", "METHOD");
+        metaA1.put(RetrievalConstants.METADATA_DENSE_SCORE, 0.72);
+        metaA1.put(RetrievalConstants.METADATA_RETRIEVAL_ROUTES, new LinkedHashSet<>(List.of(RetrievalConstants.ROUTE_VECTOR)));
+        Document docA1 = new Document("id-A1", "content A", metaA1);
+
+        // Document B (encountered at index 1)
+        Map<String, Object> metaB = new HashMap<>();
+        metaB.put("repositoryId", "repo-1");
+        metaB.put("filePath", "src/Other.java");
+        metaB.put("startLine", 5);
+        metaB.put("endLine", 15);
+        metaB.put("type", "CLASS");
+        metaB.put(RetrievalConstants.METADATA_RETRIEVAL_ROUTES, new LinkedHashSet<>(List.of(RetrievalConstants.ROUTE_METADATA)));
+        Document docB = new Document("id-B", "content B", metaB);
+
+        // Document A duplicate (encountered at index 2 with higher dense score and different route)
+        Map<String, Object> metaA2 = new HashMap<>();
+        metaA2.put("repositoryId", "repo-1");
+        metaA2.put("filePath", "src/Service.java");
+        metaA2.put("startLine", 10);
+        metaA2.put("endLine", 30);
+        metaA2.put("type", "METHOD");
+        metaA2.put(RetrievalConstants.METADATA_DENSE_SCORE, 0.95);
+        metaA2.put(RetrievalConstants.METADATA_RETRIEVAL_ROUTES, new LinkedHashSet<>(List.of(RetrievalConstants.ROUTE_METADATA)));
+        Document docA2 = new Document("id-A2", "content A duplicate", metaA2);
+
+        Method deduplicateMethod = RetrievalStrategySelector.class.getDeclaredMethod("deduplicate", List.class);
+        deduplicateMethod.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Document> result = (List<Document>) deduplicateMethod.invoke(selector, List.of(docA1, docB, docA2));
+
+        // First-wins: exactly 2 documents, A remains at index 0, B remains at index 1
+        assertEquals(2, result.size());
+        Document survivorA = result.get(0);
+        Document survivorB = result.get(1);
+
+        assertEquals("id-A1", survivorA.getId(), "First-wins encounter order must preserve original document identity");
+        assertEquals("id-B", survivorB.getId(), "Original ordering of secondary documents must be preserved");
+
+        // Merged dense score: max(0.72, 0.95) = 0.95
+        Double mergedDenseScore = (Double) survivorA.getMetadata().get(RetrievalConstants.METADATA_DENSE_SCORE);
+        assertNotNull(mergedDenseScore);
+        assertEquals(0.95, mergedDenseScore, 0.0001);
+
+        // Route union: contains both vector and metadata
+        @SuppressWarnings("unchecked")
+        Set<String> mergedRoutes = (Set<String>) survivorA.getMetadata().get(RetrievalConstants.METADATA_RETRIEVAL_ROUTES);
+        assertNotNull(mergedRoutes);
+        assertTrue(mergedRoutes.contains(RetrievalConstants.ROUTE_VECTOR));
+        assertTrue(mergedRoutes.contains(RetrievalConstants.ROUTE_METADATA));
+    }
+
+    @Test
+    @DisplayName("Deduplication safely handles empty metadata maps without NullPointerException")
+    void testDeduplicateHandlesNullMetadata() throws Exception {
+        Map<String, Object> m1 = new HashMap<>();
+        m1.put("filePath", "src/File1.java");
+        Document doc1 = Document.builder().id("id-null-1").text("text 1").metadata(m1).build();
+
+        Map<String, Object> m2 = new HashMap<>();
+        m2.put("filePath", "src/File2.java");
+        Document doc2 = Document.builder().id("id-null-2").text("text 2").metadata(m2).build();
+
+        Method deduplicateMethod = RetrievalStrategySelector.class.getDeclaredMethod("deduplicate", List.class);
+        deduplicateMethod.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Document> result = (List<Document>) deduplicateMethod.invoke(selector, List.of(doc1, doc2));
+
+        assertNotNull(result);
+        assertEquals(2, result.size());
+    }
+
+    @Test
+    @DisplayName("Deduplication creates safe copies without mutating original shared or immutable metadata maps")
+    void testDeduplicateDoesNotMutateSharedMaps() throws Exception {
+        // Immutable map as metadata
+        Map<String, Object> immutableMeta = Map.of(
+                "repositoryId", "repo-shared",
+                "filePath", "src/Shared.java",
+                "startLine", 1,
+                "endLine", 10,
+                "type", "CLASS"
+        );
+        Document doc1 = new Document("shared-1", "content 1", immutableMeta);
+        Document doc2 = new Document("shared-2", "content 2", immutableMeta);
+
+        Method deduplicateMethod = RetrievalStrategySelector.class.getDeclaredMethod("deduplicate", List.class);
+        deduplicateMethod.setAccessible(true);
+
+        // Must not throw UnsupportedOperationException
+        @SuppressWarnings("unchecked")
+        List<Document> result = (List<Document>) deduplicateMethod.invoke(selector, List.of(doc1, doc2));
+
+        assertEquals(1, result.size());
+        // Verify original map remains unmodified
+        assertFalse(immutableMeta.containsKey(RetrievalConstants.METADATA_RETRIEVAL_ROUTES));
+    }
+
+    @Test
+    @DisplayName("performVectorSearch tags candidates with vector route and copies score to denseScore")
+    void testPerformVectorSearchTagsVectorRoute() throws Exception {
+        Map<String, Object> vecMeta = new HashMap<>();
+        vecMeta.put("repositoryId", "repo-vec");
+        Document mockDoc = Document.builder()
+                .id("vec-1")
+                .text("vector match content")
+                .metadata(vecMeta)
+                .score(0.88)
+                .build();
+
+        testVectorStore.defaultSearchResults = List.of(mockDoc);
+
+        Method vectorSearchMethod = RetrievalStrategySelector.class.getDeclaredMethod(
+                "performVectorSearch", String.class, int.class, String.class);
+        vectorSearchMethod.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<Document> results = (List<Document>) vectorSearchMethod.invoke(selector, "query", 5, "repo-vec");
+
+        assertFalse(results.isEmpty());
+        Document returned = results.get(0);
+        assertEquals(0.88, returned.getScore());
+        assertEquals(0.88, returned.getMetadata().get(RetrievalConstants.METADATA_DENSE_SCORE));
+
+        @SuppressWarnings("unchecked")
+        Set<String> routes = (Set<String>) returned.getMetadata().get(RetrievalConstants.METADATA_RETRIEVAL_ROUTES);
+        assertNotNull(routes);
+        assertTrue(routes.contains(RetrievalConstants.ROUTE_VECTOR));
+    }
+
     // ── Test doubles ──────────────────────────────────────────
+
+    private static class RetrievalStrategyStrategyWrapper extends RetrievalStrategySelector {
+        RetrievalStrategyStrategyWrapper(VectorStore vs, JdbcTemplate jt, SymbolExtractor se,
+                                         IntentRetrievalConfig c, ArchitectureContextBuilder acb,
+                                         ObjectMapper om, java.util.concurrent.Executor exec,
+                                         LuceneGenerationStore ls, ReciprocalRankFusion rrf,
+                                         RetrievalConfig rc) {
+            super(vs, jt, se, c, acb, om, exec, ls, rrf, rc);
+        }
+    }
+
+    private static class TestLuceneStore extends LuceneGenerationStore {
+        List<Document> defaultSearchResults = List.of();
+        boolean throwError = false;
+        int callCount = 0;
+
+        TestLuceneStore(RetrievalConfig config) {
+            super(config, null, null);
+        }
+
+        @Override
+        public List<Document> search(String repositoryId, String queryStr, int topK) {
+            callCount++;
+            if (throwError) {
+                throw new RuntimeException("Simulated Lucene index failure");
+            }
+            return defaultSearchResults;
+        }
+
+        @Override
+        public List<Document> searchUnscoped(String queryStr, int topK) {
+            callCount++;
+            if (throwError) {
+                throw new RuntimeException("Simulated Lucene unscoped failure");
+            }
+            return defaultSearchResults;
+        }
+    }
+
+    private static class TestVectorStore implements VectorStore {
+        List<Document> defaultSearchResults = List.of();
+        boolean throwError = false;
+        int callCount = 0;
+
+        @Override public void add(List<Document> documents) {}
+        @Override public void delete(List<String> idList) {}
+        @Override public void delete(org.springframework.ai.vectorstore.filter.Filter.Expression filterExpression) {}
+        @Override
+        public List<Document> similaritySearch(String query) {
+            callCount++;
+            if (throwError) {
+                throw new RuntimeException("Simulated VectorStore failure");
+            }
+            return defaultSearchResults;
+        }
+        @Override
+        public List<Document> similaritySearch(SearchRequest request) {
+            callCount++;
+            if (throwError) {
+                throw new RuntimeException("Simulated VectorStore failure");
+            }
+            return defaultSearchResults;
+        }
+    }
 
     private static class TestJdbcTemplate extends JdbcTemplate {
         final List<String> executedQueries = new ArrayList<>();
@@ -351,6 +769,7 @@ class RetrievalStrategySelectorTest {
         List<Document> defaultMethodResponse = List.of();
         List<Document> defaultClassResponse = List.of();
         List<Document> defaultPackageResponse = List.of();
+        List<Document> defaultTypeResponse = List.of();
 
         @Override
         @SuppressWarnings("unchecked")
@@ -369,6 +788,12 @@ class RetrievalStrategySelectorTest {
                         }
                     }
                 }
+            } else if (sql.contains("metadata->>'type' = ?")) {
+                if (args != null && args.length > 0 && "PACKAGE".equals(args[0]) && !defaultPackageResponse.isEmpty()) {
+                    results.addAll((List<T>) defaultPackageResponse);
+                } else {
+                    results.addAll((List<T>) defaultTypeResponse);
+                }
             } else if (sql.contains("metadata->>'packageName' = ?")) {
                 results.addAll((List<T>) defaultPackageResponse);
             } else if (sql.contains("metadata->>'className' = ?")) {
@@ -378,16 +803,6 @@ class RetrievalStrategySelectorTest {
             }
             return results;
         }
-    }
-
-    private static class TestVectorStore implements VectorStore {
-        List<Document> defaultSearchResults = List.of();
-
-        @Override public void add(List<Document> documents) {}
-        @Override public void delete(List<String> idList) {}
-        @Override public void delete(org.springframework.ai.vectorstore.filter.Filter.Expression filterExpression) {}
-        @Override public List<Document> similaritySearch(String query) { return defaultSearchResults; }
-        @Override public List<Document> similaritySearch(SearchRequest request) { return defaultSearchResults; }
     }
 }
 

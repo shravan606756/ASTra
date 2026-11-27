@@ -2,12 +2,14 @@ package com.shravan.jcode_intelligence;
 
 import com.shravan.jcode_intelligence.converter.DocumentConverter;
 import com.shravan.jcode_intelligence.model.CodeChunk;
+import com.shravan.jcode_intelligence.util.DocumentIdGenerator;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -76,5 +78,22 @@ public class DocumentConverterNullMetadataTest {
             Map<String, List<String>> docRels = (Map<String, List<String>>) doc.getMetadata().get("relationships");
             assertFalse(docRels.containsKey("nullRel"), "Null relationships should be filtered out");
         }
+    }
+
+    @Test
+    public void testConvertedDocumentHasDeterministicExplicitId() {
+        DocumentConverter converter = new DocumentConverter();
+
+        CodeChunk chunk = new CodeChunk();
+        chunk.setId("chunk:com.example.Service::METHOD");
+        chunk.setRepositoryId("my-repo");
+        chunk.setContent("public void test() {}");
+
+        Document doc = converter.convert(chunk);
+
+        assertNotNull(doc.getId(), "Document ID must not be null");
+        String expectedId = DocumentIdGenerator.generateDeterministicId("my-repo", chunk.getId(), chunk.getContent());
+        assertEquals(expectedId, doc.getId(), "Document ID must match deterministic ID formula");
+        assertEquals(3, UUID.fromString(doc.getId()).version(), "Document ID must be RFC-4122 v3 UUID");
     }
 }

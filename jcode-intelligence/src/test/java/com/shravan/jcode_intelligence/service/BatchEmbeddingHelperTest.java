@@ -1,6 +1,7 @@
 package com.shravan.jcode_intelligence.service;
 
 import com.shravan.jcode_intelligence.model.EmbeddedRecord;
+import com.shravan.jcode_intelligence.util.DocumentIdGenerator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,8 +38,10 @@ class BatchEmbeddingHelperTest {
     @Test
     @DisplayName("embedAndStage produces deterministic IDs and stages records to queue")
     void testEmbedAndStageSuccess() throws Exception {
-        Document doc1 = new Document("public class A {}", Map.of("chunkId", "chunk-1"));
-        Document doc2 = new Document("public class B {}", Map.of("chunkId", "chunk-2"));
+        String id1 = DocumentIdGenerator.generateDeterministicId("repo-1", "chunk-1", "public class A {}");
+        String id2 = DocumentIdGenerator.generateDeterministicId("repo-1", "chunk-2", "public class B {}");
+        Document doc1 = new Document(id1, "public class A {}", Map.of("chunkId", "chunk-1"));
+        Document doc2 = new Document(id2, "public class B {}", Map.of("chunkId", "chunk-2"));
         List<Document> batch = List.of(doc1, doc2);
 
         float[] emb1 = new float[]{0.1f, 0.2f};

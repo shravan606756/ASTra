@@ -9,6 +9,7 @@ import com.shravan.jcode_intelligence.exception.BenchmarkConflictException;
 import com.shravan.jcode_intelligence.model.QueryIntent;
 import com.shravan.jcode_intelligence.model.benchmark.BenchmarkQueryDefinition;
 import com.shravan.jcode_intelligence.model.benchmark.BenchmarkSuite;
+import com.shravan.jcode_intelligence.model.RetrievalStrategy;
 import com.shravan.jcode_intelligence.model.benchmark.RelevantChunkDefinition;
 import com.shravan.jcode_intelligence.service.RetrievalBenchmark.BenchmarkResult;
 import com.shravan.jcode_intelligence.service.impl.RetrievalServiceImpl;
@@ -88,11 +89,16 @@ class RetrievalBenchmarkTest {
         // Retrieval service that throws on query containing "FAILS"
         RetrievalServiceImpl faultInjectingService = new RetrievalServiceImpl(null, null, null, null, null) {
             @Override
-            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode, RetrievalStrategy strategy) {
                 if (query.contains("FAILS")) {
                     throw new RuntimeException("Simulated Vector DB Connection Timeout");
                 }
                 return List.of(new Document("ok", Map.of("type", "CLASS")));
+            }
+
+            @Override
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+                return retrieve(query, topK, repositoryId, mode, null);
             }
         };
 
@@ -125,6 +131,9 @@ class RetrievalBenchmarkTest {
         assertEquals(2, response.getSummary().getSuccessfulQueries());
         assertEquals(1, response.getSummary().getFailedQueries());
         assertEquals(1, response.getSummary().getFailureCount());
+        assertEquals(1, response.getSummary().getTimeoutCount(), "Query failure containing timeout should increment timeoutCount");
+        assertEquals("DENSE", response.getEffectiveStrategy());
+        assertEquals(1, response.getFailedQueryCount());
     }
 
     @Test
@@ -141,12 +150,17 @@ class RetrievalBenchmarkTest {
 
         RetrievalServiceImpl slowService = new RetrievalServiceImpl(null, null, null, null, null) {
             @Override
-            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode, RetrievalStrategy strategy) {
                 try {
                     startLatch.countDown();
                     blockLatch.await(5, TimeUnit.SECONDS);
                 } catch (InterruptedException ignored) {}
                 return List.of();
+            }
+
+            @Override
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+                return retrieve(query, topK, repositoryId, mode, null);
             }
         };
 
@@ -324,11 +338,16 @@ class RetrievalBenchmarkTest {
         AtomicInteger retrieveCalledWith = new AtomicInteger(0);
         RetrievalServiceImpl recordingService = new RetrievalServiceImpl(null, null, null, null, null) {
             @Override
-            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode, RetrievalStrategy strategy) {
                 if ("javaparser".equals(repositoryId)) {
                     retrieveCalledWith.incrementAndGet();
                 }
                 return List.of();
+            }
+
+            @Override
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+                return retrieve(query, topK, repositoryId, mode, null);
             }
         };
 
@@ -415,6 +434,105 @@ class RetrievalBenchmarkTest {
         assertTrue(ex.getMessage().contains("Unsupported retrievalConfiguration"));
     }
 
+    @Test
+    @DisplayName("Strategy overrides map DENSE_ONLY, SPARSE_ONLY, HYBRID_RRF to ChatMode.AUTO with matching strategy")
+    void testStrategyOverridesMapping() {
+        List<RetrievalStrategy> capturedStrategies = new ArrayList<>();
+        List<ChatMode> capturedModes = new ArrayList<>();
+
+        RetrievalServiceImpl recordingService = new RetrievalServiceImpl(null, null, null, null, null) {
+            @Override
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode, RetrievalStrategy strategy) {
+                capturedModes.add(mode);
+                capturedStrategies.add(strategy);
+                return List.of(new Document("test", Map.of("type", "CLASS")));
+            }
+
+            @Override
+            public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode) {
+                return retrieve(query, topK, repositoryId, mode, null);
+            }
+        };
+
+        RetrievalBenchmark benchmark = new RetrievalBenchmark(recordingService, intentClassifier, datasetProvider, evaluator);
+
+        // 1. DENSE_ONLY
+        BenchmarkRequest denseReq = new BenchmarkRequest("test-repo", List.of("Where is class?"));
+        denseReq.setRetrievalConfiguration("DENSE_ONLY");
+        BenchmarkResponse denseResp = benchmark.runBenchmark(denseReq);
+        assertEquals("DENSE", denseResp.getEffectiveStrategy());
+        assertEquals(RetrievalStrategy.DENSE, capturedStrategies.get(0));
+        assertEquals(ChatMode.AUTO, capturedModes.get(0));
+
+        // 2. SPARSE_ONLY
+        BenchmarkRequest sparseReq = new BenchmarkRequest("test-repo", List.of("Where is class?"));
+        sparseReq.setRetrievalConfiguration("SPARSE_ONLY");
+        BenchmarkResponse sparseResp = benchmark.runBenchmark(sparseReq);
+        assertEquals("SPARSE", sparseResp.getEffectiveStrategy());
+        assertEquals(RetrievalStrategy.SPARSE, capturedStrategies.get(1));
+        assertEquals(ChatMode.AUTO, capturedModes.get(1));
+
+        // 3. HYBRID_RRF
+        BenchmarkRequest hybridReq = new BenchmarkRequest("test-repo", List.of("Where is class?"));
+        hybridReq.setRetrievalConfiguration("HYBRID_RRF");
+        BenchmarkResponse hybridResp = benchmark.runBenchmark(hybridReq);
+        assertEquals("HYBRID", hybridResp.getEffectiveStrategy());
+        assertEquals(RetrievalStrategy.HYBRID, capturedStrategies.get(2));
+        assertEquals(ChatMode.AUTO, capturedModes.get(2));
+
+        // 4. AUTO (uses default, passes null strategyOverride to retrieve so default is resolved)
+        BenchmarkRequest autoReq = new BenchmarkRequest("test-repo", List.of("Where is class?"));
+        autoReq.setRetrievalConfiguration("AUTO");
+        BenchmarkResponse autoResp = benchmark.runBenchmark(autoReq);
+        assertEquals("DENSE", autoResp.getEffectiveStrategy());
+        assertEquals(ChatMode.AUTO, capturedModes.get(3));
+
+        // 5. Explicit ChatMode (e.g. EXPLAIN_CLASS)
+        BenchmarkRequest explicitReq = new BenchmarkRequest("test-repo", List.of("Where is class?"));
+        explicitReq.setRetrievalConfiguration("EXPLAIN_CLASS");
+        BenchmarkResponse explicitResp = benchmark.runBenchmark(explicitReq);
+        assertEquals("DENSE", explicitResp.getEffectiveStrategy());
+        assertEquals(ChatMode.EXPLAIN_CLASS, capturedModes.get(4));
+    }
+
+    @Test
+    @DisplayName("Benchmark execution handles topK=50 with fewer retrieved chunks safely")
+    void testRunBenchmarkWithTopK50AndFewerRetrievedChunks() {
+        // Return only 2 documents when topK=50
+        Document doc1 = new Document("chunk 1", Map.of(
+                "filePath", "com/github/javaparser/ast/visitor/GenericVisitorWithDefaultsPrintVisitor.java",
+                "className", "GenericVisitorWithDefaultsPrintVisitor",
+                "elementName", "visit",
+                "type", "METHOD"
+        ));
+        Document doc2 = new Document("chunk 2", Map.of(
+                "filePath", "com/github/javaparser/JavaParser.java",
+                "className", "JavaParser",
+                "elementName", "parse",
+                "type", "METHOD"
+        ));
+
+        RetrievalBenchmark benchmark = new RetrievalBenchmark(
+                new FixedDocumentsRetrievalService(List.of(doc1, doc2)),
+                intentClassifier,
+                datasetProvider,
+                evaluator
+        );
+
+        BenchmarkRequest request = new BenchmarkRequest("javaparser", "default", 50, "HYBRID_RRF", false);
+        BenchmarkResponse response = benchmark.runBenchmark(request);
+
+        assertNotNull(response);
+        assertEquals(50, response.getTopK());
+        assertEquals(50, response.getResults().size());
+        for (QueryBenchmarkResultDTO qr : response.getResults()) {
+            assertEquals("SUCCESS", qr.getStatus());
+            assertNotNull(qr.getRetrievedChunks());
+            // Since retrieval returned 2 docs, retrievedChunks should be 2 <= topK
+            assertEquals(2, qr.getRetrievedChunks().size());
+        }
+    }
+
     // ── Stub Retrieval Service ────────────────────────────────
 
     private static class FixedDocumentsRetrievalService extends RetrievalServiceImpl {
@@ -423,6 +541,11 @@ class RetrievalBenchmarkTest {
         FixedDocumentsRetrievalService(List<Document> documents) {
             super(null, null, null, null, null);
             this.documents = documents;
+        }
+
+        @Override
+        public List<Document> retrieve(String query, int topK, String repositoryId, ChatMode mode, RetrievalStrategy strategy) {
+            return documents;
         }
 
         @Override

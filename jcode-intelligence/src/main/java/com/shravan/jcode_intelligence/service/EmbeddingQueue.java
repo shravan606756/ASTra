@@ -502,11 +502,95 @@ public class EmbeddingQueue {
         }
         lock.lock();
         try {
+            java.util.Iterator<EmbeddedRecord> it = buffer.iterator();
+            while (it.hasNext()) {
+                EmbeddedRecord next = it.next();
+                if (jobId != null && jobId.equals(next.jobId())) {
+                    it.remove();
+                    acknowledgeCancelled(next);
+                }
+            }
+            if (buffer.isEmpty()) {
+                firstRecordArrivalNanos = 0;
+            }
             recordsAvailable.signalAll();
             recordsDrained.signalAll();
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Checks whether an indexing job is marked as failed or cancelled.
+     *
+     * @param jobId indexing job identifier
+     * @return true if the job is marked failed
+     */
+    public boolean isJobFailed(String jobId) {
+        if (jobId == null) {
+            return false;
+        }
+        if (failedJobs.contains(jobId) || failedJobCauses.containsKey(jobId)) {
+            return true;
+        }
+        JobTracker tracker = activeJobs.get(jobId);
+        return tracker != null && tracker.isFailed();
+    }
+
+    /**
+     * Awaits all in-flight and pending persistence operations for a job to settle (either persisted or failed).
+     *
+     * <p>Safe to invoke on both active and failed jobs. If the job is not tracked or has zero in-flight records,
+     * returns immediately.
+     *
+     * @param jobId   indexing job identifier
+     * @param timeout maximum duration to wait
+     * @throws InterruptedException if interrupted while waiting
+     * @throws TimeoutException     if in-flight records do not settle within the timeout
+     */
+    public void awaitJobSettled(String jobId, Duration timeout) throws InterruptedException, TimeoutException {
+        if (jobId == null) {
+            return;
+        }
+        JobTracker tracker = activeJobs.get(jobId);
+        if (tracker == null) {
+            if (failedJobs.contains(jobId) || failedJobCauses.containsKey(jobId)) {
+                throw new IllegalStateException("Job " + jobId + " tracker missing while marked failed; cannot verify persistence settlement");
+            }
+            return;
+        }
+        long deadlineNanos = System.nanoTime() + timeout.toNanos();
+        lock.lock();
+        try {
+            while (tracker.persistedCount.get() + tracker.failedCount.get() < tracker.submittedCount.get()) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    throw new TimeoutException(String.format(
+                            "Job %s in-flight persistence did not settle within %s (submitted: %d, persisted: %d, failed: %d)",
+                            jobId, timeout, tracker.submittedCount.get(), tracker.persistedCount.get(), tracker.failedCount.get()));
+                }
+                recordsDrained.awaitNanos(Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(100)));
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Retrieves the set of document/record IDs that were successfully persisted to the database for this job.
+     *
+     * @param jobId indexing job identifier
+     * @return set of persisted record IDs (empty set if none or untracked)
+     */
+    public Set<String> getPersistedRecordIds(String jobId) {
+        if (jobId == null) {
+            return Collections.emptySet();
+        }
+        JobTracker tracker = activeJobs.get(jobId);
+        if (tracker != null) {
+            return new java.util.HashSet<>(tracker.persistedRecordIds);
+        }
+        return Collections.emptySet();
     }
 
     /**
@@ -544,7 +628,7 @@ public class EmbeddingQueue {
             }
             throw new RuntimeException(cause);
         } finally {
-            if (tracker.completionFuture.isDone()) {
+            if (tracker.completionFuture.isDone() && !tracker.isFailed()) {
                 activeJobs.remove(jobId);
                 failedJobs.remove(jobId);
                 failedJobCauses.remove(jobId);
@@ -828,8 +912,17 @@ public class EmbeddingQueue {
 
         JobTracker tracker = activeJobs.get(record.jobId());
         if (tracker != null) {
+            if (record.id() != null && !record.id().isBlank()) {
+                tracker.persistedRecordIds.add(record.id());
+            }
             tracker.persistedCount.incrementAndGet();
             checkJobTerminalState(tracker);
+            lock.lock();
+            try {
+                recordsDrained.signalAll();
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
@@ -964,9 +1057,11 @@ public class EmbeddingQueue {
                                 String.format("Job %s finished with %d failed record(s) out of %d total", tracker.jobId, failed, total)));
                     }
                 }
-                if (tracker.isFailed() && tracker.completionFuture.isDone()) {
-                    activeJobs.remove(tracker.getJobId());
-                    failedJobs.remove(tracker.getJobId());
+                lock.lock();
+                try {
+                    recordsDrained.signalAll();
+                } finally {
+                    lock.unlock();
                 }
             }
         }
@@ -995,6 +1090,7 @@ public class EmbeddingQueue {
         private final AtomicBoolean failed = new AtomicBoolean(false);
         private final CompletableFuture<Void> completionFuture = new CompletableFuture<>();
         private final List<String> recordErrors = Collections.synchronizedList(new ArrayList<>());
+        private final Set<String> persistedRecordIds = ConcurrentHashMap.newKeySet();
 
         public JobTracker(String jobId, String repositoryId) {
             this(jobId, repositoryId, null);

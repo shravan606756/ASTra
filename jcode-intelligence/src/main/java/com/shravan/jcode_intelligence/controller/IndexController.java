@@ -3,6 +3,7 @@ package com.shravan.jcode_intelligence.controller;
 import com.shravan.jcode_intelligence.dto.request.IndexRequest;
 import com.shravan.jcode_intelligence.dto.response.IndexResponse;
 import com.shravan.jcode_intelligence.service.IndexingService;
+import com.shravan.jcode_intelligence.sparse.store.LuceneGenerationStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -43,6 +44,10 @@ public class IndexController {
             ));
         }
 
+        if (request.getRepositoryId() != null && !request.getRepositoryId().isBlank()) {
+            LuceneGenerationStore.validateRepositoryId(request.getRepositoryId());
+        }
+
         int count = indexingService.indexProject(request.getProjectPath(), request.getRepositoryId());
         return ResponseEntity.ok(new IndexResponse(
                 "SUCCESS",
@@ -69,6 +74,10 @@ public class IndexController {
                     0,
                     null
             ));
+        }
+
+        if (request.getRepositoryId() != null && !request.getRepositoryId().isBlank()) {
+            LuceneGenerationStore.validateRepositoryId(request.getRepositoryId());
         }
 
         int count = indexingService.indexGitRepository(request.getGitUrl(), request.getRepositoryId(), request.getBranch());

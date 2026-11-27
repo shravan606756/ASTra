@@ -21,6 +21,7 @@ public class RepositoryStatsDTO {
     private String largestClass;
     private String largestMethod;
     private long indexingTimeMs;
+    private String status = "CONSISTENT";
 
     public RepositoryStatsDTO() {
     }
@@ -28,6 +29,13 @@ public class RepositoryStatsDTO {
     public RepositoryStatsDTO(int packages, int classes, int interfaces, int enums, int records,
                               int fields, int constructors, int methods, int fragments, int totalChunks,
                               String largestClass, String largestMethod, long indexingTimeMs) {
+        this(packages, classes, interfaces, enums, records, fields, constructors, methods, fragments, totalChunks,
+                largestClass, largestMethod, indexingTimeMs, "CONSISTENT");
+    }
+
+    public RepositoryStatsDTO(int packages, int classes, int interfaces, int enums, int records,
+                              int fields, int constructors, int methods, int fragments, int totalChunks,
+                              String largestClass, String largestMethod, long indexingTimeMs, String status) {
         this.packages = packages;
         this.classes = classes;
         this.interfaces = interfaces;
@@ -41,6 +49,7 @@ public class RepositoryStatsDTO {
         this.largestClass = largestClass;
         this.largestMethod = largestMethod;
         this.indexingTimeMs = indexingTimeMs;
+        this.status = (status != null && !status.isBlank()) ? status : "CONSISTENT";
     }
 
     public int getPackages() { return packages; }
@@ -81,4 +90,7 @@ public class RepositoryStatsDTO {
 
     public long getIndexingTimeMs() { return indexingTimeMs; }
     public void setIndexingTimeMs(long indexingTimeMs) { this.indexingTimeMs = indexingTimeMs; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = (status != null && !status.isBlank()) ? status : "CONSISTENT"; }
 }

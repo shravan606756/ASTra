@@ -12,13 +12,14 @@ public class BenchmarkSuite {
     private String description;
     private String version = "1.0.0";
     private String defaultRepositoryId;
+    private String sourceRevision;
     private List<BenchmarkQueryDefinition> queries = new ArrayList<>();
 
     public BenchmarkSuite() {
     }
 
     public BenchmarkSuite(String suiteName, String description, String version,
-                          String defaultRepositoryId, List<BenchmarkQueryDefinition> queries) {
+            String defaultRepositoryId, List<BenchmarkQueryDefinition> queries) {
         this.suiteName = suiteName;
         this.description = description;
         this.version = version;
@@ -58,6 +59,14 @@ public class BenchmarkSuite {
         this.defaultRepositoryId = defaultRepositoryId;
     }
 
+    public String getSourceRevision() {
+        return sourceRevision;
+    }
+
+    public void setSourceRevision(String sourceRevision) {
+        this.sourceRevision = sourceRevision;
+    }
+
     public List<BenchmarkQueryDefinition> getQueries() {
         return queries;
     }
@@ -66,4 +75,3 @@ public class BenchmarkSuite {
         this.queries = queries;
     }
 }
-

@@ -155,6 +155,26 @@ public class IndexControllerTest {
         assertTrue(response.getBody().getMessage().contains("Either projectPath or gitUrl must be provided"));
     }
 
+    @Test
+    public void indexLocalWithPathTraversalRepositoryIdThrowsIllegalArgumentException() {
+        IndexRequest request = new IndexRequest();
+        request.setProjectPath("C:/test/project");
+        request.setRepositoryId("../traversal-repo");
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                controller.indexLocal(request));
+    }
+
+    @Test
+    public void indexGitWithPathTraversalRepositoryIdThrowsIllegalArgumentException() {
+        IndexRequest request = new IndexRequest();
+        request.setGitUrl("https://github.com/example/repo.git");
+        request.setRepositoryId("/etc/passwd");
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                controller.indexGit(request));
+    }
+
     private static class MockIndexingService implements IndexingService {
         int stubbedCount = 10;
         final AtomicReference<String> lastProjectPath = new AtomicReference<>();

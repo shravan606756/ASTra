@@ -512,6 +512,37 @@ class RetrievalEvaluatorTest {
         assertFalse(evaluator.matches(doc, nonOverlappingGt), "Non-overlapping line ranges should not match");
     }
 
+    @Test
+    @DisplayName("Context recall does not exceed 1.0 when relevanceThreshold > 1 and lower-grade matches exist")
+    void testContextRecallWithRelevanceThresholdAboveOne() {
+        evaluator.setRelevanceThreshold(2);
+
+        // Ground truths: one with grade 1 (below threshold), one with grade 2 (at threshold)
+        List<RelevantChunkDefinition> groundTruths = List.of(
+                new RelevantChunkDefinition("src/A.java", "methodLow", 1),
+                new RelevantChunkDefinition("src/B.java", "methodHigh", 2)
+        );
+
+        // Retrieved documents matching both ground truths
+        Document docLow = createDocument("src/A.java", "A", "methodLow");
+        Document docHigh = createDocument("src/B.java", "B", "methodHigh");
+
+        QueryQualityMetricsDTO metrics = evaluator.evaluateQuery(List.of(docLow, docHigh), groundTruths, new ArrayList<>());
+
+        assertNotNull(metrics);
+        // totalRelevantGt is 1 (only methodHigh has grade >= 2)
+        // satisfiedRelevantGts should only count methodHigh (grade 2 >= 2)
+        // Context recall should be 1 / 1 = 1.0, NOT 2 / 1 = 2.0
+        assertEquals(1.0, metrics.getContextRecall(), 0.0001,
+                "Context recall must not exceed 1.0 when matched ground truths have grades below threshold");
+
+        // If only docLow is retrieved, context recall should be 0.0 because no chunk met the relevance threshold
+        QueryQualityMetricsDTO metricsLowOnly = evaluator.evaluateQuery(List.of(docLow), groundTruths, new ArrayList<>());
+        assertNotNull(metricsLowOnly);
+        assertEquals(0.0, metricsLowOnly.getContextRecall(), 0.0001,
+                "Context recall should be 0.0 when only sub-threshold ground truths match");
+    }
+
     private Document createDocument(String filePath, String className, String elementName) {
         Map<String, Object> meta = new HashMap<>();
         meta.put("filePath", filePath);

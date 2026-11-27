@@ -80,6 +80,7 @@ public class RetrievalEvaluator {
 
         List<Integer> relevanceGrades = new ArrayList<>(documents.size());
         Set<RelevantChunkDefinition> satisfiedGts = new LinkedHashSet<>();
+        Set<RelevantChunkDefinition> satisfiedRelevantGts = new LinkedHashSet<>();
         Set<RelevantChunkDefinition> remainingGts = new LinkedHashSet<>(groundTruths);
 
         int displayLimit = (maxDisplayChunks > 0) ? Math.min(maxDisplayChunks, documents.size()) : documents.size();
@@ -117,6 +118,9 @@ public class RetrievalEvaluator {
 
             if (metricMatchedGt != null && metricGrade > 0) {
                 satisfiedGts.add(metricMatchedGt);
+                if (metricMatchedGt.getRelevance() >= relevanceThreshold) {
+                    satisfiedRelevantGts.add(metricMatchedGt);
+                }
                 remainingGts.remove(metricMatchedGt);
             }
 
@@ -168,7 +172,7 @@ public class RetrievalEvaluator {
         metrics.setNdcgAt25(computeNdcg(relevanceGrades, 25, groundTruths));
 
         metrics.setContextPrecision(computeContextPrecision(relevanceGrades));
-        metrics.setContextRecall(totalRelevantGt > 0 ? (double) satisfiedGts.size() / totalRelevantGt : 0.0);
+        metrics.setContextRecall(totalRelevantGt > 0 ? (double) satisfiedRelevantGts.size() / totalRelevantGt : 0.0);
 
         return metrics;
     }

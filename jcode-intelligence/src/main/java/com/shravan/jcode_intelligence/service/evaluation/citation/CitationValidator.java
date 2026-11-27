@@ -27,15 +27,22 @@ import java.util.stream.Stream;
  * Validates inline citations against git checkouts, filesystem constraints,
  * and Java abstract syntax trees.
  *
- * <p>Validates:
+ * <p>
+ * Validates:
  * <ul>
- *   <li>JGit revision checkout and dirty-state reporting. Skips validation for {@code MISMATCHED} or
- *       {@code UNAVAILABLE} revisions rather than returning syntax-only validity.</li>
- *   <li>Path traversal rejection, symlink-safe real-path containment, regular file existence.</li>
- *   <li>Positive ordered line bounds within file line count.</li>
- *   <li>Java AST entity verification (classes, interfaces, records, enums, methods, constructors, fields).
- *       Distinguishes {@code VALID}, {@code AMBIGUOUS_MATCH}, {@code PARSE_ERROR}, and {@code ENTITY_NOT_FOUND}.</li>
- *   <li>Non-Java files check existence and bounds, returning {@code NOT_APPLICABLE} for entity status.</li>
+ * <li>JGit revision checkout and dirty-state reporting. Skips validation for
+ * {@code MISMATCHED} or
+ * {@code UNAVAILABLE} revisions rather than returning syntax-only
+ * validity.</li>
+ * <li>Path traversal rejection, symlink-safe real-path containment, regular
+ * file existence.</li>
+ * <li>Positive ordered line bounds within file line count.</li>
+ * <li>Java AST entity verification (classes, interfaces, records, enums,
+ * methods, constructors, fields).
+ * Distinguishes {@code VALID}, {@code AMBIGUOUS_MATCH}, {@code PARSE_ERROR},
+ * and {@code ENTITY_NOT_FOUND}.</li>
+ * <li>Non-Java files check existence and bounds, returning
+ * {@code NOT_APPLICABLE} for entity status.</li>
  * </ul>
  */
 @Component
@@ -106,14 +113,16 @@ public class CitationValidator {
     }
 
     /**
-     * Validates a collection of citations against a target repository root and revision.
+     * Validates a collection of citations against a target repository root and
+     * revision.
      *
      * @param citations        list of citations to validate
      * @param repositoryRoot   repository root directory path
      * @param expectedRevision target revision commit ID (nullable)
      * @return validation results
      */
-    public List<CitationValidationResult> validateAll(List<Citation> citations, String repositoryRoot, String expectedRevision) {
+    public List<CitationValidationResult> validateAll(List<Citation> citations, String repositoryRoot,
+            String expectedRevision) {
         if (citations == null || citations.isEmpty()) {
             return List.of();
         }
@@ -121,8 +130,10 @@ public class CitationValidator {
         Path rootPath = (repositoryRoot != null && !repositoryRoot.isBlank()) ? Paths.get(repositoryRoot) : null;
         RevisionStatus revisionStatus = checkRevision(rootPath, expectedRevision);
 
-        // Skip validation for MISMATCHED or UNAVAILABLE rather than returning syntax-only validity
-        if (revisionStatus == RevisionStatus.MISMATCHED || revisionStatus == RevisionStatus.UNAVAILABLE) {
+        // Skip validation for MISMATCHED, UNAVAILABLE, or DIRTY rather than validating
+        // against dirty working tree
+        if (revisionStatus == RevisionStatus.MISMATCHED || revisionStatus == RevisionStatus.UNAVAILABLE
+                || revisionStatus == RevisionStatus.DIRTY) {
             String msg = "Validation skipped: repository revision is " + revisionStatus;
             return citations.stream()
                     .map(c -> CitationValidationResult.skipped(c, revisionStatus, msg))
@@ -137,7 +148,8 @@ public class CitationValidator {
     /**
      * Validates a single citation against a validated repository checkout.
      */
-    public CitationValidationResult validateSingle(Citation citation, Path repositoryRoot, RevisionStatus revisionStatus) {
+    public CitationValidationResult validateSingle(Citation citation, Path repositoryRoot,
+            RevisionStatus revisionStatus) {
         if (citation == null) {
             return CitationValidationResult.malformed(Citation.malformed(""), "Citation is null");
         }
@@ -146,20 +158,25 @@ public class CitationValidator {
             return CitationValidationResult.malformed(citation, "Malformed citation syntax: " + citation.rawText());
         }
 
+        if (revisionStatus == RevisionStatus.MISMATCHED || revisionStatus == RevisionStatus.UNAVAILABLE
+                || revisionStatus == RevisionStatus.DIRTY) {
+            return CitationValidationResult.skipped(citation, revisionStatus,
+                    "Validation skipped: repository revision is " + revisionStatus);
+        }
+
         if (citation.startLine() == null || citation.endLine() == null ||
                 citation.startLine() <= 0 || citation.endLine() < citation.startLine()) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.OUT_OF_BOUNDS,
-                    EntityStatus.NOT_APPLICABLE, "Invalid line bounds: " + citation.startLine() + "-" + citation.endLine()
-            );
+                    EntityStatus.NOT_APPLICABLE,
+                    "Invalid line bounds: " + citation.startLine() + "-" + citation.endLine());
         }
 
         String rawPath = citation.filePath();
         if (rawPath == null || rawPath.isBlank()) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.NOT_FOUND,
-                    EntityStatus.NOT_APPLICABLE, "File path is empty"
-            );
+                    EntityStatus.NOT_APPLICABLE, "File path is empty");
         }
 
         // Normalize and reject traversal
@@ -169,8 +186,7 @@ public class CitationValidator {
         if (hasTraversal || normalizedPath.startsWith("/")) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.TRAVERSAL_REJECTED,
-                    EntityStatus.NOT_APPLICABLE, "Path traversal sequence detected: " + rawPath
-            );
+                    EntityStatus.NOT_APPLICABLE, "Path traversal sequence detected: " + rawPath);
         }
 
         // Clean temporary repository prefixes if present
@@ -187,15 +203,13 @@ public class CitationValidator {
         if (!resolved.startsWith(repositoryRoot.normalize())) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.TRAVERSAL_REJECTED,
-                    EntityStatus.NOT_APPLICABLE, "Resolved path escapes repository root: " + resolved
-            );
+                    EntityStatus.NOT_APPLICABLE, "Resolved path escapes repository root: " + resolved);
         }
 
         if (!Files.exists(resolved)) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.NOT_FOUND,
-                    EntityStatus.NOT_APPLICABLE, "File does not exist on disk: " + cleanedPath
-            );
+                    EntityStatus.NOT_APPLICABLE, "File does not exist on disk: " + cleanedPath);
         }
 
         Path realTarget;
@@ -206,23 +220,20 @@ public class CitationValidator {
         } catch (IOException e) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.NOT_FOUND,
-                    EntityStatus.NOT_APPLICABLE, "Failed to resolve real path: " + e.getMessage()
-            );
+                    EntityStatus.NOT_APPLICABLE, "Failed to resolve real path: " + e.getMessage());
         }
 
         // Symlink escape check
         if (!realTarget.startsWith(realRoot)) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.TRAVERSAL_REJECTED,
-                    EntityStatus.NOT_APPLICABLE, "Symlink target escapes repository root: " + realTarget
-            );
+                    EntityStatus.NOT_APPLICABLE, "Symlink target escapes repository root: " + realTarget);
         }
 
         if (!Files.isRegularFile(realTarget)) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.NOT_FOUND,
-                    EntityStatus.NOT_APPLICABLE, "Target is not a regular file: " + realTarget
-            );
+                    EntityStatus.NOT_APPLICABLE, "Target is not a regular file: " + realTarget);
         }
 
         // Check line bounds against actual file line count
@@ -232,53 +243,48 @@ public class CitationValidator {
         } catch (IOException e) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.NOT_FOUND,
-                    EntityStatus.NOT_APPLICABLE, "Failed to read file lines: " + e.getMessage()
-            );
+                    EntityStatus.NOT_APPLICABLE, "Failed to read file lines: " + e.getMessage());
         }
 
         if (citation.endLine() > totalLines) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.OUT_OF_BOUNDS,
                     EntityStatus.NOT_APPLICABLE,
-                    "Citation endLine (" + citation.endLine() + ") exceeds total file lines (" + totalLines + ")"
-            );
+                    "Citation endLine (" + citation.endLine() + ") exceeds total file lines (" + totalLines + ")");
         }
 
         // For non-Java files: bounds verified, entity check not applicable
         if (!cleanedPath.toLowerCase(Locale.ROOT).endsWith(".java")) {
             return new CitationValidationResult(
                     citation, true, revisionStatus, FileStatus.VALID,
-                    EntityStatus.NOT_APPLICABLE, "Non-Java file bounds verified"
-            );
+                    EntityStatus.NOT_APPLICABLE, "Non-Java file bounds verified");
         }
 
         // For Java files: parse AST and verify declaration containment
         return validateJavaEntity(citation, realTarget, revisionStatus);
     }
 
-    private CitationValidationResult validateJavaEntity(Citation citation, Path realTarget, RevisionStatus revisionStatus) {
+    private CitationValidationResult validateJavaEntity(Citation citation, Path realTarget,
+            RevisionStatus revisionStatus) {
         ParseResult<CompilationUnit> parseResult;
         try {
             parseResult = javaParser.parse(realTarget);
         } catch (Exception e) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.VALID,
-                    EntityStatus.PARSE_ERROR, "Failed to parse Java file: " + e.getMessage()
-            );
+                    EntityStatus.PARSE_ERROR, "Failed to parse Java file: " + e.getMessage());
         }
 
         if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.VALID,
-                    EntityStatus.PARSE_ERROR, "JavaParser syntax errors: " + parseResult.getProblems()
-            );
+                    EntityStatus.PARSE_ERROR, "JavaParser syntax errors: " + parseResult.getProblems());
         }
 
         if (!citation.hasSymbol()) {
             return new CitationValidationResult(
                     citation, true, revisionStatus, FileStatus.VALID,
-                    EntityStatus.NOT_APPLICABLE, "Symbol-free range verified in valid Java file"
-            );
+                    EntityStatus.NOT_APPLICABLE, "Symbol-free range verified in valid Java file");
         }
 
         CompilationUnit cu = parseResult.getResult().get();
@@ -306,23 +312,22 @@ public class CitationValidator {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.VALID,
                     EntityStatus.ENTITY_NOT_FOUND,
-                    "Symbol '" + symbol + "' not found within range " + citation.startLine() + "-" + citation.endLine()
-            );
+                    "Symbol '" + symbol + "' not found within range " + citation.startLine() + "-"
+                            + citation.endLine());
         }
 
         if (matchingNodes.size() > 1) {
             return new CitationValidationResult(
                     citation, false, revisionStatus, FileStatus.VALID,
                     EntityStatus.AMBIGUOUS_MATCH,
-                    "Found " + matchingNodes.size() + " declarations matching '" + symbol + "' in cited range"
-            );
+                    "Found " + matchingNodes.size() + " declarations matching '" + symbol + "' in cited range");
         }
 
         return new CitationValidationResult(
                 citation, true, revisionStatus, FileStatus.VALID,
                 EntityStatus.VALID,
-                "Declaration '" + symbol + "' verified within range " + citation.startLine() + "-" + citation.endLine()
-        );
+                "Declaration '" + symbol + "' verified within range " + citation.startLine() + "-"
+                        + citation.endLine());
     }
 
     private boolean isSupportedDeclaration(Node node) {
@@ -345,7 +350,8 @@ public class CitationValidator {
         }
         if (node instanceof ClassOrInterfaceDeclaration decl) {
             return decl.getNameAsString().equals(symbol)
-                    || decl.getFullyQualifiedName().map(fqn -> fqn.equals(symbol) || fqn.endsWith("." + symbol)).orElse(false);
+                    || decl.getFullyQualifiedName().map(fqn -> fqn.equals(symbol) || fqn.endsWith("." + symbol))
+                            .orElse(false);
         }
         if (node instanceof RecordDeclaration decl) {
             return decl.getNameAsString().equals(symbol);

@@ -19,7 +19,9 @@ public record CitationValidationResult(
         String message
 ) {
     public boolean isSkipped() {
-        return revisionStatus == RevisionStatus.MISMATCHED || revisionStatus == RevisionStatus.UNAVAILABLE;
+        return revisionStatus == RevisionStatus.MISMATCHED
+                || revisionStatus == RevisionStatus.UNAVAILABLE
+                || revisionStatus == RevisionStatus.DIRTY;
     }
 
     public static CitationValidationResult skipped(Citation citation, RevisionStatus revisionStatus, String reason) {

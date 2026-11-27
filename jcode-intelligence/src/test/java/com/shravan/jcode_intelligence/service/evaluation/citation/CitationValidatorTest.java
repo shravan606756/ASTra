@@ -90,7 +90,7 @@ class CitationValidatorTest {
     }
 
     @Test
-    @DisplayName("Dirty working tree reports DIRTY revision state and proceeds with validation")
+    @DisplayName("Dirty working tree reports DIRTY revision state and skips validation to avoid uncommitted edits")
     void testDirtyWorkingTree_reportsDirtyState(@TempDir Path tempDir) throws Exception {
         try (Git git = initGitRepo(tempDir)) {
             Path javaFile = tempDir.resolve("Service.java");
@@ -98,20 +98,34 @@ class CitationValidatorTest {
             git.add().addFilepattern(".").call();
             RevCommit commit = git.commit().setMessage("Initial").call();
 
-            // Modify file without committing -> makes working tree dirty
-            Files.writeString(javaFile, "public class Service {\n    void foo() {}\n}");
+            // Modify file without committing -> makes working tree dirty with declaration that exists only in uncommitted edits
+            Files.writeString(javaFile, "public class Service {\n    void uncommittedMethod() {}\n}");
 
-            Citation citation = Citation.valid("[cite: Service.java:1-3#Service]", "Service.java", 1, 3, "Service");
+            // Citation references uncommittedMethod and lines 2-3 which exist only in uncommitted edits
+            Citation citation = Citation.valid("[cite: Service.java:2-3#uncommittedMethod]", "Service.java", 2, 3, "uncommittedMethod");
             List<CitationValidationResult> results = validator.validateAll(
                     List.of(citation), tempDir.toString(), commit.getName());
 
             assertEquals(1, results.size());
             CitationValidationResult res = results.get(0);
             assertEquals(RevisionStatus.DIRTY, res.revisionStatus());
-            assertTrue(res.structurallyValid());
-            assertEquals(FileStatus.VALID, res.fileStatus());
-            assertEquals(EntityStatus.VALID, res.entityStatus());
+            assertTrue(res.isSkipped(), "Validation must be marked skipped when checkout is dirty");
+            assertFalse(res.structurallyValid(), "Uncommitted declaration must not pass structural validation for committed revision");
+            assertEquals(FileStatus.SKIPPED, res.fileStatus());
+            assertEquals(EntityStatus.SKIPPED, res.entityStatus());
         }
+    }
+
+    @Test
+    @DisplayName("validateSingle skips validation when revisionStatus is DIRTY")
+    void testValidateSingle_skipsWhenDirty(@TempDir Path tempDir) {
+        Citation citation = Citation.valid("[cite: Foo.java:1-5#bar]", "Foo.java", 1, 5, "bar");
+        CitationValidationResult res = validator.validateSingle(citation, tempDir, RevisionStatus.DIRTY);
+        assertEquals(RevisionStatus.DIRTY, res.revisionStatus());
+        assertTrue(res.isSkipped());
+        assertFalse(res.structurallyValid());
+        assertEquals(FileStatus.SKIPPED, res.fileStatus());
+        assertEquals(EntityStatus.SKIPPED, res.entityStatus());
     }
 
     @Test

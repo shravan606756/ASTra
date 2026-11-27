@@ -291,4 +291,48 @@ class CitationValidatorTest {
             assertEquals(FileStatus.INVALID_SYNTAX, res.fileStatus());
         }
     }
+
+    @Test
+    @DisplayName("Validates Java file and symbol in repository-relative path containing spaces")
+    void testValidatesPathWithSpaces(@TempDir Path tempDir) throws Exception {
+        try (Git git = initGitRepo(tempDir)) {
+            Path subDir = tempDir.resolve("src/my package");
+            Files.createDirectories(subDir);
+            Path javaFile = subDir.resolve("Foo.java");
+            String code = """
+                    package my_package;
+
+                    public class Foo {
+                        public void doWork() {
+                            System.out.println("working");
+                        }
+                    }
+                    """;
+            Files.writeString(javaFile, code);
+
+            git.add().addFilepattern(".").call();
+            RevCommit commit = git.commit().setMessage("Commit with spaces in path").call();
+
+            Citation citation = Citation.valid("[cite: src/my package/Foo.java:4-6#doWork]", "src/my package/Foo.java", 4, 6, "doWork");
+            List<CitationValidationResult> results = validator.validateAll(
+                    List.of(citation), tempDir.toString(), commit.getName());
+
+            assertEquals(1, results.size());
+            CitationValidationResult res = results.get(0);
+            assertTrue(res.structurallyValid(), "Citation with spaces in path must be structurally valid");
+            assertEquals(RevisionStatus.MATCHED, res.revisionStatus());
+            assertEquals(FileStatus.VALID, res.fileStatus());
+            assertEquals(EntityStatus.VALID, res.entityStatus());
+
+            // Path traversal with spaces should still be rejected
+            Citation traversalCitation = Citation.valid("[cite: src/my package/../../Secret.java:1-5]", "src/my package/../../Secret.java", 1, 5, null);
+            List<CitationValidationResult> traversalResults = validator.validateAll(
+                    List.of(traversalCitation), tempDir.toString(), commit.getName());
+
+            assertEquals(1, traversalResults.size());
+            CitationValidationResult traversalRes = traversalResults.get(0);
+            assertFalse(traversalRes.structurallyValid());
+            assertEquals(FileStatus.TRAVERSAL_REJECTED, traversalRes.fileStatus());
+        }
+    }
 }

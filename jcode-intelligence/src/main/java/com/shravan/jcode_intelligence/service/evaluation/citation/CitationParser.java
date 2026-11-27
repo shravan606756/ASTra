@@ -29,9 +29,9 @@ public class CitationParser {
     private static final Pattern CITE_BLOCK_PATTERN = Pattern.compile("\\[cite:\\s*([^\\]]*)\\]");
 
     // Matches path:startLine-endLine(#symbol)? within the bracket content
-    // Group 1: path, Group 2: startLine, Group 3: endLine, Group 4: optional #symbol (without #)
+    // Group 1: path (permits whitespace within path), Group 2: startLine, Group 3: endLine, Group 4: optional #symbol (without #)
     private static final Pattern VALID_CITATION_CONTENT_PATTERN = Pattern.compile(
-            "^([^:\\s#]+):(\\d+)-(\\d+)(?:#([^\\s#]+))?$"
+            "^([^\\r\\n:#]+):(\\d+)-(\\d+)(?:#([^\\s#]+))?$"
     );
 
     /**
@@ -60,6 +60,10 @@ public class CitationParser {
             Matcher contentMatcher = VALID_CITATION_CONTENT_PATTERN.matcher(innerContent);
             if (contentMatcher.matches()) {
                 String rawPath = contentMatcher.group(1).trim().replace('\\', '/');
+                if (rawPath.isEmpty()) {
+                    citations.add(Citation.malformed(fullMatch));
+                    continue;
+                }
                 try {
                     int startLine = Integer.parseInt(contentMatcher.group(2));
                     int endLine = Integer.parseInt(contentMatcher.group(3));
